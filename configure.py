@@ -20,7 +20,7 @@
 # along with Scylla.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-import os, os.path, textwrap, argparse, sys, shlex, subprocess, tempfile, re
+import os, os.path, textwrap, argparse, sys, shlex, subprocess, tempfile, re, shutil
 from distutils.spawn import find_executable
 
 configure_args = str.join(' ', [shlex.quote(x) for x in sys.argv[1:]])
@@ -149,6 +149,75 @@ class Antlr3Grammar(object):
         return [x.replace('.cpp', '.o') for x in self.sources(gen_dir)]
     def endswith(self, end):
         return self.source.endswith(end)
+
+
+def as_is(v):
+    return v
+
+def to_cmake_bool(b):
+    if b:
+        return "TRUE"
+    else:
+        return "FALSE"
+
+def to_cmake_list(l):
+    return ";".join(l)
+
+#(configure.py arg name, sentinel value, cmake arg name, value conversion func)
+args_to_cmake_args = [
+    ("user_cflags", '', "user_cflags", as_is),
+    ("user_ldflags", '', "user_ldflags", as_is),
+    ("cxx", 'g++', "CMAKE_CXX_COMPILER", as_is),
+    ("cc", 'gcc', "CMAKE_C_COMPILER", as_is),
+    ("dpdk", None, "enable_dpkg", to_cmake_bool),
+    ("hwloc", None, "enable_hwloc", to_cmake_bool),
+    ("staticthrift", None, "static_thrift", to_cmake_bool),
+    ("tests_debuginfo", None, "tests_debuginfo", to_cmake_bool),
+    ("gcc6_concepts", None, "enable_gcc6_concepts", to_cmake_bool),
+    ("artifacts", [], "with", to_cmake_list),
+]
+
+
+def to_cmake_args(parsed_args):
+    cmake_args = []
+
+    for conf_arg_name, sentinel_val, cmake_arg_name, conv_func in args_to_cmake_args:
+        if not hasattr(parsed_args, conf_arg_name):
+            val = None
+        else:
+            val = getattr(parsed_args, conf_arg_name)
+
+        if val != sentinel_val:
+            cmake_args.append("-D{}={}".format(cmake_arg_name, conv_func(val)))
+
+    return cmake_args
+
+
+def generate_mode(mode, parsed_args):
+    path = "build/{}".format(mode)
+
+    if not os.path.exists(path):
+        os.makedirs(path)
+
+    cmd = ["/usr/bin/cmake", "-G", "Ninja", "-DCMAKE_BUILD_TYPE={}".format(mode.upper())] + to_cmake_args(parsed_args) + [os.getcwd()]
+
+    print("Invoking ``{}''".format(" ".join(cmd)))
+
+    retcode = subprocess.call(cmd, cwd=path)
+
+    if retcode:
+        print("CMake exited with non-0 return code: {}".format(retcode))
+        return
+
+
+def current_build_type():
+    if os.path.exists("build.ninja") and os.path.isdir("build"):
+        return "configure.py"
+    elif os.path.exists("build/release/CMakeCache.txt") or os.path.exists("build/debug/CMakeCache.txt"):
+        return "CMake"
+    else:
+        return None
+
 
 modes = {
     'debug': {
@@ -308,7 +377,33 @@ arg_parser.add_argument('--enable-gcc6-concepts', dest='gcc6_concepts', action='
                         help='enable experimental support for C++ Concepts as implemented in GCC 6')
 arg_parser.add_argument('--enable-alloc-failure-injector', dest='alloc_failure_injector', action='store_true', default=False,
                         help='enable allocation failure injection')
+arg_parser.add_argument('--link-pool-depth', action = 'store', dest = 'link_pool_depth', type = int, default = None,
+                        help = 'Link pool depth, the amount of threads to link with')
+arg_parser.add_argument('--fallback', action = 'store_true', dest = 'fallback', default = False,
+                        help = 'Generate the build files with the legacy method, using configure.py.'
+                        'This option is to be used as a fallback in case CMake fails. Will be removed in the future!')
 args = arg_parser.parse_args()
+
+if not args.fallback:
+    if current_build_type() != "CMake":
+        if os.path.exists("build"):
+            shutil.rmtree("build")
+
+        if os.path.exists("ninja.build"):
+            os.unlink("ninja.build")
+
+    if args.mode == "all":
+        generate_mode("release", args)
+        generate_mode("debug", args)
+    else:
+        generate_mode(args.mode, args)
+
+    exit(0)
+else:
+    if current_build_type() != "configure.py":
+        if os.path.exists("build"):
+            shutil.rmtree("build")
+
 
 defines = []
 
