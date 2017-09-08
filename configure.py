@@ -20,7 +20,7 @@
 # along with Scylla.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-import os, os.path, textwrap, argparse, sys, shlex, subprocess, tempfile, re
+import os, os.path, textwrap, argparse, sys, shlex, subprocess, tempfile, re, shutil
 from distutils.spawn import find_executable
 
 configure_args = str.join(' ', [shlex.quote(x) for x in sys.argv[1:]])
@@ -149,6 +149,75 @@ class Antlr3Grammar(object):
         return [x.replace('.cpp', '.o') for x in self.sources(gen_dir)]
     def endswith(self, end):
         return self.source.endswith(end)
+
+
+def as_is(v):
+    return val
+
+def to_cmake_bool(b):
+    if b:
+        return "TRUE"
+    else:
+        return "FALSE"
+
+def to_cmake_list(l):
+    return ";".join(l)
+
+#(configure.py arg name, sentinel value, cmake arg name, value conversion func)
+args_to_cmake_args = [
+    ("user_cflags", '', "NEW_USER_CFLAGS", as_is),
+    ("user_ldflags", '', "NEW_USER_LDFLAGS", as_is),
+    ("cxx", 'g++', "CMAKE_CXX_COMPILER", as_is),
+    ("cc", 'gcc', "CMAKE_C_COMPILER", as_is),
+    ("dpdk", None, "ENABLE_DPKG", to_cmake_bool),
+    ("hwloc", None, "ENABLE_HWLOC", to_cmake_bool),
+    ("staticthrift", None, "STATIC_THRIFT", to_cmake_bool),
+    ("tests_debuginfo", None, "TESTS_DEBUGINFO", to_cmake_bool),
+    ("gcc6_concepts", None, "ENABLE_GCC6_CONCEPTS", to_cmake_bool),
+    ("artifacts", None, "WITH_LIST", to_cmake_list),
+]
+
+
+def to_cmake_args(parsed_args):
+    cmake_args = []
+
+    for conf_arg_name, sentinel_val, cmake_arg_name, conv_func in args_to_cmake_args:
+        if not hasattr(parsed_args, conf_arg_name):
+            val = None
+        else:
+            val = getattr(parsed_args, conf_arg_name)
+
+        if val != sentinel_val:
+            cmake_args.append("-D{}={}".format(cmake_arg_name, conv_func(val)))
+
+    return cmake_args
+
+
+def generate_mode(mode, parsed_args):
+    path = "build/{}".format(mode)
+
+    if not os.path.exists(path):
+        os.makedirs(path)
+
+    cmd = ["/usr/bin/cmake", "-G", "Ninja", "-DCMAKE_BUILD_TYPE={}".format(mode.upper())] + to_cmake_args(parsed_args) + [os.getcwd()]
+
+    print("Invoking ``{}''".format(" ".join(cmd)))
+
+    retcode = subprocess.call(cmd, cwd=path)
+
+    if retcode:
+        print("CMake exited with non-0 return code: {}".format(retcode))
+        return
+
+
+def current_build_type():
+    if os.path.exists("build.ninja") and os.path.isdir("build"):
+        return "configure.py"
+    elif os.path.exists("build/release/CMakeCache.txt") or os.path.exists("build/debug/CMakeCache.txt"):
+        return "CMake"
+    else:
+        return None
+
 
 modes = {
     'debug': {
@@ -299,7 +368,30 @@ add_tristate(arg_parser, name = 'hwloc', dest = 'hwloc', help = 'hwloc support')
 add_tristate(arg_parser, name = 'xen', dest = 'xen', help = 'Xen support')
 arg_parser.add_argument('--enable-gcc6-concepts', dest='gcc6_concepts', action='store_true', default=False,
                         help='enable experimental support for C++ Concepts as implemented in GCC 6')
+arg_parser.add_argument('--cmake', action = 'store_true', dest = 'cmake', default = False,
+                        help = 'Use CMake to generate the build files')
 args = arg_parser.parse_args()
+
+if args.cmake:
+    if current_build_type() != "CMake":
+        if os.path.exists("build"):
+            shutil.rmtree("build")
+
+        if os.path.exists("ninja.build"):
+            os.unlink("ninja.build")
+
+    if args.mode == "all":
+        generate_mode("release", args)
+        generate_mode("debug", args)
+    else:
+        generate_mode(args.mode, args)
+
+    exit(0)
+else:
+    if current_build_type() != "configure.py":
+        if os.path.exists("build"):
+            shutil.rmtree("build")
+
 
 defines = []
 
