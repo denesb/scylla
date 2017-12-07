@@ -32,10 +32,14 @@ To build for the first time:
 
 ```bash
 $ ./configure.py
-$ ninja-build
+$ ninja-build -C build/release
 ```
 
-Afterwards, it is sufficient to just execute Ninja.
+Afterwards, it is sufficient to just execute Ninja. Note that you need to
+specify the build-dir for ninja to change into. If you whish to make a
+release build this will be `build/release` and if you whish to make a
+debug build `build/debug`. `configure.py` without the --mode parameter
+will generate both (see more on --mode below).
 
 The full suite of options for project configuration is available via
 
@@ -54,7 +58,7 @@ Source files and build targets are tracked manually in `configure.py`, so the sc
 To save time -- for instance, to avoid compiling all unit tests -- you can also specify specific targets to Ninja. For example,
 
 ```bash
-$ ninja-build build/release/tests/schema_change_test
+$ ninja-build -C build/release schema_change_test
 ```
 
 ### Unit testing
