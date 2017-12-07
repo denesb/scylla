@@ -34,13 +34,13 @@ if [ "$ID" = "ubuntu" ]; then
 
     apt -y update
 
-    apt -y install libsystemd-dev python3-pyparsing libsnappy-dev libjsoncpp-dev libyaml-cpp-dev libthrift-dev antlr3-c++-dev antlr3 thrift-compiler
+    apt -y install cmake libsystemd-dev python3-pyparsing libsnappy-dev libjsoncpp-dev libyaml-cpp-dev libthrift-dev antlr3-c++-dev antlr3 thrift-compiler
 elif [ "$ID" = "debian" ]; then
-    apt -y install libyaml-cpp-dev libjsoncpp-dev libsnappy-dev
+    apt -y install cmake libyaml-cpp-dev libjsoncpp-dev libsnappy-dev
     echo antlr3 and thrift still missing - waiting for ppa
 elif [ "$ID" = "fedora" ]; then
-    yum install -y yaml-cpp-devel thrift-devel antlr3-tool antlr3-C++-devel jsoncpp-devel snappy-devel
+    yum install -y cmake yaml-cpp-devel thrift-devel antlr3-tool antlr3-C++-devel jsoncpp-devel snappy-devel
 elif [ "$ID" = "centos" ]; then
-    yum install -y yaml-cpp-devel thrift-devel scylla-antlr35-tool scylla-antlr35-C++-devel jsoncpp-devel snappy-devel
+    yum install -y cmake3 yaml-cpp-devel thrift-devel scylla-antlr35-tool scylla-antlr35-C++-devel jsoncpp-devel snappy-devel
     echo -e "Configure example:\n\tpython3.4 ./configure.py --enable-dpdk --mode=release --static-boost --compiler=/opt/scylladb/bin/g++-7.2 --python python3.4 --ldflag=-Wl,-rpath=/opt/scylladb/lib64"
 fi
