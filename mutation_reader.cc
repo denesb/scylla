@@ -1044,9 +1044,12 @@ void shard_reader::remote_reader::adjust_partition_slice() {
         _slice_override = _ps;
     }
 
-    auto& last_ckey = _last_position_in_partition->key();
+    const auto pos = _last_position_in_partition->key().is_full(*_schema) ?
+            position_in_partition_view(_last_position_in_partition->key(), bound_weight::after_all_prefixed) :
+            position_in_partition_view(_last_position_in_partition->key(), bound_weight::before_all_prefixed);
+
     auto ranges = _slice_override->default_row_ranges();
-    query::trim_clustering_row_ranges_to(*_schema, ranges, last_ckey);
+    query::trim_clustering_row_ranges_to(*_schema, ranges, pos);
 
     _slice_override->clear_ranges();
     _slice_override->set_range(*_schema, _last_pkey->key(), std::move(ranges));
