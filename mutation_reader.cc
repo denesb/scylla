@@ -929,6 +929,7 @@ class shard_reader : public enable_lw_shared_from_this<shard_reader>, public fla
         bool _drop_partition_start = false;
         bool _drop_static_row = false;
         bool _inject_partition_end = false;
+        position_in_partition::tri_compare _tri_cmp;
 
         std::optional<dht::decorated_key> _last_pkey;
         position_in_partition _position_in_partition = position_in_partition(position_in_partition::partition_start_tag_t{});
@@ -946,7 +947,7 @@ class shard_reader : public enable_lw_shared_from_this<shard_reader>, public fla
         flat_mutation_reader recreate_reader();
         flat_mutation_reader resume_or_create_reader();
         future<> do_fill_buffer(flat_mutation_reader& reader, db::timeout_clock::time_point timeout);
-        future<const mutation_fragment*> ensure_buffer_contains_all_fragments_for_last_pos(flat_mutation_reader& reader,
+        future<const mutation_fragment*> ensure_safe_progress(flat_mutation_reader& reader,
                 circular_buffer<mutation_fragment>& buffer, db::timeout_clock::time_point timeout);
 
     public:
@@ -1206,8 +1207,10 @@ future<> shard_reader::remote_reader::do_fill_buffer(flat_mutation_reader& reade
     });
 }
 
-future<const mutation_fragment*> shard_reader::remote_reader::ensure_buffer_contains_all_fragments_for_last_pos(flat_mutation_reader& reader,
+future<const mutation_fragment*> shard_reader::remote_reader::ensure_safe_progress(flat_mutation_reader& reader,
         circular_buffer<mutation_fragment>& buffer, db::timeout_clock::time_point timeout) {
+    // Progress is only problematic when the last fragment is a range tombstone
+    // as these can have non-monotonically increasing positions.
     if (buffer.empty() || !buffer.back().is_range_tombstone()) {
         return make_ready_future<const mutation_fragment*>(nullptr);
     }
@@ -1216,11 +1219,25 @@ future<const mutation_fragment*> shard_reader::remote_reader::ensure_buffer_cont
         if (reader.is_buffer_empty()) {
             return reader.is_end_of_stream();
         }
-        const auto& next_pos = reader.peek_buffer().position();
-        if (next_pos.region() != partition_region::clustered) {
+        // If we hit a non clustering position, we are good as progress
+        // is guaranteed (non clustering positions are *always* strictly
+        // monotonically increasing compared to neighbouring positions.
+        if (buffer.back().position().region() != partition_region::clustered) {
             return true;
         }
-        return !next_pos.key().equal(*_schema, buffer.back().position().key());
+        const auto& next_pos = reader.peek_buffer().position();
+        const auto res = _tri_cmp(buffer.back().position(), _position_in_partition);
+        // To ensure progress we have to ensure three tings:
+        // * We have seen a fragment with position that is *greater* the last
+        //   seen one from the last `fill_buffer()` call.
+        // * The first unconsumed fragment in the reader has a position that is
+        //   *greater* than the last fragment in the buffer. This means that we
+        //   are guaranteed to have seen all fragment for the position of the
+        //   last fragment in the buffer and therefore it will be safe to
+        //   continue *after* that position in the next `fill_buffer()` call
+        //   (if the reader is evicted in the meanwhile).
+        return (_position_kind == position_kind::previous ? res > 0 : res >= 0) &&
+                _tri_cmp(next_pos, position_in_partition_view::after_key(buffer.back().key())) > 0;
     };
 
     return do_until(stop, [this, &reader, &buffer, timeout] {
@@ -1251,7 +1268,8 @@ shard_reader::remote_reader::remote_reader(
     , _ps(ps)
     , _pc(pc)
     , _trace_state(std::move(trace_state))
-    , _fwd_mr(fwd_mr) {
+    , _fwd_mr(fwd_mr)
+    , _tri_cmp(*_schema) {
 }
 
 future<shard_reader::fill_buffer_result> shard_reader::remote_reader::fill_buffer(const dht::partition_range& pr, bool pending_next_partition,
@@ -1270,17 +1288,17 @@ future<shard_reader::fill_buffer_result> shard_reader::remote_reader::fill_buffe
 
         return do_fill_buffer(reader, timeout).then([this, &reader, &buffer, timeout] {
             buffer = reader.detach_buffer();
-            // When the reader is recreated (after having been evicted) we
-            // recreate it such that it starts reading from *after* the last
-            // seen fragment's position. If the last seen fragment is a range
-            // tombstone it is *not* guaranteed that the next fragments in the
-            // data stream have positions strictly greater than the range
-            // tombstone's. If the reader is evicted and has to be recreated,
-            // these fragments would be then skipped as the read would continue
-            // after their position.
-            // To avoid this ensure that the buffer contains *all* fragments for
-            // the last seen position.
-            return ensure_buffer_contains_all_fragments_for_last_pos(reader, buffer, timeout);
+            // Make sure progress is made with each fill_buffer() call, that is
+            // given a sequence of calls c0, c1, ..., cn, ensure that in each
+            // case buffer0.back().position() < buffer1.back().position() < ...
+            // < buffern.back().position(). This is required to ensure the
+            // overall read makes progress in the face of reader eviction.
+            // Also make sure we have made just the right amount of progress
+            // such that evicting the reader at the current last pos is safe,
+            // and will not result in the re-emitting or omitting any clustering
+            // rows.
+            // See definition of `ensure_safe_progress()` for more details.
+            return ensure_safe_progress(reader, buffer, timeout);
         }).then([this, &reader, &buffer] (const mutation_fragment* const next_fragment) {
             const auto eos = reader.is_end_of_stream() && reader.is_buffer_empty();
             if (_inject_partition_end) {
