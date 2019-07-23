@@ -149,6 +149,10 @@ public:
         bool inclusive = bv._kind != bound_kind::excl_end && bv._kind != bound_kind::excl_start;
         return {typename R<clustering_key_prefix_view>::bound(bv._prefix.get().view(), inclusive)};
     }
+    static bool ranges_overlap(const schema& s, bound_view s1, bound_view e1, bound_view s2, bound_view e2) {
+        const auto tri_cmp = bound_view::tri_compare(s);
+        return (tri_cmp(s1, s2) <= 0 && tri_cmp(s2, e1) <= 0) || (tri_cmp(s1, e2) <= 0 && tri_cmp(e2, e1) <= 0);
+    }
     friend std::ostream& operator<<(std::ostream& out, const bound_view& b) {
         return out << "{bound: prefix=" << b._prefix.get() << ", kind=" << b._kind << "}";
     }
