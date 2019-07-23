@@ -194,6 +194,14 @@ public:
         return bound_view(*_ck, _bound_weight == bound_weight::before_all_prefixed ? bound_kind::excl_end : bound_kind::incl_end);
     }
 
+    query::clustering_range::bound as_range_start() const {
+        return query::clustering_range::bound(*_ck, _bound_weight != bound_weight::after_all_prefixed);
+    }
+
+    query::clustering_range::bound as_range_end() const {
+        return query::clustering_range::bound(*_ck, _bound_weight == bound_weight::after_all_prefixed);
+    }
+
     friend std::ostream& operator<<(std::ostream&, position_in_partition_view);
     friend bool no_clustering_row_between(const schema&, position_in_partition_view, position_in_partition_view);
 };
