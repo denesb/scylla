@@ -36,6 +36,16 @@ private:
     mutation_fragment_opt read_next() {
         return _reader(db::no_timeout).get0();
     }
+
+    static bool are_tombstones_mergeable(const schema& s, const range_tombstone& a, const range_tombstone& b) {
+        const auto a_start = a.start_bound();
+        const auto a_end = a.end_bound();
+        const auto b_start = b.start_bound();
+        const auto b_end = b.end_bound();
+        return a.tomb.compare(b.tomb) == 0 &&
+                (bound_view::ranges_overlap(s, a_start, a_end, b_start, b_end) || a_end.adjacent(s, b_start) || b_end.adjacent(s, a_start));
+    }
+
 public:
     flat_reader_assertions(flat_mutation_reader reader)
         : _reader(std::move(reader))
@@ -238,18 +248,19 @@ public:
             BOOST_FAIL(format("Expected range tombstone {}, but got {}", rt, mutation_fragment::printer(*_reader.schema(), *mfo)));
         }
         const schema& s = *_reader.schema();
-        _tombstones.apply(s, mfo->as_range_tombstone());
         range_tombstone_list actual_list(s);
+        actual_list.apply(s, mfo->as_range_tombstone());
+        _tombstones.apply(s, mfo->as_range_tombstone());
         position_in_partition::equal_compare eq(s);
         while (mutation_fragment* next = _reader.peek(db::no_timeout).get0()) {
-            if (!next->is_range_tombstone() || !eq(next->position(), mfo->position())) {
+            if (!next->is_range_tombstone() || !are_tombstones_mergeable(s, *actual_list.begin(), next->as_range_tombstone())) {
                 break;
             }
             auto rt = _reader(db::no_timeout).get0()->as_range_tombstone();
             actual_list.apply(s, rt);
+            assert(actual_list.size() == 1);
             _tombstones.apply(s, rt);
         }
-        actual_list.apply(s, mfo->as_range_tombstone());
         {
             range_tombstone_list expected_list(s);
             expected_list.apply(s, rt);
