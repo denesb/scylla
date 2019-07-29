@@ -911,6 +911,12 @@ class shard_reader : public enable_lw_shared_from_this<shard_reader>, public fla
     // Encapsulates all data and logic that is local to the remote shard the
     // reader lives on.
     class remote_reader {
+        enum class position_kind {
+            previous,
+            next,
+        };
+
+    private:
         schema_ptr _schema;
         reader_lifecycle_policy& _lifecycle_policy;
         const dht::partition_range* _pr;
@@ -922,9 +928,11 @@ class shard_reader : public enable_lw_shared_from_this<shard_reader>, public fla
         bool _reader_created = false;
         bool _drop_partition_start = false;
         bool _drop_static_row = false;
+        bool _inject_partition_end = false;
 
         std::optional<dht::decorated_key> _last_pkey;
-        std::optional<position_in_partition> _last_position_in_partition;
+        position_in_partition _position_in_partition = position_in_partition(position_in_partition::partition_start_tag_t{});
+        position_kind _position_kind = position_kind::next;
         // These are used when the reader has to be recreated (after having been
         // evicted while paused) and the range and/or slice it is recreated with
         // differs from the original ones.
@@ -932,13 +940,14 @@ class shard_reader : public enable_lw_shared_from_this<shard_reader>, public fla
         std::optional<query::partition_slice> _slice_override;
 
     private:
-        void update_last_position(const circular_buffer<mutation_fragment>& buffer);
-        void adjust_partition_slice();
+        void update_last_position(const circular_buffer<mutation_fragment>& buffer, const mutation_fragment* const next_fragment);
+        partition_region compute_next_partition_region() const;
+        const query::partition_slice* compute_partition_slice();
         flat_mutation_reader recreate_reader();
         flat_mutation_reader resume_or_create_reader();
         future<> do_fill_buffer(flat_mutation_reader& reader, db::timeout_clock::time_point timeout);
-        future<> ensure_buffer_contains_all_fragments_for_last_pos(flat_mutation_reader& reader, circular_buffer<mutation_fragment>& buffer,
-                db::timeout_clock::time_point timeout);
+        future<const mutation_fragment*> ensure_buffer_contains_all_fragments_for_last_pos(flat_mutation_reader& reader,
+                circular_buffer<mutation_fragment>& buffer, db::timeout_clock::time_point timeout);
 
     public:
         remote_reader(
@@ -1036,7 +1045,8 @@ void shard_reader::stop() noexcept {
     }).finally([zis = shared_from_this()] {}));
 }
 
-void shard_reader::remote_reader::update_last_position(const circular_buffer<mutation_fragment>& buffer) {
+void shard_reader::remote_reader::update_last_position(const circular_buffer<mutation_fragment>& buffer,
+        const mutation_fragment* const next_fragment) {
     if (buffer.empty()) {
         return;
     }
@@ -1047,20 +1057,52 @@ void shard_reader::remote_reader::update_last_position(const circular_buffer<mut
         _last_pkey = pk_it->as_partition_start().key();
     }
 
-    _last_position_in_partition.emplace(buffer.back().position());
+    if (next_fragment) {
+        _position_in_partition = position_in_partition(next_fragment->position());
+        _position_kind = position_kind::next;
+    } else {
+        _position_in_partition = position_in_partition(buffer.back().position());
+        _position_kind = position_kind::previous;
+    }
 }
 
-void shard_reader::remote_reader::adjust_partition_slice() {
+partition_region shard_reader::remote_reader::compute_next_partition_region() const {
+    if (_position_kind == position_kind::next) {
+        return _position_in_partition.region();
+    }
+
+    // _position_in_partition refers to the previous (last) position.
+    switch (_position_in_partition.region()) {
+        case partition_region::partition_start:
+            return partition_region::static_row;
+        case partition_region::static_row:
+            return partition_region::clustered;
+        case partition_region::clustered:
+            return partition_region::clustered;
+        case partition_region::partition_end:
+            return partition_region::partition_start;
+    }
+    __builtin_unreachable();
+}
+
+const query::partition_slice* shard_reader::remote_reader::compute_partition_slice() {
+    if (_position_kind == position_kind::previous && _position_in_partition.region() == partition_region::static_row) {
+        // We have not yet read any clustering fragments, the slice doesn't need
+        // any adjustment.
+        return &_ps;
+    }
     if (!_slice_override) {
         _slice_override = _ps;
     }
 
-    auto& last_ckey = _last_position_in_partition->key();
+    auto pos = _position_kind == position_kind::previous ? position_in_partition_view::after_key(_position_in_partition.key()) : _position_in_partition;
     auto ranges = _slice_override->default_row_ranges();
-    query::trim_clustering_row_ranges_to(*_schema, ranges, last_ckey);
+    query::trim_clustering_row_ranges_to(*_schema, ranges, pos);
 
     _slice_override->clear_ranges();
     _slice_override->set_range(*_schema, _last_pkey->key(), std::move(ranges));
+
+    return &*_slice_override;
 }
 
 flat_mutation_reader shard_reader::remote_reader::recreate_reader() {
@@ -1070,23 +1112,27 @@ flat_mutation_reader shard_reader::remote_reader::recreate_reader() {
     if (_last_pkey) {
         bool partition_range_is_inclusive = true;
 
-        if (_last_position_in_partition) {
-            switch (_last_position_in_partition->region()) {
+        {
+            switch (compute_next_partition_region()) {
             case partition_region::partition_start:
-                _drop_partition_start = true;
+                partition_range_is_inclusive = false;
                 break;
             case partition_region::static_row:
                 _drop_partition_start = true;
-                _drop_static_row = true;
                 break;
             case partition_region::clustered:
                 _drop_partition_start = true;
                 _drop_static_row = true;
-                adjust_partition_slice();
-                slice = &*_slice_override;
+                slice = compute_partition_slice();
                 break;
             case partition_region::partition_end:
                 partition_range_is_inclusive = false;
+                // We know the next position is a partition_end, so the current
+                // partition has no more content. To avoid re-reading, then
+                // dropping the partition header just for that marker, we start
+                // from *after* the current partition, and inject the marker
+                // ourselves into the stream.
+                _inject_partition_end = true;
                 break;
             }
         }
@@ -1160,10 +1206,10 @@ future<> shard_reader::remote_reader::do_fill_buffer(flat_mutation_reader& reade
     });
 }
 
-future<> shard_reader::remote_reader::ensure_buffer_contains_all_fragments_for_last_pos(flat_mutation_reader& reader,
+future<const mutation_fragment*> shard_reader::remote_reader::ensure_buffer_contains_all_fragments_for_last_pos(flat_mutation_reader& reader,
         circular_buffer<mutation_fragment>& buffer, db::timeout_clock::time_point timeout) {
     if (buffer.empty() || !buffer.back().is_range_tombstone()) {
-        return make_ready_future<>();
+        return make_ready_future<const mutation_fragment*>(nullptr);
     }
 
     auto stop = [this, &reader, &buffer] {
@@ -1183,6 +1229,11 @@ future<> shard_reader::remote_reader::ensure_buffer_contains_all_fragments_for_l
         }
         buffer.emplace_back(reader.pop_mutation_fragment());
         return make_ready_future<>();
+    }).then([&reader] () -> const mutation_fragment* {
+        if (!reader.is_buffer_empty()) {
+            return &reader.peek_buffer();
+        }
+        return nullptr;
     });
 }
 
@@ -1208,7 +1259,8 @@ future<shard_reader::fill_buffer_result> shard_reader::remote_reader::fill_buffe
     // We could have missed a `fast_forward_to()` if the reader wasn't created yet.
     _pr = &pr;
     if (pending_next_partition) {
-        _last_position_in_partition = position_in_partition(position_in_partition::end_of_partition_tag_t{});
+        _position_in_partition = position_in_partition(position_in_partition::partition_start_tag_t{});
+        _position_kind = position_kind::next;
     }
     return do_with(resume_or_create_reader(), circular_buffer<mutation_fragment>{},
             [this, pending_next_partition, timeout] (flat_mutation_reader& reader, circular_buffer<mutation_fragment>& buffer) mutable {
@@ -1229,9 +1281,13 @@ future<shard_reader::fill_buffer_result> shard_reader::remote_reader::fill_buffe
             // To avoid this ensure that the buffer contains *all* fragments for
             // the last seen position.
             return ensure_buffer_contains_all_fragments_for_last_pos(reader, buffer, timeout);
-        }).then([this, &reader, &buffer] {
+        }).then([this, &reader, &buffer] (const mutation_fragment* const next_fragment) {
             const auto eos = reader.is_end_of_stream() && reader.is_buffer_empty();
-            update_last_position(buffer);
+            if (_inject_partition_end) {
+                buffer.push_front(mutation_fragment(partition_end{}));
+                _inject_partition_end = false;
+            }
+            update_last_position(buffer, next_fragment);
             _irh = _lifecycle_policy.pause(std::move(reader));
             return fill_buffer_result(std::move(buffer), eos);
         });
@@ -1241,7 +1297,8 @@ future<shard_reader::fill_buffer_result> shard_reader::remote_reader::fill_buffe
 future<> shard_reader::remote_reader::fast_forward_to(const dht::partition_range& pr, db::timeout_clock::time_point timeout) {
     _pr = &pr;
     _last_pkey.reset();
-    _last_position_in_partition.reset();
+    _position_in_partition = position_in_partition(position_in_partition::partition_start_tag_t{});
+    _position_kind = position_kind::next;
 
     if (!_reader_created || !_irh) {
         return make_ready_future<>();
