@@ -252,8 +252,8 @@ def find_headers(repodir, excluded_dirs):
 
 modes = {
     'debug': {
-        'cxxflags': '-DDEBUG -DSANITIZE -DDEBUG_LSA_SANITIZER -DSCYLLA_ENABLE_ERROR_INJECTION',
-        'cxx_ld_flags': '',
+        'cxxflags': '-DDEBUG -DSANITIZE -DDEBUG_LSA_SANITIZER -DSCYLLA_ENABLE_ERROR_INJECTION --coverage',
+        'cxx_ld_flags': ' -lgcov',
         'stack-usage-threshold': 1024*40,
     },
     'release': {
