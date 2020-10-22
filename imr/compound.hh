@@ -475,6 +475,12 @@ struct structure_serializer<Continuation, variant_member<Tag, Types...>, Members
 // Represents a compound type.
 template<typename... Members>
 struct structure {
+    template <typename Continuation>
+    using sizer = internal::structure_sizer<Continuation, Members...>;
+
+    template <typename Continuation>
+    using serializer = internal::structure_serializer<Continuation, Members...>;
+
     template<::mutable_view is_mutable>
     class basic_view {
         using pointer_type = std::conditional_t<is_mutable == ::mutable_view::no,
@@ -537,13 +543,13 @@ public:
     }
 
     template<typename Continuation = no_op_continuation>
-    static internal::structure_sizer<Continuation, Members...> get_sizer(Continuation cont = no_op_continuation()) {
-        return internal::structure_sizer<Continuation, Members...>(0, std::move(cont));
+    static sizer<Continuation> get_sizer(Continuation cont = no_op_continuation()) {
+        return sizer<Continuation>(0, std::move(cont));
     }
 
     template<typename Continuation = no_op_continuation>
-    static internal::structure_serializer<Continuation, Members...> get_serializer(uint8_t* out, Continuation cont = no_op_continuation()) {
-        return internal::structure_serializer<Continuation, Members...>(out, std::move(cont));
+    static serializer<Continuation> get_serializer(uint8_t* out, Continuation cont = no_op_continuation()) {
+        return serializer<Continuation>(out, std::move(cont));
     }
 
     template<typename Writer, typename... Args>
