@@ -426,14 +426,11 @@ public:
         return make_collection(single_fragment_range(data));
     }
 
-    /// Make a writer for a dead cell
-    ///
-    /// This function returns a generic lambda that is a writer for a dead
-    /// cell with the specified timestamp and deletion time.
-    ///
-    /// \returns imr::WriterAllocator for cell::structure.
-    static auto make_dead(api::timestamp_type ts, gc_clock::time_point deletion_time) noexcept {
-        return [ts, deletion_time] (auto&& serializer, auto&&...) noexcept {
+    struct dead_cell_writer {
+        api::timestamp_type ts;
+        gc_clock::time_point deletion_time;
+
+        auto operator()(auto&& serializer, auto&&...) noexcept {
             return serializer
                 .serialize()
                 .template serialize_as_nested<tags::atomic_cell>()
@@ -442,7 +439,17 @@ public:
                     .template serialize_as<tags::dead>(deletion_time.time_since_epoch().count())
                     .done()
                 .done();
-        };
+        }
+    };
+
+    /// Make a writer for a dead cell
+    ///
+    /// This function returns a generic lambda that is a writer for a dead
+    /// cell with the specified timestamp and deletion time.
+    ///
+    /// \returns imr::WriterAllocator for cell::structure.
+    static structure::writer<dead_cell_writer> make_dead(api::timestamp_type ts, gc_clock::time_point deletion_time) noexcept {
+        return structure::writer<dead_cell_writer>{dead_cell_writer{ts, deletion_time}};
     }
     static auto make_live_counter_update(api::timestamp_type ts, int64_t delta) noexcept {
         return [ts, delta] (auto&& serializer, auto&&...) noexcept {
