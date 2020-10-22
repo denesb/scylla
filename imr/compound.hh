@@ -280,7 +280,11 @@ using variant_member = member<Tag, variant<Tag, Types...>>;
 namespace internal {
 
 template<typename Continuation, typename... Members>
-class structure_sizer : Continuation {
+class structure_sizer;
+
+// Special case: no members
+template<typename Continuation>
+class structure_sizer<Continuation> : Continuation {
     size_t _size;
 public:
     explicit structure_sizer(size_t size, Continuation&& cont) noexcept
@@ -378,7 +382,11 @@ struct structure_sizer<Continuation, variant_member<Tag, Types...>, Members...>
 };
 
 template<typename Continuation, typename... Members>
-class structure_serializer : Continuation {
+class structure_serializer;
+
+// Special case: no members
+template<typename Continuation>
+class structure_serializer<Continuation> : Continuation {
     uint8_t* _out;
 public:
     explicit structure_serializer(uint8_t* out, Continuation&& cont) noexcept
