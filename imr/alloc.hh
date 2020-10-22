@@ -116,6 +116,9 @@ struct default_lsa_migrate_fn {
 template<typename Structure>
 lsa_migrate_fn<Structure, no_context_factory_t> default_lsa_migrate_fn<Structure>::migrate_fn(no_context_factory);
 
+class object_allocator_sizer;
+class object_allocator_serializer;
+
 /// IMR object allocator
 ///
 /// This is a helper class that helps creating IMR objects that may own memory.
@@ -177,114 +180,11 @@ private:
         return static_cast<uint8_t*>(_allocations[_position++].pointer());
     }
 public:
-    class sizer {
-        object_allocator& _parent;
-    public:
-        class continuation {
-            object_allocator& _parent;
-            size_t _idx;
-        public:
-            continuation(object_allocator& parent, size_t idx) noexcept
-                : _parent(parent), _idx(idx) { }
-            uint8_t* run(size_t size) noexcept {
-                _parent.set_request_size(_idx, size);
-                return nullptr;
-            }
-        };
-    public:
-        explicit sizer(object_allocator& parent) noexcept
-            : _parent(parent) { }
+    friend class object_allocator_sizer;
+    friend class object_allocator_serializer;
 
-        /// Request allocation of an IMR object
-        ///
-        /// This method request an allocation of an IMR object of type T. The
-        /// arguments are passed to `T::size_when_serialized`.
-        ///
-        /// \return null pointer of type `uint8_t*`.
-        template<typename T, typename MigrateFn, typename... Args>
-        uint8_t* allocate(MigrateFn* migrate_fn, Args&&... args) noexcept {
-            static_assert(std::is_same_v<typename MigrateFn::structure, T>);
-            return do_allocate<T>(migrate_fn, std::forward<Args>(args)...);
-        }
-
-        template<typename T, typename MigrateFn, typename... Args>
-        auto allocate_nested(MigrateFn* migrate_fn, Args&&... args) noexcept {
-            static_assert(std::is_same_v<typename MigrateFn::structure, T>);
-            return do_allocate_nested<T>(migrate_fn, std::forward<Args>(args)...);
-        }
-
-    private:
-        template<typename T, typename... Args>
-        uint8_t* do_allocate(migrate_fn_type* migrate_fn, Args&&... args) noexcept {
-            auto size = T::size_when_serialized(std::forward<Args>(args)...);
-            _parent.request(size, migrate_fn);
-
-            // We are in the sizing phase and only collect information about
-            // the size of the required objects. The serializer will return
-            // the real pointer to the memory buffer requested here, but since
-            // both sizer and serializer need to expose the same interface we
-            // need to return something from sizer as well even though the
-            // value will be ignored.
-            return nullptr;
-        }
-
-        template<typename T, typename... Args>
-        auto do_allocate_nested(migrate_fn_type* migrate_fn, Args&& ... args) noexcept {
-            auto n = _parent.request(0, migrate_fn);
-            return T::get_sizer(continuation(_parent, n),
-                                std::forward<Args>(args)...);
-        }
-    };
-
-    class serializer {
-        object_allocator& _parent;
-    public:
-        class continuation {
-            uint8_t* _ptr;
-        public:
-            explicit continuation(uint8_t* ptr) noexcept : _ptr(ptr) { }
-            uint8_t* run(uint8_t*) noexcept {
-                return _ptr;
-            }
-        };
-    public:
-        explicit serializer(object_allocator& parent) noexcept
-            : _parent(parent) { }
-
-        /// Writes an IMR object to the preallocated buffer
-        ///
-        /// In the second serialisation phase this method writes an IMR object
-        /// to the buffer requested in the sizing phase. Arguments are passed
-        /// to `T::serialize`.
-        /// \return pointer to the IMR object
-        template<typename T, typename MigrateFn, typename... Args>
-        uint8_t* allocate(MigrateFn* migrate_fn, Args&&... args) noexcept {
-            static_assert(std::is_same_v<typename MigrateFn::structure, T>);
-            return do_allocate<T>(migrate_fn, std::forward<Args>(args)...);
-        }
-
-        template<typename T, typename MigrateFn, typename... Args>
-        auto allocate_nested(MigrateFn* migrate_fn, Args&&... args) noexcept {
-            static_assert(std::is_same_v<typename MigrateFn::structure, T>);
-            return do_allocate_nested<T>(migrate_fn, std::forward<Args>(args)...);
-        }
-
-    private:
-        template<typename T, typename... Args>
-        uint8_t* do_allocate(migrate_fn_type* migrate_fn, Args&&... args) noexcept {
-            auto ptr = _parent.next_object();
-            T::serialize(ptr, std::forward<Args>(args)...);
-            return ptr;
-        }
-
-        template<typename T, typename... Args>
-        auto do_allocate_nested(migrate_fn_type*, Args&& ... args) noexcept {
-            auto ptr = _parent.next_object();
-            return T::get_serializer(ptr,
-                                     continuation(ptr),
-                                     std::forward<Args>(args)...);
-        }
-    };
+    using sizer = object_allocator_sizer;
+    using serializer = object_allocator_serializer;
 
 public:
     explicit object_allocator(allocation_strategy& allocator = current_allocator())
@@ -313,9 +213,127 @@ public:
         }
     }
 
-    sizer get_sizer() noexcept { return sizer(*this); }
-    serializer get_serializer() noexcept { return serializer(*this); }
+    sizer get_sizer() noexcept;
+    serializer get_serializer() noexcept;
 };
+
+class object_allocator_sizer {
+    object_allocator& _parent;
+public:
+    class continuation {
+        object_allocator& _parent;
+        size_t _idx;
+    public:
+        continuation(object_allocator& parent, size_t idx) noexcept
+            : _parent(parent), _idx(idx) { }
+        uint8_t* run(size_t size) noexcept {
+            _parent.set_request_size(_idx, size);
+            return nullptr;
+        }
+    };
+public:
+    explicit object_allocator_sizer(object_allocator& parent) noexcept
+        : _parent(parent) { }
+
+    /// Request allocation of an IMR object
+    ///
+    /// This method request an allocation of an IMR object of type T. The
+    /// arguments are passed to `T::size_when_serialized`.
+    ///
+    /// \return null pointer of type `uint8_t*`.
+    template<typename T, typename MigrateFn, typename... Args>
+    uint8_t* allocate(MigrateFn* migrate_fn, Args&&... args) noexcept {
+        static_assert(std::is_same_v<typename MigrateFn::structure, T>);
+        return do_allocate<T>(migrate_fn, std::forward<Args>(args)...);
+    }
+
+    template<typename T, typename MigrateFn, typename... Args>
+    auto allocate_nested(MigrateFn* migrate_fn, Args&&... args) noexcept {
+        static_assert(std::is_same_v<typename MigrateFn::structure, T>);
+        return do_allocate_nested<T>(migrate_fn, std::forward<Args>(args)...);
+    }
+
+private:
+    template<typename T, typename... Args>
+    uint8_t* do_allocate(migrate_fn_type* migrate_fn, Args&&... args) noexcept {
+        auto size = T::size_when_serialized(std::forward<Args>(args)...);
+        _parent.request(size, migrate_fn);
+
+        // We are in the sizing phase and only collect information about
+        // the size of the required objects. The serializer will return
+        // the real pointer to the memory buffer requested here, but since
+        // both sizer and serializer need to expose the same interface we
+        // need to return something from sizer as well even though the
+        // value will be ignored.
+        return nullptr;
+    }
+
+    template<typename T, typename... Args>
+    auto do_allocate_nested(migrate_fn_type* migrate_fn, Args&& ... args) noexcept {
+        auto n = _parent.request(0, migrate_fn);
+        return T::get_sizer(continuation(_parent, n),
+                            std::forward<Args>(args)...);
+    }
+};
+
+class object_allocator_serializer {
+    object_allocator& _parent;
+public:
+    class continuation {
+        uint8_t* _ptr;
+    public:
+        explicit continuation(uint8_t* ptr) noexcept : _ptr(ptr) { }
+        uint8_t* run(uint8_t*) noexcept {
+            return _ptr;
+        }
+    };
+public:
+    explicit object_allocator_serializer(object_allocator& parent) noexcept
+        : _parent(parent) { }
+
+    /// Writes an IMR object to the preallocated buffer
+    ///
+    /// In the second serialisation phase this method writes an IMR object
+    /// to the buffer requested in the sizing phase. Arguments are passed
+    /// to `T::serialize`.
+    /// \return pointer to the IMR object
+    template<typename T, typename MigrateFn, typename... Args>
+    uint8_t* allocate(MigrateFn* migrate_fn, Args&&... args) noexcept {
+        static_assert(std::is_same_v<typename MigrateFn::structure, T>);
+        return do_allocate<T>(migrate_fn, std::forward<Args>(args)...);
+    }
+
+    template<typename T, typename MigrateFn, typename... Args>
+    auto allocate_nested(MigrateFn* migrate_fn, Args&&... args) noexcept {
+        static_assert(std::is_same_v<typename MigrateFn::structure, T>);
+        return do_allocate_nested<T>(migrate_fn, std::forward<Args>(args)...);
+    }
+
+private:
+    template<typename T, typename... Args>
+    uint8_t* do_allocate(migrate_fn_type* migrate_fn, Args&&... args) noexcept {
+        auto ptr = _parent.next_object();
+        T::serialize(ptr, std::forward<Args>(args)...);
+        return ptr;
+    }
+
+    template<typename T, typename... Args>
+    auto do_allocate_nested(migrate_fn_type*, Args&& ... args) noexcept {
+        auto ptr = _parent.next_object();
+        return T::get_serializer(ptr,
+                                 continuation(ptr),
+                                 std::forward<Args>(args)...);
+    }
+};
+
+
+inline object_allocator_sizer object_allocator::get_sizer() noexcept {
+    return sizer(*this);
+}
+
+inline object_allocator_serializer object_allocator::get_serializer() noexcept {
+    return serializer(*this);
+}
 
 }
 }
