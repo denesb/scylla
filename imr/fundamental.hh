@@ -222,6 +222,11 @@ public:
     }
 };
 
+template<typename Context, typename Tag>
+concept HasSizeof = requires(const Context& ctx) {
+    { ctx.template size_of<Tag>() } noexcept -> std::same_as<size_t>;
+};
+
 /// Buffer
 ///
 /// Represents an opaque buffer. The size of the buffer is not stored and must
@@ -236,30 +241,24 @@ struct buffer {
     using basic_view = std::conditional_t<is_mutable == ::mutable_view::no, view, mutable_view>;
 
     template<typename Context>
-    requires requires(const Context& ctx) {
-        { ctx.template size_of<Tag>() } noexcept -> std::same_as<size_t>;
-    }
+    requires HasSizeof<Context, Tag>
     static view make_view(const uint8_t* in, const Context& context) noexcept {
         auto ptr = reinterpret_cast<bytes_view::const_pointer>(in);
-        return bytes_view(ptr, context.template size_of<Tag>());
+        return bytes_view(ptr, context.size_of(Tag{}));
     }
 
     template<typename Context>
-    requires requires(const Context& ctx) {
-        { ctx.template size_of<Tag>() } noexcept -> std::same_as<size_t>;
-    }
+    requires HasSizeof<Context, Tag>
     static mutable_view make_view(uint8_t* in, const Context& context) noexcept {
         auto ptr = reinterpret_cast<bytes_mutable_view::pointer>(in);
-        return bytes_mutable_view(ptr, context.template size_of<Tag>());
+        return bytes_mutable_view(ptr, context.size_of(Tag{}));
     }
 
 public:
     template<typename Context>
-    requires requires(const Context& ctx) {
-        { ctx.template size_of<Tag>() } noexcept -> std::same_as<size_t>;
-    }
+    requires HasSizeof<Context, Tag>
     static size_t serialized_object_size(const uint8_t*, const Context& context) noexcept {
-        return context.template size_of<Tag>();
+        return context.size_of(Tag{});
     }
 
     static size_t size_when_serialized(bytes_view src) noexcept {
