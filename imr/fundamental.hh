@@ -223,8 +223,8 @@ public:
 };
 
 template<typename Context, typename Tag>
-concept HasSizeof = requires(const Context& ctx) {
-    { ctx.template size_of<Tag>() } noexcept -> std::same_as<size_t>;
+concept HasSizeof = requires(const Context& ctx, Tag t) {
+    { ctx.size_of(t) } noexcept -> std::same_as<size_t>;
 };
 
 /// Buffer

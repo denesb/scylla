@@ -42,10 +42,10 @@
 
 static constexpr auto random_test_iteration_count = 20;
 
-class A;
-class B;
-class C;
-class D;
+class A {};
+class B {};
+class C {};
+class D {};
 
 BOOST_AUTO_TEST_SUITE(fundamental);
 
@@ -152,11 +152,11 @@ public:
     explicit test_buffer_context(size_t sz) : _size(sz) { }
 
     template<typename Tag>
-    size_t size_of() const noexcept;
+    size_t size_of(Tag) const noexcept;
 };
 
 template<>
-size_t test_buffer_context::size_of<A>() const noexcept {
+size_t test_buffer_context::size_of<A>(A) const noexcept {
     return _size;
 }
 
@@ -248,7 +248,7 @@ struct test_variant_context {
     unsigned _alternative_idx;
 public:
     template<typename Tag>
-    size_t size_of() const noexcept;
+    size_t size_of(Tag) const noexcept;
 
     template<typename Tag>
     auto active_alternative_of() const noexcept;
@@ -258,7 +258,7 @@ public:
 };
 
 template<>
-size_t test_variant_context::size_of<C>() const noexcept {
+size_t test_variant_context::size_of<C>(C) const noexcept {
     return data_size;
 }
 
@@ -398,7 +398,7 @@ public:
     bool is_present() const noexcept;
 
     template<typename Tag>
-    size_t size_of() const noexcept;
+    size_t size_of(Tag) const noexcept;
 
     template<typename Tag, typename... Args>
     decltype(auto) context_for(Args&&...) const noexcept { return *this; }
@@ -410,7 +410,7 @@ bool test_structure_context::is_present<B>() const noexcept {
 }
 
 template<>
-size_t test_structure_context::size_of<C>() const noexcept {
+size_t test_structure_context::size_of<C>(C) const noexcept {
     return _c_size_of;
 }
 
@@ -746,7 +746,7 @@ struct structue_context {
     }
     
     template<typename Tag>
-    size_t size_of() const noexcept {
+    size_t size_of(Tag) const noexcept {
         return _size;
     }
 
@@ -764,7 +764,7 @@ struct nested_structue_context {
     }
     
     template<typename Tag>
-    size_t size_of() const noexcept {
+    size_t size_of(Tag) const noexcept {
         return _size;
     }
 

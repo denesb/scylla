@@ -53,35 +53,33 @@ struct cell {
 
 
     struct tags {
-        class cell;
-        class atomic_cell;
-        class collection;
+        class cell {};
+        class atomic_cell {};
+        class collection {};
 
-        class flags;
-        class live;
-        class expiring;
-        class counter_update;
-        class external_data;
+        class flags {};
+        class live {};
+        class expiring {};
+        class counter_update {};
+        class external_data {};
 
-        class ttl;
-        class expiry;
-        class empty;
-        class timestamp;
-        class value;
-        class dead;
-        class counter_update;
-        class fixed_value;
-        class variable_value;
-        class value_size;
-        class value_data;
-        class pointer;
-        class data;
-        class external_data;
+        class ttl {};
+        class expiry {};
+        class empty {};
+        class timestamp {};
+        class value {};
+        class dead {};
+        class fixed_value {};
+        class variable_value {};
+        class value_size {};
+        class value_data {};
+        class pointer {};
+        class data {};
 
-        class chunk_back_pointer;
-        class chunk_next;
-        class chunk_data;
-        class last_chunk_size;
+        class chunk_back_pointer {};
+        class chunk_next {};
+        class chunk_data {};
+        class last_chunk_size {};
     };
 
     using flags = imr::flags<
@@ -261,7 +259,7 @@ struct cell {
                 }
             }
             template<typename Tag>
-            size_t size_of() const noexcept {
+            size_t size_of(Tag) const noexcept {
                 return _value_size;
             }
             template<typename Tag, typename... Args>
@@ -354,7 +352,7 @@ struct cell {
         explicit constexpr chunk_context(const uint8_t*) noexcept { }
 
         template<typename Tag>
-        static constexpr size_t size_of() noexcept {
+        static constexpr size_t size_of(Tag) noexcept {
             return cell::effective_external_chunk_length;
         }
         template<typename Tag, typename... Args>
@@ -372,7 +370,7 @@ struct cell {
         { }
 
         template<typename Tag>
-        size_t size_of() const noexcept {
+        size_t size_of(Tag) const noexcept {
             return _size;
         }
 
@@ -584,7 +582,7 @@ public:
     auto active_alternative_of() const noexcept;
 
     template<typename Tag>
-    size_t size_of() const noexcept;
+    size_t size_of(Tag) const noexcept;
 
     template<typename Tag>
     auto context_for(const uint8_t*) const noexcept {
@@ -631,7 +629,7 @@ public:
     }
 
     template<typename Tag>
-    size_t size_of() const noexcept;
+    size_t size_of(Tag) const noexcept;
 
     template<typename Tag>
     auto context_for(const uint8_t*) const noexcept {
@@ -669,7 +667,7 @@ inline auto cell::context::active_alternative_of<cell::tags::value>() const noex
 }
 
 template<>
-inline size_t cell::context::size_of<cell::tags::fixed_value>() const noexcept {
+inline size_t cell::context::size_of<cell::tags::fixed_value>(cell::tags::fixed_value) const noexcept {
     return _flags.get<tags::empty>() ? 0 : _type.value_size();
 }
 
