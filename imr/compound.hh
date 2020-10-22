@@ -31,6 +31,11 @@
 
 namespace imr {
 
+namespace alloc {
+class object_allocator_sizer;
+class object_allocator_serializer;
+};
+
 /// Optionally present object
 ///
 /// Represents a value that may be not present. Information whether or not
@@ -480,6 +485,21 @@ struct structure {
 
     template <typename Continuation>
     using serializer = internal::structure_serializer<Continuation, Members...>;
+
+    template <typename ActualWriter>
+    struct writer {
+        ActualWriter _writer;
+
+        template <typename Continuation>
+        auto operator()(sizer<Continuation> serializer, alloc::object_allocator_sizer& allocs) {
+            return _writer(serializer, allocs);
+        }
+
+        template <typename Continuation>
+        auto operator()(serializer<Continuation> serializer, alloc::object_allocator_serializer& allocs) {
+            return _writer(serializer, allocs);
+        }
+    };
 
     template<::mutable_view is_mutable>
     class basic_view {
