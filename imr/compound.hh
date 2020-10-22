@@ -28,6 +28,7 @@
 #include "utils/meta.hh"
 
 #include "imr/core.hh"
+#include "imr/alloc.hh"
 
 namespace imr {
 
@@ -488,6 +489,37 @@ struct structure {
 
     template <typename Continuation>
     using serializer = internal::structure_serializer<Continuation, Members...>;
+
+    /// Wrapper for a writer for structure
+    ///
+    /// The wrapped writer is expected to contain the to-be-written
+    /// value and serialize it using the passed-in serializers according
+    /// to the application logic
+    /// The write happens in 2 phases:
+    /// * The writer is first called with a sizer and a sizing allocator to
+    ///   determine the total size as well as all the needed allocations.
+    /// * The writer is then called with a serializer and a serializing
+    ///   allocator with all the required allocations pre-allocated.
+    template <typename WriterFunctor>
+    class writer {
+        WriterFunctor _writer;
+
+    public:
+        writer(WriterFunctor&& writer) : _writer(std::forward<WriterFunctor>(writer)) { }
+
+        template <typename... Arg>
+        writer(Arg&&... arg) : _writer(std::forward<Arg>(arg)...) { }
+
+        template <typename Continuation>
+        auto operator()(sizer<Continuation> s, alloc::object_allocator::sizer allocs) {
+            return _writer(std::move(s), std::move(allocs));
+        }
+
+        template <typename Continuation>
+        auto operator()(serializer<Continuation> s, alloc::object_allocator::serializer allocs) {
+            return _writer(std::move(s), std::move(allocs));
+        }
+    };
 
     template<::mutable_view is_mutable>
     class basic_view {
