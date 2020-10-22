@@ -536,29 +536,23 @@ public:
     /// atomic or a collection.
     ///
     /// \arg ptr needs to remain valid as long as the writer is in use.
-    /// \returns imr::WriterAllocator for cell::structure.
-    static auto copy_fn(const type_info& ti, const uint8_t* ptr);
+    /// \returns an instance of cell::structure::writer.
+    static structure::writer<collection_writer<copy_writer>> copy_fn(const type_info& ti, const uint8_t* ptr);
 
     /// Make a writer for a collection
     ///
     /// \arg data needs to remain valid as long as the writer is in use.
-    /// \returns imr::WriterAllocator for cell::structure.
+    /// \returns an instance of cell::structure::writer.
     template<typename FragmentRange, typename = std::enable_if_t<is_fragment_range_v<std::decay_t<FragmentRange>>>>
     requires std::is_nothrow_move_constructible_v<std::decay_t<FragmentRange>> &&
             std::is_nothrow_copy_constructible_v<std::decay_t<FragmentRange>> &&
             std::is_nothrow_copy_assignable_v<std::decay_t<FragmentRange>> &&
             std::is_nothrow_move_assignable_v<std::decay_t<FragmentRange>>
-    static auto make_collection(FragmentRange data) noexcept {
-        return [data = std::move(data)] (auto&& serializer, auto&& allocations) noexcept {
-            return serializer
-                .serialize(imr::set_flag<tags::collection>(),
-                           imr::set_flag<tags::external_data>(data.size_bytes() > maximum_internal_storage_length))
-                .template serialize_as<tags::collection>(variable_value::write(data), allocations)
-                .done();
-        };
+    static structure::writer<collection_writer<FragmentRange>> make_collection(FragmentRange data) noexcept {
+        return structure::writer<collection_writer<FragmentRange>>(data);
     }
 
-    static auto make_collection(bytes_view data) noexcept {
+    static structure::writer<collection_writer<single_fragment_range<mutable_view::no>>> make_collection(bytes_view data) noexcept {
         return make_collection(single_fragment_range(data));
     }
 
@@ -567,31 +561,12 @@ public:
     /// This function returns a generic lambda that is a writer for a dead
     /// cell with the specified timestamp and deletion time.
     ///
-    /// \returns imr::WriterAllocator for cell::structure.
-    static auto make_dead(api::timestamp_type ts, gc_clock::time_point deletion_time) noexcept {
-        return [ts, deletion_time] (auto&& serializer, auto&&...) noexcept {
-            return serializer
-                .serialize()
-                .template serialize_as_nested<tags::atomic_cell>()
-                    .serialize(ts)
-                    .skip()
-                    .template serialize_as<tags::dead>(deletion_time.time_since_epoch().count())
-                    .done()
-                .done();
-        };
+    /// \returns an instance of cell::structure::writer.
+    static structure::writer<dead_writer> make_dead(api::timestamp_type ts, gc_clock::time_point deletion_time) noexcept {
+        return structure::writer<dead_writer>(ts, deletion_time);
     }
-    static auto make_live_counter_update(api::timestamp_type ts, int64_t delta) noexcept {
-        return [ts, delta] (auto&& serializer, auto&&...) noexcept {
-            return serializer
-                .serialize(imr::set_flag<tags::live>(),
-                           imr::set_flag<tags::counter_update>())
-                .template serialize_as_nested<tags::atomic_cell>()
-                    .serialize(ts)
-                    .skip()
-                    .template serialize_as<tags::counter_update>(delta)
-                    .done()
-                .done();
-        };
+    static structure::writer<live_counter_update_writer> make_live_counter_update(api::timestamp_type ts, int64_t delta) noexcept {
+        return structure::writer<live_counter_update_writer>(ts, delta);
     }
 
     /// Make a writer for a live non-expiring cell
@@ -601,59 +576,25 @@ public:
     /// size. This is a temporary (hopefully, sorry if you are reading this in
     /// 2020) hack to make integration with collections easier.
     ///
-    /// \returns imr::WriterAllocator for cell::structure.
+    /// \returns an instance of cell::structure::writer.
     template<typename FragmentRange, typename = std::enable_if_t<is_fragment_range_v<std::decay_t<FragmentRange>>>>
-    static auto make_live(const type_info& ti, api::timestamp_type ts, FragmentRange&& value, bool force_internal = false) noexcept {
-        return [&ti, ts, value, force_internal] (auto&& serializer, auto&& allocations) noexcept {
-            auto after_expiring = serializer
-                .serialize(imr::set_flag<tags::live>(),
-                           imr::set_flag<tags::empty>(value.empty()),
-                           imr::set_flag<tags::external_data>(!force_internal && !ti.is_fixed_size() && value.size_bytes() > maximum_internal_storage_length))
-                .template serialize_as_nested<tags::atomic_cell>()
-                    .serialize(ts)
-                    .skip();
-            return [&] {
-                if (ti.is_fixed_size()) {
-                    return after_expiring.template serialize_as<tags::fixed_value>(value);
-                } else {
-                    return after_expiring
-                        .template serialize_as<tags::variable_value>(variable_value::write(value, force_internal), allocations);
-                }
-            }().done().done();
-        };
+    static structure::writer<live_writer<FragmentRange>> make_live(const type_info& ti, api::timestamp_type ts, FragmentRange&& value, bool force_internal = false) noexcept {
+        return structure::writer<live_writer<FragmentRange>>(ti, ts, value, force_internal);
     }
 
-    static auto make_live(const type_info& ti, api::timestamp_type ts, bytes_view value, bool force_internal = false) noexcept {
+    static structure::writer<live_writer<single_fragment_range<mutable_view::no>>>
+    make_live(const type_info& ti, api::timestamp_type ts, bytes_view value, bool force_internal = false) noexcept {
         return make_live(ti, ts, single_fragment_range(value), force_internal);
     }
 
     template<typename FragmentRange, typename = std::enable_if_t<is_fragment_range_v<std::decay_t<FragmentRange>>>>
-    static auto make_live(const type_info& ti, api::timestamp_type ts, FragmentRange&& value, gc_clock::time_point expiry, gc_clock::duration ttl, bool force_internal = false) noexcept
-    {
-        return [&ti, ts, value, expiry, ttl, force_internal] (auto&& serializer, auto&& allocations) noexcept {
-            auto after_expiring = serializer
-                .serialize(imr::set_flag<tags::live>(),
-                           imr::set_flag<tags::expiring>(),
-                           imr::set_flag<tags::empty>(value.empty()),
-                           imr::set_flag<tags::external_data>(!force_internal && !ti.is_fixed_size() && value.size_bytes() > maximum_internal_storage_length))
-                .template serialize_as_nested<tags::atomic_cell>()
-                    .serialize(ts)
-                    .serialize_nested()
-                        .serialize(gc_clock::as_int32(ttl))
-                        .serialize(expiry.time_since_epoch().count())
-                        .done();
-            return [&] {
-                if (ti.is_fixed_size()) {
-                    return after_expiring.template serialize_as<tags::fixed_value>(value);
-                } else {
-                    return after_expiring
-                        .template serialize_as<tags::variable_value>(variable_value::write(value, force_internal), allocations);
-                }
-            }().done().done();
-        };
+    static structure::writer<live_expiring_writer<FragmentRange>>
+    make_live(const type_info& ti, api::timestamp_type ts, FragmentRange&& value, gc_clock::time_point expiry, gc_clock::duration ttl, bool force_internal = false) noexcept {
+        return structure::writer<live_expiring_writer<FragmentRange>>(ti, ts, value, expiry, ttl, force_internal);
     }
 
-    static auto make_live(const type_info& ti, api::timestamp_type ts, bytes_view value, gc_clock::time_point expiry, gc_clock::duration ttl, bool force_internal = false) noexcept {
+    static structure::writer<live_expiring_writer<single_fragment_range<mutable_view::no>>>
+    make_live(const type_info& ti, api::timestamp_type ts, bytes_view value, gc_clock::time_point expiry, gc_clock::duration ttl, bool force_internal = false) noexcept {
         return make_live(ti, ts, single_fragment_range(value), expiry, ttl, force_internal);
     }
 
@@ -664,25 +605,9 @@ public:
     /// used if the value is a result of some IMR-independent serialisation
     /// (e.g. counters).
     ///
-    /// \returns imr::WriterAllocator for cell::structure.
-    static auto make_live_uninitialized(const type_info& ti, api::timestamp_type ts, size_t size) noexcept {
-        return [&ti, ts, size] (auto&& serializer, auto&& allocations) noexcept {
-            auto after_expiring = serializer
-                .serialize(imr::set_flag<tags::live>(),
-                           imr::set_flag<tags::empty>(!size),
-                           imr::set_flag<tags::external_data>(!ti.is_fixed_size() && size > maximum_internal_storage_length))
-                .template serialize_as_nested<tags::atomic_cell>()
-                    .serialize(ts)
-                    .skip();
-            return [&] {
-                if (ti.is_fixed_size()) {
-                    return after_expiring.template serialize_as<tags::fixed_value>(size, [] (uint8_t*) noexcept { });
-                } else {
-                    return after_expiring
-                        .template serialize_as<tags::variable_value>(variable_value::write(size, false), allocations);
-                }
-            }().done().done();
-        };
+    /// \returns an instance of cell::structure::writer.
+    static structure::writer<live_uninitialized_writer> make_live_uninitialized(const type_info& ti, api::timestamp_type ts, size_t size) noexcept {
+        return structure::writer<live_uninitialized_writer>(ti, ts, size);
     }
 
     template<typename Builder>
@@ -939,32 +864,6 @@ inline auto cell::copy_writer::operator()(auto&& serializer, auto&& allocations)
             return make_dead(acv.timestamp(), acv.deletion_time())(serializer, allocations);
         }
     }
-}
-
-inline auto cell::copy_fn(const type_info& ti, const uint8_t* ptr)
-{
-    // Slow path
-    return [&ti, ptr] (auto&& serializer, auto&& allocations) noexcept {
-        auto f = structure::get_member<tags::flags>(ptr);
-        context ctx(ptr, ti);
-        if (f.get<tags::collection>()) {
-            auto view = structure::get_member<tags::cell>(ptr).as<tags::collection>(ctx);
-            auto dv = variable_value::make_view(view, f.get<tags::external_data>());
-            return make_collection(dv)(serializer, allocations);
-        } else {
-            auto acv = atomic_cell_view(ti, structure::make_view(ptr, ti));
-            if (acv.is_live()) {
-                if (acv.is_counter_update()) {
-                    return make_live_counter_update(acv.timestamp(), acv.counter_update_value())(serializer, allocations);
-                } else if (acv.is_expiring()) {
-                    return make_live(ti, acv.timestamp(), acv.value(), acv.expiry(), acv.ttl())(serializer, allocations);
-                }
-                return make_live(ti, acv.timestamp(), acv.value())(serializer, allocations);
-            } else {
-                return make_dead(acv.timestamp(), acv.deletion_time())(serializer, allocations);
-            }
-        }
-    };
 }
 
 inline cell::atomic_cell_view cell::make_atomic_cell_view(const type_info& ti, const uint8_t* ptr) noexcept {
