@@ -133,7 +133,7 @@ struct cell {
             return !std::is_same_v<FragmentRange, empty_fragment_range>;
         }
 
-        auto write_all_to_destination() {
+        std::invocable<uint8_t*> auto write_all_to_destination() {
             if constexpr (initialize_value()) {
                 return [this] (uint8_t* out) noexcept {
                     auto dst = reinterpret_cast<bytes_mutable_view::pointer>(out);
@@ -147,7 +147,7 @@ struct cell {
             }
         }
 
-        auto write_to_destination(size_t n) {
+        std::invocable<uint8_t*> auto write_to_destination(size_t n) {
             if constexpr (initialize_value()) {
                 return [this, n] (uint8_t* out) mutable noexcept {
                     auto dst = reinterpret_cast<bytes_mutable_view::pointer>(out);
