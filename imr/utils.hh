@@ -25,6 +25,7 @@
 
 #include "imr/core.hh"
 #include "imr/alloc.hh"
+#include "imr/logalloc.hh"
 #include "imr/concepts.hh"
 
 namespace imr {
