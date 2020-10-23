@@ -799,7 +799,7 @@ BOOST_AUTO_TEST_CASE(test_object_exception_safety) {
     using lsa_migrator_fn_for_nested_structure = imr::alloc::lsa_migrate_fn<nested_structure, context_factory_for_nested_structure>;
     auto migrator_for_nested_structure = lsa_migrator_fn_for_nested_structure(context_factory_for_nested_structure());
 
-    auto writer_fn = [&] (auto serializer, auto& allocator) {
+    auto writer_fn = [&] (auto serializer, auto allocator) {
         return serializer
             .serialize(4)
             .serialize(allocator.template allocate<nested_structure>(
@@ -832,7 +832,7 @@ BOOST_AUTO_TEST_CASE(test_object_exception_safety) {
         while (true) {
             allocator.fail_after(fail_offset++);
             try {
-                imr::utils::object<structure>::make(writer_fn, &migrator_for_structure);
+                imr::utils::object<structure>::make(structure::writer<decltype(writer_fn)>(writer_fn), &migrator_for_structure);
             } catch (const std::bad_alloc&) {
                 BOOST_CHECK_EQUAL(reg.occupancy().used_space(), 0);
                 continue;

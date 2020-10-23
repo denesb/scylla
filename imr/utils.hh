@@ -164,16 +164,14 @@ public:
 
     /// Create an IMR objects
     template<typename Writer, typename MigrateFn>
-    requires WriterAllocator<Writer, Structure>
-    static object make(Writer&& object_writer,
+    static object make(typename Structure::writer<Writer>&& object_writer,
                        MigrateFn* migrate = &imr::alloc::default_lsa_migrate_fn<structure>::migrate_fn) {
         static_assert(std::is_same_v<typename MigrateFn::structure, structure>);
-        return do_make(std::forward<Writer>(object_writer), migrate);
+        return do_make(std::forward<typename Structure::writer<Writer>>(object_writer), migrate);
     }
 private:
     template<typename Writer>
-    requires WriterAllocator<Writer, Structure>
-    static object do_make(Writer&& object_writer, allocation_strategy::migrate_fn migrate) {
+    static object do_make(typename Structure::writer<Writer>&& object_writer, allocation_strategy::migrate_fn migrate) {
         struct alloc_deleter {
             size_t _size;
 

@@ -537,7 +537,9 @@ public:
     ///
     /// \arg ptr needs to remain valid as long as the writer is in use.
     /// \returns an instance of cell::structure::writer.
-    static structure::writer<collection_writer<copy_writer>> copy_fn(const type_info& ti, const uint8_t* ptr);
+    static structure::writer<copy_writer> copy_fn(const type_info& ti, const uint8_t* ptr) noexcept {
+        return structure::writer<copy_writer>(copy_writer(ti, ptr));
+    }
 
     /// Make a writer for a collection
     ///
