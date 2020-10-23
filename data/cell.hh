@@ -394,6 +394,142 @@ private:
         imr::alloc::context_factory<chunk_context>> lsa_chunk_migrate_fn;
 
 public:
+    struct copy_writer {
+        const type_info& ti;
+        const uint8_t* ptr;
+
+        auto operator()(auto&& serializer, auto&& allocations) noexcept;
+    };
+
+    template <typename FragmentRange>
+    struct collection_writer {
+        FragmentRange data;
+
+        auto operator()(auto&& serializer, auto&& allocations) noexcept {
+            return serializer
+                .serialize(imr::set_flag<tags::collection>(),
+                           imr::set_flag<tags::external_data>(data.size_bytes() > maximum_internal_storage_length))
+                .template serialize_as<tags::collection>(variable_value::write(data), allocations)
+                .done();
+        }
+    };
+
+    struct dead_writer {
+        api::timestamp_type ts;
+        gc_clock::time_point deletion_time;
+
+        auto operator()(auto&& serializer, auto&&...) noexcept {
+            return serializer
+                .serialize()
+                .template serialize_as_nested<tags::atomic_cell>()
+                    .serialize(ts)
+                    .skip()
+                    .template serialize_as<tags::dead>(deletion_time.time_since_epoch().count())
+                    .done()
+                .done();
+        }
+    };
+
+    struct live_counter_update_writer {
+        api::timestamp_type ts;
+        int64_t delta;
+
+        auto operator()(auto&& serializer, auto&&...) noexcept {
+            return serializer
+                .serialize(imr::set_flag<tags::live>(),
+                           imr::set_flag<tags::counter_update>())
+                .template serialize_as_nested<tags::atomic_cell>()
+                    .serialize(ts)
+                    .skip()
+                    .template serialize_as<tags::counter_update>(delta)
+                    .done()
+                .done();
+        }
+    };
+
+    template <typename FragmentRange>
+    struct live_writer {
+        const type_info& ti;
+        api::timestamp_type ts;
+        FragmentRange value;
+        bool force_internal;
+
+        auto operator()(auto&& serializer, auto&& allocations) noexcept {
+            auto after_expiring = serializer
+                .serialize(imr::set_flag<tags::live>(),
+                           imr::set_flag<tags::empty>(value.empty()),
+                           imr::set_flag<tags::external_data>(!force_internal && !ti.is_fixed_size() && value.size_bytes() > maximum_internal_storage_length))
+                .template serialize_as_nested<tags::atomic_cell>()
+                    .serialize(ts)
+                    .skip();
+            return [&] {
+                if (ti.is_fixed_size()) {
+                    return after_expiring.template serialize_as<tags::fixed_value>(value);
+                } else {
+                    return after_expiring
+                        .template serialize_as<tags::variable_value>(variable_value::write(value, force_internal), allocations);
+                }
+            }().done().done();
+        }
+    };
+
+    template <typename FragmentRange>
+    struct live_expiring_writer {
+        const type_info& ti;
+        api::timestamp_type ts;
+        FragmentRange value;
+        gc_clock::time_point expiry;
+        gc_clock::duration ttl;
+        bool force_internal;
+
+        auto operator()(auto&& serializer, auto&& allocations) noexcept {
+            auto after_expiring = serializer
+                .serialize(imr::set_flag<tags::live>(),
+                           imr::set_flag<tags::expiring>(),
+                           imr::set_flag<tags::empty>(value.empty()),
+                           imr::set_flag<tags::external_data>(!force_internal && !ti.is_fixed_size() && value.size_bytes() > maximum_internal_storage_length))
+                .template serialize_as_nested<tags::atomic_cell>()
+                    .serialize(ts)
+                    .serialize_nested()
+                        .serialize(gc_clock::as_int32(ttl))
+                        .serialize(expiry.time_since_epoch().count())
+                        .done();
+            return [&] {
+                if (ti.is_fixed_size()) {
+                    return after_expiring.template serialize_as<tags::fixed_value>(value);
+                } else {
+                    return after_expiring
+                        .template serialize_as<tags::variable_value>(variable_value::write(value, force_internal), allocations);
+                }
+            }().done().done();
+        }
+    };
+
+    struct live_uninitialized_writer {
+        const type_info& ti;
+        api::timestamp_type ts;
+        size_t size;
+
+        auto operator()(auto&& serializer, auto&& allocations) noexcept {
+            auto after_expiring = serializer
+                .serialize(imr::set_flag<tags::live>(),
+                           imr::set_flag<tags::empty>(!size),
+                           imr::set_flag<tags::external_data>(!ti.is_fixed_size() && size > maximum_internal_storage_length))
+                .template serialize_as_nested<tags::atomic_cell>()
+                    .serialize(ts)
+                    .skip();
+            return [&] {
+                if (ti.is_fixed_size()) {
+                    return after_expiring.template serialize_as<tags::fixed_value>(size, [] (uint8_t*) noexcept { });
+                } else {
+                    return after_expiring
+                        .template serialize_as<tags::variable_value>(variable_value::write(size, false), allocations);
+                }
+            }().done().done();
+        }
+    };
+
+public:
     /// Make a writer that copies a cell
     ///
     /// This function creates a writer that copies a cell. It can be either
@@ -781,6 +917,29 @@ public:
         return flags_view().template get<tags::external_data>() && value_size() > cell::effective_external_chunk_length;
     }
 };
+
+inline auto cell::copy_writer::operator()(auto&& serializer, auto&& allocations) noexcept {
+    // Slow path
+    auto f = structure::get_member<tags::flags>(ptr);
+    context ctx(ptr, ti);
+    if (f.get<tags::collection>()) {
+        auto view = structure::get_member<tags::cell>(ptr).as<tags::collection>(ctx);
+        auto dv = variable_value::make_view(view, f.get<tags::external_data>());
+        return make_collection(dv)(serializer, allocations);
+    } else {
+        auto acv = atomic_cell_view(ti, structure::make_view(ptr, ti));
+        if (acv.is_live()) {
+            if (acv.is_counter_update()) {
+                return make_live_counter_update(acv.timestamp(), acv.counter_update_value())(serializer, allocations);
+            } else if (acv.is_expiring()) {
+                return make_live(ti, acv.timestamp(), acv.value(), acv.expiry(), acv.ttl())(serializer, allocations);
+            }
+            return make_live(ti, acv.timestamp(), acv.value())(serializer, allocations);
+        } else {
+            return make_dead(acv.timestamp(), acv.deletion_time())(serializer, allocations);
+        }
+    }
+}
 
 inline auto cell::copy_fn(const type_info& ti, const uint8_t* ptr)
 {
