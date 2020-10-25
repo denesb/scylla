@@ -448,23 +448,7 @@ public:
         FragmentRange value;
         bool force_internal;
 
-        auto operator()(auto&& serializer, auto&& allocations) noexcept {
-            auto after_expiring = serializer
-                .serialize(imr::set_flag<tags::live>(),
-                           imr::set_flag<tags::empty>(value.empty()),
-                           imr::set_flag<tags::external_data>(!force_internal && !ti.is_fixed_size() && value.size_bytes() > maximum_internal_storage_length))
-                .template serialize_as_nested<tags::atomic_cell>()
-                    .serialize(ts)
-                    .skip();
-            return [&] {
-                if (ti.is_fixed_size()) {
-                    return after_expiring.template serialize_as<tags::fixed_value>(value);
-                } else {
-                    return after_expiring
-                        .template serialize_as<tags::variable_value>(variable_value::write(value, force_internal), allocations);
-                }
-            }().done().done();
-        }
+        auto operator()(auto&& serializer, auto&& allocations) noexcept;
     };
 
     template <typename FragmentRange>
@@ -476,27 +460,7 @@ public:
         gc_clock::duration ttl;
         bool force_internal;
 
-        auto operator()(auto&& serializer, auto&& allocations) noexcept {
-            auto after_expiring = serializer
-                .serialize(imr::set_flag<tags::live>(),
-                           imr::set_flag<tags::expiring>(),
-                           imr::set_flag<tags::empty>(value.empty()),
-                           imr::set_flag<tags::external_data>(!force_internal && !ti.is_fixed_size() && value.size_bytes() > maximum_internal_storage_length))
-                .template serialize_as_nested<tags::atomic_cell>()
-                    .serialize(ts)
-                    .serialize_nested()
-                        .serialize(gc_clock::as_int32(ttl))
-                        .serialize(expiry.time_since_epoch().count())
-                        .done();
-            return [&] {
-                if (ti.is_fixed_size()) {
-                    return after_expiring.template serialize_as<tags::fixed_value>(value);
-                } else {
-                    return after_expiring
-                        .template serialize_as<tags::variable_value>(variable_value::write(value, force_internal), allocations);
-                }
-            }().done().done();
-        }
+        auto operator()(auto&& serializer, auto&& allocations) noexcept;
     };
 
     struct live_uninitialized_writer {
@@ -504,23 +468,7 @@ public:
         api::timestamp_type ts;
         size_t size;
 
-        auto operator()(auto&& serializer, auto&& allocations) noexcept {
-            auto after_expiring = serializer
-                .serialize(imr::set_flag<tags::live>(),
-                           imr::set_flag<tags::empty>(!size),
-                           imr::set_flag<tags::external_data>(!ti.is_fixed_size() && size > maximum_internal_storage_length))
-                .template serialize_as_nested<tags::atomic_cell>()
-                    .serialize(ts)
-                    .skip();
-            return [&] {
-                if (ti.is_fixed_size()) {
-                    return after_expiring.template serialize_as<tags::fixed_value>(size, [] (uint8_t*) noexcept { });
-                } else {
-                    return after_expiring
-                        .template serialize_as<tags::variable_value>(variable_value::write(size, false), allocations);
-                }
-            }().done().done();
-        }
+        auto operator()(auto&& serializer, auto&& allocations) noexcept;
     };
 
 public:
@@ -869,6 +817,66 @@ inline auto cell::collection_writer<FragmentRange>::operator()(auto&& serializer
                     imr::set_flag<tags::external_data>(data.size_bytes() > maximum_internal_storage_length))
         .template serialize_as<tags::collection>(variable_value::write(data), allocations)
         .done();
+}
+
+template <typename FragmentRange>
+inline auto cell::live_writer<FragmentRange>::operator()(auto&& serializer, auto&& allocations) noexcept {
+    auto after_expiring = serializer
+        .serialize(imr::set_flag<tags::live>(),
+                    imr::set_flag<tags::empty>(value.empty()),
+                    imr::set_flag<tags::external_data>(!force_internal && !ti.is_fixed_size() && value.size_bytes() > maximum_internal_storage_length))
+        .template serialize_as_nested<tags::atomic_cell>()
+            .serialize(ts)
+            .skip();
+    return [&] {
+        if (ti.is_fixed_size()) {
+            return after_expiring.template serialize_as<tags::fixed_value>(value);
+        } else {
+            return after_expiring
+                .template serialize_as<tags::variable_value>(variable_value::write(value, force_internal), allocations);
+        }
+    }().done().done();
+}
+
+template <typename FragmentRange>
+inline auto cell::live_expiring_writer<FragmentRange>::operator()(auto&& serializer, auto&& allocations) noexcept {
+    auto after_expiring = serializer
+        .serialize(imr::set_flag<tags::live>(),
+                    imr::set_flag<tags::expiring>(),
+                    imr::set_flag<tags::empty>(value.empty()),
+                    imr::set_flag<tags::external_data>(!force_internal && !ti.is_fixed_size() && value.size_bytes() > maximum_internal_storage_length))
+        .template serialize_as_nested<tags::atomic_cell>()
+            .serialize(ts)
+            .serialize_nested()
+                .serialize(gc_clock::as_int32(ttl))
+                .serialize(expiry.time_since_epoch().count())
+                .done();
+    return [&] {
+        if (ti.is_fixed_size()) {
+            return after_expiring.template serialize_as<tags::fixed_value>(value);
+        } else {
+            return after_expiring
+                .template serialize_as<tags::variable_value>(variable_value::write(value, force_internal), allocations);
+        }
+    }().done().done();
+}
+
+inline auto cell::live_uninitialized_writer::operator()(auto&& serializer, auto&& allocations) noexcept {
+    auto after_expiring = serializer
+        .serialize(imr::set_flag<tags::live>(),
+                    imr::set_flag<tags::empty>(!size),
+                    imr::set_flag<tags::external_data>(!ti.is_fixed_size() && size > maximum_internal_storage_length))
+        .template serialize_as_nested<tags::atomic_cell>()
+            .serialize(ts)
+            .skip();
+    return [&] {
+        if (ti.is_fixed_size()) {
+            return after_expiring.template serialize_as<tags::fixed_value>(size, [] (uint8_t*) noexcept { });
+        } else {
+            return after_expiring
+                .template serialize_as<tags::variable_value>(variable_value::write(size, false), allocations);
+        }
+    }().done().done();
 }
 
 inline cell::atomic_cell_view cell::make_atomic_cell_view(const type_info& ti, const uint8_t* ptr) noexcept {
