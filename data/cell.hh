@@ -227,59 +227,7 @@ struct cell {
     /// is variable-sized. The data can be stored internally, if its size is
     /// smaller or equal maximum_internal_storage_length or externally if it
     /// larger.
-    struct variable_value {
-        using data_variant = variable_value_data_variant;
-        using structure = variable_value_structure;
-
-        /// Create writer of a variable-size value
-        ///
-        /// Returns a function object that can be used as a writer of a variable
-        /// value. The first argument is expected to be either IMR sizer or
-        /// serializer and the second is an appropriate IMR allocator helper
-        /// object.
-        /// \arg force_internal if set to true stores the value internally
-        /// regardless of its size (used by collection members).
-        template<typename FragmentRange>
-        static value_writer<std::decay_t<FragmentRange>> write(FragmentRange&& value, bool force_internal = false) noexcept;
-        static auto write(bytes_view value, bool force_internal = false) noexcept;
-
-        /// Create writer of an uninitialised variable-size value
-        static value_writer<empty_fragment_range> write(size_t size, bool force_internal = false) noexcept;
-
-        class context {
-            bool _external_storage;
-            uint32_t _value_size;
-        public:
-            explicit context(bool external_storage, uint32_t value_size) noexcept
-                : _external_storage(external_storage), _value_size(value_size) { }
-            template<typename Tag>
-            auto active_alternative_of() const noexcept {
-                if (_external_storage) {
-                    return data_variant::index_for<tags::pointer>();
-                } else {
-                    return data_variant::index_for<tags::data>();
-                }
-            }
-            template<typename Tag>
-            size_t size_of() const noexcept {
-                return _value_size;
-            }
-            template<typename Tag, typename... Args>
-            auto context_for(Args&&...) const noexcept {
-                return *this;
-            }
-        };
-
-        template<mutable_view is_mutable>
-        static basic_value_view<is_mutable> do_make_view(structure::basic_view<is_mutable> view, bool external_storage);
-
-        static data::value_view make_view(structure::view view, bool external_storage) {
-            return do_make_view(view, external_storage);
-        }
-        static data::value_mutable_view make_view(structure::mutable_view view, bool external_storage) {
-            return do_make_view(view, external_storage);
-        }
-    };
+    struct variable_value;
 
     /// Atomic cell
     ///
@@ -298,7 +246,7 @@ struct cell {
     >;
     using atomic_cell_or_collection = imr::variant<tags::cell,
         imr::member<tags::atomic_cell, atomic_cell>,
-        imr::member<tags::collection, variable_value::structure>
+        imr::member<tags::collection, variable_value_structure>
     >;
 
     /// Top IMR definition of a cell
@@ -568,6 +516,67 @@ public:
     static mutable_atomic_cell_view make_atomic_cell_view(const type_info& ti, uint8_t* ptr) noexcept;
 
     static void destroy(uint8_t* ptr) noexcept;
+};
+
+/// Variable-length cell value
+///
+/// This is a definition of the IMR structure of a variable-length value.
+/// It is used both by collections, counters and regular cells which type
+/// is variable-sized. The data can be stored internally, if its size is
+/// smaller or equal maximum_internal_storage_length or externally if it
+/// larger.
+struct cell::variable_value {
+    using data_variant = cell::variable_value_data_variant;
+    using structure = cell::variable_value_structure;
+
+    /// Create writer of a variable-size value
+    ///
+    /// Returns a function object that can be used as a writer of a variable
+    /// value. The first argument is expected to be either IMR sizer or
+    /// serializer and the second is an appropriate IMR allocator helper
+    /// object.
+    /// \arg force_internal if set to true stores the value internally
+    /// regardless of its size (used by collection members).
+    template<typename FragmentRange>
+    static value_writer<std::decay_t<FragmentRange>> write(FragmentRange&& value, bool force_internal = false) noexcept;
+    static auto write(bytes_view value, bool force_internal = false) noexcept;
+
+    /// Create writer of an uninitialised variable-size value
+    static value_writer<empty_fragment_range> write(size_t size, bool force_internal = false) noexcept;
+
+    class context {
+        bool _external_storage;
+        uint32_t _value_size;
+    public:
+        explicit context(bool external_storage, uint32_t value_size) noexcept
+            : _external_storage(external_storage), _value_size(value_size) { }
+        template<typename Tag>
+        auto active_alternative_of() const noexcept {
+            if (_external_storage) {
+                return data_variant::index_for<tags::pointer>();
+            } else {
+                return data_variant::index_for<tags::data>();
+            }
+        }
+        template<typename Tag>
+        size_t size_of() const noexcept {
+            return _value_size;
+        }
+        template<typename Tag, typename... Args>
+        auto context_for(Args&&...) const noexcept {
+            return *this;
+        }
+    };
+
+    template<mutable_view is_mutable>
+    static basic_value_view<is_mutable> do_make_view(structure::basic_view<is_mutable> view, bool external_storage);
+
+    static data::value_view make_view(structure::view view, bool external_storage) {
+        return do_make_view(view, external_storage);
+    }
+    static data::value_mutable_view make_view(structure::mutable_view view, bool external_storage) {
+        return do_make_view(view, external_storage);
+    }
 };
 
 /// Minimal cell deserialisation context
