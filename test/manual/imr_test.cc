@@ -151,14 +151,10 @@ class test_buffer_context {
 public:
     explicit test_buffer_context(size_t sz) : _size(sz) { }
 
-    template<typename Tag>
-    size_t size_of(Tag) const noexcept;
+    size_t size_of(A) const noexcept {
+        return _size;
+    }
 };
-
-template<>
-size_t test_buffer_context::size_of<A>(A) const noexcept {
-    return _size;
-}
 
 BOOST_AUTO_TEST_CASE(test_buffer) {
     using buffer_type = imr::buffer<A>;
@@ -247,8 +243,9 @@ using variant_type = imr::variant<A,
 struct test_variant_context {
     unsigned _alternative_idx;
 public:
-    template<typename Tag>
-    size_t size_of(Tag) const noexcept;
+    size_t size_of(C) const noexcept {
+        return data_size;
+    }
 
     template<typename Tag>
     auto active_alternative_of() const noexcept;
@@ -256,11 +253,6 @@ public:
     template<typename Tag, typename... Args>
     decltype(auto) context_for(Args&&...) const noexcept { return *this; }
 };
-
-template<>
-size_t test_variant_context::size_of<C>(C) const noexcept {
-    return data_size;
-}
 
 template<>
 auto test_variant_context::active_alternative_of<A>() const noexcept {
@@ -397,8 +389,9 @@ public:
     template<typename Tag>
     bool is_present() const noexcept;
 
-    template<typename Tag>
-    size_t size_of(Tag) const noexcept;
+    size_t size_of(C) const noexcept {
+        return _c_size_of;
+    }
 
     template<typename Tag, typename... Args>
     decltype(auto) context_for(Args&&...) const noexcept { return *this; }
@@ -407,11 +400,6 @@ public:
 template<>
 bool test_structure_context::is_present<B>() const noexcept {
     return _b_is_present;
-}
-
-template<>
-size_t test_structure_context::size_of<C>(C) const noexcept {
-    return _c_size_of;
 }
 
 BOOST_AUTO_TEST_CASE(test_structure_with_context) {
@@ -745,8 +733,7 @@ struct structue_context {
         BOOST_CHECK_EQUAL(_size, 4);
     }
     
-    template<typename Tag>
-    size_t size_of(Tag) const noexcept {
+    size_t size_of(A) const noexcept {
         return _size;
     }
 
@@ -763,8 +750,7 @@ struct nested_structue_context {
         BOOST_CHECK_NE(_size, 0);
     }
     
-    template<typename Tag>
-    size_t size_of(Tag) const noexcept {
+    size_t size_of(B) const noexcept {
         return _size;
     }
 

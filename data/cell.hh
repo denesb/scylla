@@ -258,10 +258,10 @@ struct cell {
                     return data_variant::index_for<tags::data>();
                 }
             }
-            template<typename Tag>
-            size_t size_of(Tag) const noexcept {
+            size_t size_of(tags::data) const noexcept {
                 return _value_size;
             }
+
             template<typename Tag, typename... Args>
             auto context_for(Args&&...) const noexcept {
                 return *this;
@@ -351,8 +351,7 @@ struct cell {
     struct chunk_context {
         explicit constexpr chunk_context(const uint8_t*) noexcept { }
 
-        template<typename Tag>
-        static constexpr size_t size_of(Tag) noexcept {
+        static constexpr size_t size_of(tags::chunk_data) noexcept {
             return cell::effective_external_chunk_length;
         }
         template<typename Tag, typename... Args>
@@ -369,8 +368,7 @@ struct cell {
                 : _size(external_last_chunk::get_member<tags::last_chunk_size>(ptr).load())
         { }
 
-        template<typename Tag>
-        size_t size_of(Tag) const noexcept {
+        size_t size_of(tags::chunk_data) const noexcept {
             return _size;
         }
 
@@ -582,9 +580,6 @@ public:
     auto active_alternative_of() const noexcept;
 
     template<typename Tag>
-    size_t size_of(Tag) const noexcept;
-
-    template<typename Tag>
     auto context_for(const uint8_t*) const noexcept {
         return *this;
     }
@@ -628,8 +623,9 @@ public:
         return minimal_context::active_alternative_of<Tag>();
     }
 
-    template<typename Tag>
-    size_t size_of(Tag) const noexcept;
+    size_t size_of(cell::tags::fixed_value) const noexcept {
+        return _flags.get<tags::empty>() ? 0 : _type.value_size();
+    }
 
     template<typename Tag>
     auto context_for(const uint8_t*) const noexcept {
@@ -664,11 +660,6 @@ inline auto cell::context::active_alternative_of<cell::tags::value>() const noex
     } else {
         return cell::value_variant::index_for<tags::dead>();
     }
-}
-
-template<>
-inline size_t cell::context::size_of<cell::tags::fixed_value>(cell::tags::fixed_value) const noexcept {
-    return _flags.get<tags::empty>() ? 0 : _type.value_size();
 }
 
 /// Atomic cell view
