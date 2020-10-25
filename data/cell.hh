@@ -405,13 +405,7 @@ public:
     struct collection_writer {
         FragmentRange data;
 
-        auto operator()(auto&& serializer, auto&& allocations) noexcept {
-            return serializer
-                .serialize(imr::set_flag<tags::collection>(),
-                           imr::set_flag<tags::external_data>(data.size_bytes() > maximum_internal_storage_length))
-                .template serialize_as<tags::collection>(variable_value::write(data), allocations)
-                .done();
-        }
+        auto operator()(auto&& serializer, auto&& allocations) noexcept;
     };
 
     struct dead_writer {
@@ -866,6 +860,15 @@ inline auto cell::copy_writer::operator()(auto&& serializer, auto&& allocations)
             return make_dead(acv.timestamp(), acv.deletion_time())(serializer, allocations);
         }
     }
+}
+
+template <typename FragmentRange>
+inline auto cell::collection_writer<FragmentRange>::operator()(auto&& serializer, auto&& allocations) noexcept {
+    return serializer
+        .serialize(imr::set_flag<tags::collection>(),
+                    imr::set_flag<tags::external_data>(data.size_bytes() > maximum_internal_storage_length))
+        .template serialize_as<tags::collection>(variable_value::write(data), allocations)
+        .done();
 }
 
 inline cell::atomic_cell_view cell::make_atomic_cell_view(const type_info& ti, const uint8_t* ptr) noexcept {
