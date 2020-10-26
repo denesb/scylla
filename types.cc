@@ -643,6 +643,14 @@ size_t collection_value_len(cql_serialization_format sf) {
     return sizeof(uint16_t);
 }
 
+template <FragmentRange Range>
+int read_collection_size(utils::linearizing_input_stream<Range>& in, cql_serialization_format sf) {
+    if (sf.using_32_bits_for_collections()) {
+        return in.template read_trivial<int32_t>();
+    } else {
+        return in.template read_trivial<uint16_t>();
+    }
+}
 
 int read_collection_size(bytes_view& in, cql_serialization_format sf) {
     if (sf.using_32_bits_for_collections()) {
@@ -658,6 +666,12 @@ void write_collection_size(bytes::iterator& out, int size, cql_serialization_for
     } else {
         serialize_int16(out, uint16_t(size));
     }
+}
+
+template <FragmentRange Range>
+bytes_view read_collection_value(utils::linearizing_input_stream<Range>& in, cql_serialization_format sf) {
+    auto size = sf.using_32_bits_for_collections() ? in.template read_trivial<int32_t>() : in.template read_trivial<uint16_t>();
+    return in.read(size);
 }
 
 bytes_view read_collection_value(bytes_view& in, cql_serialization_format sf) {
