@@ -481,6 +481,13 @@ public:
         return fragment_iterator();
     }
 
+    size_t hash() const noexcept {
+        // FIXME: calculate hash inefficiently for now
+        return with_linearized([this] (bytes_view v) {
+            return std::hash<bytes_view>{}(v);
+        });
+    }
+
 private:
     void do_linearize_pure(bytes_view::value_type*) const noexcept;
 
@@ -583,10 +590,16 @@ int compare_unsigned(const managed_bytes_view v1, const managed_bytes_view v2);
 namespace std {
 
 template <>
+struct hash<managed_bytes_view> {
+    size_t operator()(managed_bytes_view v) const {
+        return v.hash();
+    }
+};
+
+template <>
 struct hash<managed_bytes> {
     size_t operator()(const managed_bytes& v) const {
-        return 3; // FIXME!
-        //return hash<bytes_view>()(v);
+        return hash<managed_bytes_view>{}(v);
     }
 };
 
