@@ -1015,8 +1015,8 @@ map_type_impl::is_value_compatible_with_frozen(const collection_type_impl& previ
             && _values->is_value_compatible_with(*p->_values);
 }
 
-int32_t
-map_type_impl::compare_maps(data_type keys, data_type values, bytes_view o1, bytes_view o2) {
+static int32_t
+compare_maps(data_type keys, data_type values, bytes_view o1, bytes_view o2) {
     if (o1.empty()) {
         return o2.empty() ? 0 : -1;
     } else if (o2.empty()) {
@@ -2041,7 +2041,7 @@ struct compare_visitor {
                 [&] (bytes_view o1, bytes_view o2) { return l.get_elements_type()->compare(o1, o2); });
     }
     int32_t operator()(const map_type_impl& m) {
-        return map_type_impl::compare_maps(m.get_keys_type(), m.get_values_type(), v1, v2);
+        return compare_maps(m.get_keys_type(), m.get_values_type(), v1, v2);
     }
     int32_t operator()(const uuid_type_impl&) {
         if (v1.size() < 16) {
