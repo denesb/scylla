@@ -481,13 +481,6 @@ public:
         return fragment_iterator();
     }
 
-    size_t hash() const noexcept {
-        // FIXME: calculate hash inefficiently for now
-        return with_linearized([this] (bytes_view v) {
-            return std::hash<bytes_view>{}(v);
-        });
-    }
-
 private:
     void do_linearize_pure(bytes_view::value_type*) const noexcept;
 
@@ -587,12 +580,25 @@ bytes to_bytes(const managed_bytes& b);
 bytes to_bytes(managed_bytes_view v);
 int compare_unsigned(const managed_bytes_view v1, const managed_bytes_view v2);
 
+template<>
+struct appending_hash<managed_bytes_view> {
+    template<typename Hasher>
+    void operator()(Hasher& h, managed_bytes_view v) const {
+        feed_hash(h, v.size());
+        for (auto f : v.as_fragment_range()) {
+            update_appending_hash(h, f);
+        }
+    }
+};
+
 namespace std {
 
 template <>
 struct hash<managed_bytes_view> {
     size_t operator()(managed_bytes_view v) const {
-        return v.hash();
+        bytes_view_hasher h;
+        appending_hash<managed_bytes_view>{}(h, v);
+        return h.finalize();
     }
 };
 
@@ -611,17 +617,6 @@ size_t
 size_for_allocation_strategy(const blob_storage& bs) {
     return sizeof(bs) + bs.frag_size;
 }
-
-template<>
-struct appending_hash<managed_bytes_view> {
-    template<typename Hasher>
-    void operator()(Hasher& h, managed_bytes_view v) const {
-        feed_hash(h, v.size());
-        for (auto f : v.as_fragment_range()) {
-            update_appending_hash(h, f);
-        }
-    }
-};
 
 std::ostream& operator<<(std::ostream& os, const managed_bytes& b);
 std::ostream& operator<<(std::ostream& os, const managed_bytes_view& v);
