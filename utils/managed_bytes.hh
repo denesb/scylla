@@ -602,10 +602,15 @@ public:
             this->_size = p->size;
         }
     }
+    managed_bytes_basic_view(const managed_bytes_basic_view&) = default;
+    // Allow a view to implicitly convert to a non-mutable view
+    // FIXME: implement
+    managed_bytes_basic_view(const managed_bytes_basic_view<mutable_view::yes>& o) requires (is_mutable == mutable_view::no);
     managed_bytes_basic_view(bytes_view) noexcept;
     explicit managed_bytes_basic_view(const bytes&) noexcept;
     size_t size() const { return this->_size; }
     bool empty() const { return this->_size == 0; }
+    bool is_fragmented() const { return this->_next_fragments; }
     bytes_view::value_type operator[](size_t idx) const {
         if (idx < this->_current_fragment.size()) {
             return this->_current_fragment[idx];
