@@ -19,16 +19,15 @@
  * along with Scylla.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+enum class mutable_view { no, yes, };
+
 #pragma once
 
 #include <concepts>
 #include <boost/range/algorithm/copy.hpp>
 #include <boost/range/algorithm/for_each.hpp>
 
-
 #include "bytes.hh"
-
-enum class mutable_view { no, yes, };
 
 /// Fragmented buffer
 ///
