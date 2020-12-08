@@ -20,6 +20,7 @@
 // if a file was created
 std::pair<file, bool> get_in_memory_file(sstring name);
 future<> init_in_memory_file_store(size_t memory_reserve_in_mb);
+future<> deinit_in_memory_file_store();
 future<> remove_memory_file(sstring path);
 future<> rename_memory_file(sstring oldpath, sstring newpath);
 future<> link_memory_file(sstring oldpath, sstring newpath);

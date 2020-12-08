@@ -95,8 +95,8 @@ class in_memory_file_impl : public file_impl {
     }
 
 public:
-    in_memory_file_impl() : _data(std::make_shared<foreign_ptr<std::unique_ptr<in_memory_data_store>>>(make_foreign(std::make_unique<in_memory_data_store>()))) {}
-    explicit in_memory_file_impl(std::shared_ptr<foreign_ptr<std::unique_ptr<in_memory_data_store>>> data) : _data(std::move(data)) {}
+    in_memory_file_impl() : in_memory_file_impl(std::make_shared<foreign_ptr<std::unique_ptr<in_memory_data_store>>>(make_foreign(std::make_unique<in_memory_data_store>()))) {}
+    explicit in_memory_file_impl(std::shared_ptr<foreign_ptr<std::unique_ptr<in_memory_data_store>>> data);
     future<size_t> write_dma(uint64_t pos, const void* buffer, size_t len, const io_priority_class& pc) override {
         return make_ready_future<size_t>(write_dma_internal(pos, buffer, len));
     }
@@ -133,6 +133,17 @@ public:
     }
     future<temporary_buffer<uint8_t>> dma_read_bulk(uint64_t offset, size_t range_size, const io_priority_class& pc) override;
 };
+
+in_memory_file_impl::in_memory_file_impl(std::shared_ptr<foreign_ptr<std::unique_ptr<in_memory_data_store>>> data)
+        : _data(std::move(data))
+{
+    // We're not doing any actual dma transfers and we do not require
+    // any specific alignment.
+    // The following alignment parameters are solely an optimization.
+    _memory_dma_alignment = seastar::cache_line_size;
+    _disk_read_dma_alignment = in_memory_data_store::chunk_size;
+    _disk_write_dma_alignment = in_memory_data_store::chunk_size;
+}
 
 void in_memory_data_store::resize(size_t newsize) {
     auto oldchunknr = _data.size();
@@ -200,8 +211,11 @@ future<size_t> in_memory_file_impl::write_dma(uint64_t pos, std::vector<iovec> i
 future<size_t> in_memory_file_impl::read_dma(uint64_t pos, std::vector<iovec> iov, const io_priority_class& pc) {
     size_t len = 0;
     for (auto&& v : iov) {
-        read_dma_internal(pos + len, v.iov_base, v.iov_len, pc);
-        len += v.iov_len;
+        auto l = read_dma_internal(pos + len, v.iov_base, v.iov_len, pc);
+        len += l;
+        if (l < v.iov_len) {
+            break;
+        }
     }
     return make_ready_future<size_t>(len);
 }
@@ -215,7 +229,10 @@ future<> in_memory_file_impl::discard(uint64_t offset, uint64_t length) {
 
 future<temporary_buffer<uint8_t>> in_memory_file_impl::dma_read_bulk(uint64_t offset, size_t range_size, const io_priority_class& pc) {
     temporary_buffer<uint8_t> tmp(range_size);
-    read_dma_internal(offset, tmp.get_write(), range_size, pc);
+    auto l = read_dma_internal(offset, tmp.get_write(), range_size, pc);
+    if (l < range_size) {
+        tmp.trim(l);
+    }
     return make_ready_future<temporary_buffer<uint8_t>>(std::move(tmp));
 }
 
@@ -293,6 +310,8 @@ static_assert(sizeof(file_block) == in_memory_data_store::chunk_size, "wrong fil
 future<> init_in_memory_file_store(size_t memory_reserve_in_mb) {
     per_shard_memory_reserve = (memory_reserve_in_mb << 20) / smp::count;
     return smp::invoke_on_all([] {
+        mlogger.debug("Reserving {} MB in {} chunks", per_shard_memory_reserve,
+                (per_shard_memory_reserve + in_memory_data_store::chunk_size - 1) / in_memory_data_store::chunk_size);
         reserve_memory(per_shard_memory_reserve);
         size_t allocated = 0;
         while (allocated < per_shard_memory_reserve) {
@@ -303,6 +322,18 @@ future<> init_in_memory_file_store(size_t memory_reserve_in_mb) {
             seastar::metrics::make_gauge("total_memory", seastar::metrics::description("Memory reserved for in memory file store"), per_shard_memory_reserve),
             seastar::metrics::make_gauge("used_memory", seastar::metrics::description("Memory used by in memory file store"), used_memory)
         });
+    });
+}
+
+future<> deinit_in_memory_file_store() {
+    return smp::invoke_on_all([] {
+        mlogger.debug("Deleting {} chunks. Used memory: {}", free_file_blocks.size(), used_memory);
+        while (!free_file_blocks.empty()) {
+            uint8_t* p = reinterpret_cast<uint8_t*>(&free_file_blocks.front());
+            free_file_blocks.pop_front();
+            delete p;
+        }
+        in_memory_store_metrics.clear();
     });
 }
 

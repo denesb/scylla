@@ -391,6 +391,7 @@ scylla_tests = set([
     'test/boost/stall_free_test',
     'test/boost/imr_test',
     'test/boost/encrypted_file_test',
+    'test/boost/mirror_file_test',
     'test/manual/ec2_snitch_test',
     'test/manual/enormous_table_scan_test',
     'test/manual/gce_snitch_test',

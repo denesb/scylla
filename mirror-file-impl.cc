@@ -10,6 +10,7 @@
 
 #include <boost/intrusive/slist.hpp>
 #include "in-memory-file-impl.hh"
+#include "mirror-file-impl.hh"
 #include <seastar/core/file.hh>
 #include <seastar/core/sharded.hh>
 #include <seastar/core/aligned_buffer.hh>
@@ -39,7 +40,7 @@ class mirror_file_impl : public file_impl {
     file _secondary;
     bool _check_integrity;
 public:
-    mirror_file_impl(file primary, file secondary, bool check_integrity = false) : _primary(std::move(primary)), _secondary(std::move(secondary)), _check_integrity(check_integrity) {}
+    mirror_file_impl(file primary, file secondary, bool check_integrity = false);
     future<size_t> write_dma(uint64_t pos, const void* buffer, size_t len, const io_priority_class& pc) override;
     future<size_t> write_dma(uint64_t pos, std::vector<iovec> iov, const io_priority_class& pc) override;
     future<size_t> read_dma(uint64_t pos, void* buffer, size_t len, const io_priority_class& pc) override;
@@ -55,6 +56,19 @@ public:
     subscription<directory_entry> list_directory(std::function<future<> (directory_entry de)> next) override;
     future<temporary_buffer<uint8_t>> dma_read_bulk(uint64_t offset, size_t range_size, const io_priority_class& pc) override;
 };
+
+mirror_file_impl::mirror_file_impl(file primary, file secondary, bool check_integrity)
+        : _primary(std::move(primary)), _secondary(std::move(secondary)), _check_integrity(check_integrity)
+{
+    _memory_dma_alignment = std::max(_primary.memory_dma_alignment(), _secondary.memory_dma_alignment());
+    if (_check_integrity) {
+        // we read from the primary file only when check_integrity is enabled
+        _disk_read_dma_alignment = std::max(_primary.disk_read_dma_alignment(), _secondary.disk_read_dma_alignment());
+    } else {
+        _disk_read_dma_alignment = _secondary.disk_read_dma_alignment();
+    }
+    _disk_write_dma_alignment = std::max(_primary.disk_write_dma_alignment(), _secondary.disk_write_dma_alignment());
+}
 
 future<size_t> mirror_file_impl::write_dma(uint64_t pos, const void* buffer, size_t len, const io_priority_class& pc) {
     return get_file_impl(_primary)->write_dma(pos, buffer, len, pc).then([this, pos, buffer, &pc] (size_t len) {
@@ -85,7 +99,7 @@ future<size_t> mirror_file_impl::read_dma(uint64_t pos, void* buffer, size_t len
     auto f = get_file_impl(_secondary)->read_dma(pos, buffer, len, pc);
     if (_check_integrity) {
         return f.then([this, pos, len , buffer, &pc] (size_t secondary_size) {
-            auto b = allocate_aligned_buffer<uint8_t>(len, 4096);
+            auto b = allocate_aligned_buffer<uint8_t>(len, _primary.memory_dma_alignment());
             auto p = b.get();
             return get_file_impl(_primary)->read_dma(pos, p, len, pc).then([this, secondary_size, buffer, b = std::move(b)] (size_t primary_size) {
                 if (primary_size != secondary_size) {
@@ -109,7 +123,7 @@ future<size_t> mirror_file_impl::read_dma(uint64_t pos, std::vector<iovec> iov, 
             std::vector<std::unique_ptr<uint8_t[], free_deleter>> vb(iov.size());
             auto iov2 = iov;
             for (size_t i = 0; i < iov2.size(); i++) {
-                vb[i] = allocate_aligned_buffer<uint8_t>(iov[i].iov_len, 4096);
+                vb[i] = allocate_aligned_buffer<uint8_t>(iov[i].iov_len, _primary.memory_dma_alignment());
                 iov2[i].iov_base = vb[i].get();
             }
             return get_file_impl(_primary)->read_dma(pos, std::move(iov2), pc).then([this, secondary_size, iov = std::move(iov), vb = std::move(vb)] (size_t primary_size) {
@@ -198,21 +212,22 @@ shared_ptr<file_impl> mirror_file_handle_impl::to_file() && {
     return ::make_shared<mirror_file_impl>(std::move(_primary).to_file(), std::move(_secondary).to_file());
 }
 
-file make_mirror_file(file primary, file secondary) {
-    return file(make_shared<mirror_file_impl>(std::move(primary), std::move(secondary)));
+file make_mirror_file(file primary, file secondary, bool check_integrity) {
+    return file(make_shared<mirror_file_impl>(std::move(primary), std::move(secondary), check_integrity));
 }
 
-future<file> make_in_memory_mirror_file(file primary, sstring name, const io_priority_class& pc = default_priority_class()) {
+future<file> make_in_memory_mirror_file(file primary, sstring name, bool check_integrity, const io_priority_class& pc) {
     auto [mem_file, new_file] = get_in_memory_file(name);
 
     if (!new_file) {
-        return make_ready_future<file>(make_mirror_file(std::move(primary), std::move(mem_file)));
+        return make_ready_future<file>(make_mirror_file(std::move(primary), std::move(mem_file), check_integrity));
     }
 
     // create new memory file and read it into memory
     static constexpr size_t chunk = 128 * 1024;
-    return primary.size().then([&pc, primary = std::move(primary), name = std::move(name), mem_file = std::move(mem_file)] (uint64_t size) mutable {
-        return do_with(size, uint64_t(0), std::move(primary), std::move(mem_file), allocate_aligned_buffer<uint8_t>(chunk, 4096), [&pc] (uint64_t& size, uint64_t& off, file& primary, file& secondary, auto& bufptr) {
+    return primary.size().then([&pc, primary = std::move(primary), name = std::move(name), mem_file = std::move(mem_file), check_integrity] (uint64_t size) mutable {
+        auto buf = allocate_aligned_buffer<uint8_t>(chunk, primary.memory_dma_alignment());
+        return do_with(size, uint64_t(0), std::move(primary), std::move(mem_file), std::move(buf), [&pc, check_integrity] (uint64_t& size, uint64_t& off, file& primary, file& secondary, auto& bufptr) {
             return do_until([&size, &off] { return size == off; }, [&] {
                 auto buf = bufptr.get();
                 return primary.dma_read(off, buf, chunk, pc).then([&, buf] (size_t len) {
@@ -221,8 +236,8 @@ future<file> make_in_memory_mirror_file(file primary, sstring name, const io_pri
                         off += len;
                     });
                 });
-            }).then([&] {
-                return make_ready_future<file>(make_mirror_file(std::move(primary), std::move(secondary)));
+            }).then([&, check_integrity] {
+                return make_ready_future<file>(make_mirror_file(std::move(primary), std::move(secondary), check_integrity));
             });
         });
     });
