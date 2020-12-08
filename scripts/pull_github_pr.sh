@@ -9,6 +9,11 @@
 
 set -e
 
+if [[ -z "$GITHUB_LOGIN" || -z "$GITHUB_TOKEN" ]]; then
+    echo 'Please set $GITHUB_LOGIN and $GITHUB_TOKEN'
+    exit 1
+fi
+
 if [[ $# != 1 ]]; then
 	echo Please provide a github pull request number
 	exit 1
@@ -21,10 +26,14 @@ for required in jq curl; do
 	fi
 done
 
+curl() {
+    command curl --request POST --user "${GITHUB_LOGIN}:${GITHUB_TOKEN}" "$@"
+}
+
 NL=$'\n'
 
 PR_NUM=$1
-PR_PREFIX=https://api.github.com/repos/scylladb/scylla/pulls
+PR_PREFIX=https://api.github.com/repos/scylladb/scylla-enterprise/pulls
 
 echo "Fetching info on PR #$PR_NUM... "
 PR_DATA=$(curl -s $PR_PREFIX/$PR_NUM)
@@ -43,7 +52,7 @@ echo -n "Fetching full name of author $PR_LOGIN... "
 USER_NAME=$(curl -s "https://api.github.com/users/$PR_LOGIN" | jq -r .name)
 echo "$USER_NAME"
 
-git fetch origin pull/$PR_NUM/head
+git fetch enterprise pull/$PR_NUM/head
 
 nr_commits=$(git log --pretty=oneline HEAD..FETCH_HEAD | wc -l)
 
