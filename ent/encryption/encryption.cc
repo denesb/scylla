@@ -50,6 +50,7 @@
 #include "schema.hh"
 #include "sstables/sstables.hh"
 #include "service/storage_service.hh"
+#include "service/migration_manager.hh"
 #include "db/commitlog/commitlog_extensions.hh"
 #include "encrypted_file_impl.hh"
 #include "encryption_config.hh"
@@ -320,6 +321,10 @@ public:
     }
     distributed<database>& get_database() const override {
         return get_storage_service().local().db();
+    }
+
+    distributed<service::migration_manager>& get_migration_manager() const override {
+        return service::get_migration_manager();
     }
 };
 

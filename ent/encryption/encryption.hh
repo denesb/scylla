@@ -33,6 +33,7 @@ class query_processor;
 }
 namespace service {
 class storage_service;
+class migration_manager;
 }
 
 namespace encryption {
@@ -156,6 +157,7 @@ public:
     virtual distributed<cql3::query_processor>& get_query_processor() const = 0;
     virtual distributed<service::storage_service>& get_storage_service() const = 0;
     virtual distributed<database>& get_database() const = 0;
+    virtual distributed<service::migration_manager>& get_migration_manager() const = 0;
 
     sstring maybe_decrypt_config_value(const sstring&) const;
 };
