@@ -155,6 +155,7 @@ future<> save_system_schema(const sstring & ks);
 // saves/creates "system_schema" keyspace
 future<> save_system_keyspace_schema();
 
+future<utils::UUID> calculate_schema_digest(distributed<service::storage_proxy>& proxy, schema_features, noncopyable_function<bool(std::string_view)> accept_predicate);
 future<utils::UUID> calculate_schema_digest(distributed<service::storage_proxy>& proxy, schema_features);
 
 future<std::vector<canonical_mutation>> convert_schema_to_mutations(distributed<service::storage_proxy>& proxy, schema_features);
