@@ -506,7 +506,6 @@ commitlog_total_space_in_mb: -1
 # List of keyspaces that should be fully audited.
 # All tables in those keyspaces will be audited
 # audit_keyspaces: "<keyspace_name>,<keyspace_name>"
-# audit-keyspaces: "<keyspace_name>,<keyspace_name>"
 
 # Distribution of data among cores (shards) within a node
 #
