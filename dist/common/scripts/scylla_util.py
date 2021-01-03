@@ -19,10 +19,11 @@ import urllib.request
 import yaml
 import psutil
 import sys
-from pathlib import Path
+from pathlib import Path, PurePath
 from subprocess import run, DEVNULL
 
 import distro
+from scylla_sysconfdir import SYSCONFDIR
 
 
 def scriptsdir_p():
@@ -62,6 +63,9 @@ def datadir_p():
 def scyllabindir_p():
     return scylladir_p() / 'bin'
 
+def sysconfdir_p():
+    return Path(SYSCONFDIR)
+
 def scriptsdir():
     return str(scriptsdir_p())
 
@@ -80,6 +84,8 @@ def datadir():
 def scyllabindir():
     return str(scyllabindir_p())
 
+def sysconfdir():
+    return str(sysconfdir_p())
 
 # @param headers dict of k:v
 def curl(url, headers=None, byte=False, timeout=3, max_retries=5, retry_interval=5):
@@ -780,7 +786,10 @@ class sysconfig_parser:
         self.__load()
 
     def __init__(self, filename):
-        self._filename = filename
+        if isinstance(filename, PurePath):
+            self._filename = str(filename)
+        else:
+            self._filename = filename
         if not os.path.exists(filename):
             open(filename, 'a').close()
         with open(filename) as f:
