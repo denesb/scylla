@@ -43,7 +43,7 @@ if __name__ == '__main__':
             print('node_exporter already installed, you can use `--force` to force reinstallation')
             sys.exit(1)
 
-    if is_gentoo_variant():
+    if is_gentoo():
         run('emerge -uq app-metrics/node_exporter', shell=True, check=True)
         print('app-metrics/node_exporter does not install systemd service files, please fill a bug if you need them.')
         sys.exit(1)
