@@ -3591,6 +3591,7 @@ SEASTAR_TEST_CASE(test_user_based_sla_queries) {
         msg = e.execute_cql("LIST ALL ATTACHED SERVICE_LEVELS;").get0();
         assert_that(msg).is_rows().with_rows({
         });
+        BOOST_REQUIRE_THROW(e.execute_cql("ALTER SERVICE_LEVEL i_do_not_exist WITH shares = 1;").get(), exceptions::invalid_request_exception);
     });
 }
 
