@@ -315,10 +315,18 @@ schema_ptr scylla_tables(schema_features features) {
             .with_column("table_name", utf8_type, column_kind::clustering_key)
             .with_column("version", uuid_type)
             .set_gc_grace_seconds(schema_gc_grace);
-        // 0 - false, false
-        // 1 - true, false
-        // 2 - false, true
-        // 3 - true, true
+        // TODO: think of a more automated and less error prone
+        // way of doing this
+        //   in_memory  ,partitioner , cdc
+        //0:  0           0            0
+        //1:  0           0            1
+        //2:  0           1            0
+        //3:  0           1            1
+        //4:  1           0            0
+        //5:  1           0            1
+        //6:  1           1            0
+        //7:  1           1            1
+
         int offset = 0;
         if (has_cdc_options) {
             sb.with_column("cdc", map_type_impl::get_instance(utf8_type, utf8_type, false));
@@ -330,6 +338,7 @@ schema_ptr scylla_tables(schema_features features) {
         }
         if (has_in_memory) {
             sb.with_column("in_memory", boolean_type);
+            offset += 4;
         }
 
         sb.with_version(generate_schema_version(id, offset));
