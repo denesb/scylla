@@ -31,16 +31,6 @@
 
 using namespace std::string_literals;
 
-static cql_test_config mk_cdc_test_config() {
-    auto ext = std::make_shared<db::extensions>();
-    ext->add_schema_extension<cdc::cdc_extension>(cdc::cdc_extension::NAME);
-    auto cfg = ::make_shared<db::config>(std::move(ext));
-    auto features = cfg->experimental_features();
-    features.emplace_back(db::experimental_features_t::CDC);
-    cfg->experimental_features(features);
-    return cql_test_config(std::move(cfg));
-};
-
 namespace cdc {
 api::timestamp_type find_timestamp(const mutation&);
 utils::UUID generate_timeuuid(api::timestamp_type);
@@ -120,7 +110,7 @@ SEASTAR_THREAD_TEST_CASE(test_find_mutation_timestamp) {
         check_stmt("DELETE vut.b FROM t WHERE pk = 0 AND ck = 0");
         check_stmt("DELETE vfut FROM t WHERE pk = 0 AND ck = 0");
         check_stmt("DELETE vstatic FROM t WHERE pk = 0");
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_generate_timeuuid) {
@@ -188,7 +178,7 @@ SEASTAR_THREAD_TEST_CASE(test_with_cdc_parameter) {
         test("WITH cdc = {'enabled':'false'}", "{'enabled':'true'}", "{'enabled':'false'}", {false}, {true}, {false});
         test("", "{'enabled':'true','preimage':'true','postimage':'true','ttl':'1'}", "{'enabled':'false'}", {false}, {true, true, true, 1}, {false});
         test("WITH cdc = {'enabled':'true','preimage':'true','postimage':'true','ttl':'1'}", "{'enabled':'false'}", "{'enabled':'true','preimage':'false','postimage':'true','ttl':'2'}", {true, true, true, 1}, {false}, {true, false, true, 2});
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_detecting_conflict_of_cdc_log_table_with_existing_table) {
@@ -202,7 +192,7 @@ SEASTAR_THREAD_TEST_CASE(test_detecting_conflict_of_cdc_log_table_with_existing_
         e.execute_cql("CREATE TABLE ks.tbl (a int PRIMARY KEY)").get();
         e.require_table_exists("ks", "tbl").get();
         BOOST_REQUIRE_THROW(e.execute_cql("ALTER TABLE ks.tbl WITH cdc = {'enabled': true}").get(), exceptions::invalid_request_exception);
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_permissions_of_cdc_log_table) {
@@ -236,7 +226,7 @@ SEASTAR_THREAD_TEST_CASE(test_permissions_of_cdc_log_table) {
 
         // Disallow DROP
         assert_unauthorized("DROP TABLE " + log_table);
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_disallow_cdc_on_materialized_view) {
@@ -246,7 +236,7 @@ SEASTAR_THREAD_TEST_CASE(test_disallow_cdc_on_materialized_view) {
 
         BOOST_REQUIRE_THROW(e.execute_cql("CREATE MATERIALIZED VIEW ks.mv AS SELECT a FROM ks.tbl PRIMARY KEY (a) WITH cdc = {'enabled': true}").get(), exceptions::invalid_request_exception);
         e.require_table_does_not_exist("ks", "mv").get();
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_permissions_of_cdc_description) {
@@ -274,7 +264,7 @@ SEASTAR_THREAD_TEST_CASE(test_permissions_of_cdc_description) {
 
         test_table("cdc_streams_descriptions");
         test_table("cdc_generation_descriptions");
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_cdc_log_schema) {
@@ -315,6 +305,7 @@ SEASTAR_THREAD_TEST_CASE(test_cdc_log_schema) {
         // cdc log clustering key
         assert_has_column(cdc::log_meta_column_name("operation"), byte_type);
         assert_has_column(cdc::log_meta_column_name("ttl"), long_type);
+        assert_has_column(cdc::log_meta_column_name("end_of_batch"), boolean_type);
 
         // pk
         assert_has_column(cdc::log_data_column_name("pk"), int32_type);
@@ -359,7 +350,7 @@ SEASTAR_THREAD_TEST_CASE(test_cdc_log_schema) {
 
         // Check if we missed something
         BOOST_REQUIRE_EQUAL(required_column_count, log_schema->all_columns_count());
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 static std::vector<std::vector<bytes_opt>> to_bytes(const cql_transport::messages::result_message::rows& rows) {
@@ -501,7 +492,7 @@ SEASTAR_THREAD_TEST_CASE(test_primary_key_logging) {
         // DELETE FROM ks.tbl WHERE pk = 1 AND pk2 = 11
         assert_row(1, 11);
         BOOST_REQUIRE(actual_i == actual_end);
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_pre_post_image_logging) {
@@ -523,6 +514,7 @@ SEASTAR_THREAD_TEST_CASE(test_pre_post_image_logging) {
             auto val_index = column_index(*rows, cdc::log_data_column_name("val"));
             auto val2_index = column_index(*rows, cdc::log_data_column_name("val2"));
             auto ttl_index = column_index(*rows, cdc::log_meta_column_name("ttl"));
+            auto eor_index = column_index(*rows, cdc::log_meta_column_name("end_of_batch"));
 
             auto val_type = int32_type;
             auto val = *first[0][val_index];
@@ -556,7 +548,7 @@ SEASTAR_THREAD_TEST_CASE(test_pre_post_image_logging) {
                     BOOST_REQUIRE_EQUAL(pre_image.size(), i + 1);
 
                     val = *pre_image.back()[val_index];
-                    // note: no val2 in pre-image, because we are not modifying it. 
+                    // note: no val2 in pre-image, because we are not modifying it.
                     BOOST_REQUIRE_EQUAL(int32_type->decompose(1111), *pre_image.back()[ck2_index]);
                     BOOST_REQUIRE_EQUAL(data_value(last), val_type->deserialize(bytes_view(val)));
                     BOOST_REQUIRE_EQUAL(bytes_opt(), pre_image.back()[ttl_index]);
@@ -572,10 +564,12 @@ SEASTAR_THREAD_TEST_CASE(test_pre_post_image_logging) {
                 if (post_enabled) {
                     val = *post_image.back()[val_index];
                     val2 = *post_image.back()[val2_index];
+                    auto eor = *post_image.back()[eor_index];
 
                     BOOST_REQUIRE_EQUAL(int32_type->decompose(1111), *post_image.back()[ck2_index]);
                     BOOST_REQUIRE_EQUAL(data_value(nv), val_type->deserialize(bytes_view(val)));
                     BOOST_REQUIRE_EQUAL(data_value(22222), val_type->deserialize(bytes_view(val2)));
+                    BOOST_REQUIRE_EQUAL(data_value(true), boolean_type->deserialize(bytes_view(eor)));
                 }
 
                 const auto& ttl_cell = second[second.size() - 2][ttl_index];
@@ -597,7 +591,7 @@ SEASTAR_THREAD_TEST_CASE(test_pre_post_image_logging) {
                 }
             }
         }
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_pre_post_image_logging_static_row) {
@@ -671,7 +665,7 @@ SEASTAR_THREAD_TEST_CASE(test_pre_post_image_logging_static_row) {
         test(true, false);
         test(false, true);
         test(false, false);
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_range_deletion) {
@@ -680,7 +674,7 @@ SEASTAR_THREAD_TEST_CASE(test_range_deletion) {
         cquery_nofail(e, "DELETE FROM ks.tbl WHERE pk = 123 AND ck > 1 AND ck < 23");
         cquery_nofail(e, "DELETE FROM ks.tbl WHERE pk = 123 AND ck >= 4 AND ck <= 56");
 
-        auto msg = e.execute_cql(format("SELECT \"{}\", \"{}\", \"{}\", \"{}\" FROM ks.{}", 
+        auto msg = e.execute_cql(format("SELECT \"{}\", \"{}\", \"{}\", \"{}\" FROM ks.{}",
             cdc::log_meta_column_name("time"),
             cdc::log_data_column_name("pk"),
             cdc::log_data_column_name("ck"),
@@ -715,7 +709,7 @@ SEASTAR_THREAD_TEST_CASE(test_range_deletion) {
         // ck >= 4 AND ck <= 56
         check_row(4, cdc::operation::range_delete_start_inclusive);
         check_row(56, cdc::operation::range_delete_end_inclusive);
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_add_columns) {
@@ -739,11 +733,11 @@ SEASTAR_THREAD_TEST_CASE(test_add_columns) {
         auto kokos = *inserts.back()[kokos_index];
 
         BOOST_REQUIRE_EQUAL(data_value("kaka"), kokos_type->deserialize(bytes_view(kokos)));
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
-// #5582 - just quickly test that we can create the cdc enabled table on a different shard 
-// and still get the logs proper. 
+// #5582 - just quickly test that we can create the cdc enabled table on a different shard
+// and still get the logs proper.
 SEASTAR_THREAD_TEST_CASE(test_cdc_across_shards) {
     do_with_cql_env_thread([](cql_test_env& e) {
         if (smp::count < 2) {
@@ -761,7 +755,7 @@ SEASTAR_THREAD_TEST_CASE(test_cdc_across_shards) {
         auto rows = select_log(e, "tbl");
 
         BOOST_REQUIRE(!to_bytes_filtered(*rows, cdc::operation::insert).empty());
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_negative_ttl_fail) {
@@ -769,7 +763,7 @@ SEASTAR_THREAD_TEST_CASE(test_negative_ttl_fail) {
         BOOST_REQUIRE_EXCEPTION(e.execute_cql("CREATE TABLE ks.fail (a int PRIMARY KEY, b int) WITH cdc = {'enabled':true,'ttl':'-1'}").get0(),
                 exceptions::configuration_exception,
                 exception_predicate::message_contains("ttl"));
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_ttls) {
@@ -819,11 +813,11 @@ SEASTAR_THREAD_TEST_CASE(test_ttls) {
                 auto cell_ttl_seconds = value_cast<int32_t>(cell_ttl);
                 // 30% tolerance in case of slow execution (a little flaky...)
                 BOOST_REQUIRE_CLOSE((float)cell_ttl_seconds, (float)ttl_seconds, 30.f);
-            }            
+            }
         };
         test_ttl(0);
         test_ttl(10);
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 // helper funcs + structs for collection testing
@@ -840,13 +834,13 @@ struct col_test {
     data_value post = data_value::make_null(int32_type); // whatever
 };
 
-// iterate a set of updates and verify pre and delta values. 
+// iterate a set of updates and verify pre and delta values.
 static void test_collection(cql_test_env& e, data_type val_type, data_type del_type, std::vector<col_test> tests, translate_func f = [](data_value v) { return v; }) {
     auto col_type = val_type;
 
     for (auto& t : tests) {
         cquery_nofail(e, t.update);
-        
+
         auto rows = select_log(e, "tbl");
         auto pre_image = to_bytes_filtered(*rows, cdc::operation::pre_image);
         auto updates = to_bytes_filtered(*rows, cdc::operation::update);
@@ -907,7 +901,7 @@ SEASTAR_THREAD_TEST_CASE(test_map_logging) {
         auto map_keys_type = set_type_impl::get_instance(utf8_type, false);
 
         test_collection(e, map_type, map_keys_type, {
-            { 
+            {
                 "UPDATE ks.tbl set val = { 'apa':'ko' } where pk=1 and pk2=11 and ck=111",
                 data_value::make_null(map_type), // no previous value
                 {
@@ -919,7 +913,7 @@ SEASTAR_THREAD_TEST_CASE(test_map_logging) {
                 },
                 ::make_map_value(map_type, { { "apa", "ko" } })
             },
-            { 
+            {
                 "UPDATE ks.tbl set val = val + { 'ninja':'mission' } where pk=1 and pk2=11 and ck=111",
                 ::make_map_value(map_type, { { "apa", "ko" } }),
                 {
@@ -930,9 +924,9 @@ SEASTAR_THREAD_TEST_CASE(test_map_logging) {
                 },
                 ::make_map_value(map_type, { { "apa", "ko" }, { "ninja", "mission" } })
             },
-            { 
+            {
                 "UPDATE ks.tbl set val['ninja'] = 'shuriken' where pk=1 and pk2=11 and ck=111",
-                ::make_map_value(map_type, { { "apa", "ko" }, { "ninja", "mission" } }), 
+                ::make_map_value(map_type, { { "apa", "ko" }, { "ninja", "mission" } }),
                 {
                     {
                         ::make_map_value(map_type, { { "ninja", "shuriken" } }),
@@ -941,9 +935,9 @@ SEASTAR_THREAD_TEST_CASE(test_map_logging) {
                 },
                 ::make_map_value(map_type, { { "apa", "ko" }, { "ninja", "shuriken" } })
             },
-            { 
+            {
                 "UPDATE ks.tbl set val['apa'] = null where pk=1 and pk2=11 and ck=111",
-                ::make_map_value(map_type, { { "apa", "ko" }, { "ninja", "shuriken" } }), 
+                ::make_map_value(map_type, { { "apa", "ko" }, { "ninja", "shuriken" } }),
                 {
                     {
                         data_value::make_null(map_type),
@@ -952,9 +946,9 @@ SEASTAR_THREAD_TEST_CASE(test_map_logging) {
                 },
                 ::make_map_value(map_type, { { "ninja", "shuriken" } })
             },
-            { 
+            {
                 "UPDATE ks.tbl set val['ninja'] = null, val['ola'] = 'kokos' where pk=1 and pk2=11 and ck=111",
-                ::make_map_value(map_type, { { "ninja", "shuriken" } }), 
+                ::make_map_value(map_type, { { "ninja", "shuriken" } }),
                 {
                     {
                         ::make_map_value(map_type, { { "ola", "kokos" } }),
@@ -963,9 +957,9 @@ SEASTAR_THREAD_TEST_CASE(test_map_logging) {
                 },
                 ::make_map_value(map_type, { { "ola", "kokos" } })
             },
-            { 
+            {
                 "UPDATE ks.tbl set val = { 'bolla':'trolla', 'kork':'skruv' } where pk=1 and pk2=11 and ck=111",
-                ::make_map_value(map_type, { { "ola", "kokos" } }), 
+                ::make_map_value(map_type, { { "ola", "kokos" } }),
                 {
                     {
                         ::make_map_value(map_type, { { "bolla", "trolla" }, { "kork", "skruv" } }),
@@ -977,7 +971,7 @@ SEASTAR_THREAD_TEST_CASE(test_map_logging) {
             }
 
         });
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_set_logging) {
@@ -988,7 +982,7 @@ SEASTAR_THREAD_TEST_CASE(test_set_logging) {
         });
 
         auto set_type = set_type_impl::get_instance(utf8_type, false);
-        
+
         test_collection(e, set_type, set_type, {
             {
                 "UPDATE ks.tbl set val = { 'apa', 'ko' } where pk=1 and pk2=11 and ck=111",
@@ -1015,7 +1009,7 @@ SEASTAR_THREAD_TEST_CASE(test_set_logging) {
             },
             {
                 "UPDATE ks.tbl set val = val - { 'apa' } where pk=1 and pk2=11 and ck=111",
-                ::make_set_value(set_type, { "apa", "ko", "mission", "ninja" }), 
+                ::make_set_value(set_type, { "apa", "ko", "mission", "ninja" }),
                 {
                     {
                         data_value::make_null(set_type),
@@ -1026,7 +1020,7 @@ SEASTAR_THREAD_TEST_CASE(test_set_logging) {
             },
             {
                 "UPDATE ks.tbl set val = val - { 'mission' }, val = val + { 'nils' } where pk=1 and pk2=11 and ck=111",
-                ::make_set_value(set_type, { "ko", "mission", "ninja" }), 
+                ::make_set_value(set_type, { "ko", "mission", "ninja" }),
                 {
                     {
                         ::make_set_value(set_type, { "nils" }),
@@ -1048,7 +1042,7 @@ SEASTAR_THREAD_TEST_CASE(test_set_logging) {
                 ::make_set_value(set_type, { "bolla", "trolla" })
             }
         });
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_list_logging) {
@@ -1061,11 +1055,11 @@ SEASTAR_THREAD_TEST_CASE(test_list_logging) {
         auto list_type = list_type_impl::get_instance(utf8_type, false);
         auto uuids_type = set_type_impl::get_instance(timeuuid_type, false);
         auto val_type = map_type_impl::get_instance(list_type->name_comparator(), list_type->value_comparator(), false);
-        
+
         test_collection(e, val_type, uuids_type, {
             {
                 "UPDATE ks.tbl set val = [ 'apa', 'ko' ] where pk=1 and pk2=11 and ck=111",
-                data_value::make_null(list_type), 
+                data_value::make_null(list_type),
                 {
                     {
                         ::make_list_value(list_type, { "apa", "ko" }),
@@ -1110,7 +1104,7 @@ SEASTAR_THREAD_TEST_CASE(test_list_logging) {
             },
             {
                 "UPDATE ks.tbl set val[0] = 'babar' where pk=1 and pk2=11 and ck=111",
-                ::make_list_value(list_type, { "apa", "ko", "ninja", "mission" }), 
+                ::make_list_value(list_type, { "apa", "ko", "ninja", "mission" }),
                 {
                     {
                         ::make_list_value(list_type, { "babar" }),
@@ -1140,7 +1134,7 @@ SEASTAR_THREAD_TEST_CASE(test_list_logging) {
             }
             return ::make_list_value(list_type, std::move(cpy));
         });
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_udt_logging) {
@@ -1152,7 +1146,7 @@ SEASTAR_THREAD_TEST_CASE(test_udt_logging) {
             e.execute_cql("DROP TYPE ks.mytype").get();
         });
 
-        auto udt_type = user_type_impl::get_instance("ks", to_bytes("mytype"), 
+        auto udt_type = user_type_impl::get_instance("ks", to_bytes("mytype"),
             { to_bytes("field0"), to_bytes("field1") },
             { int32_type, utf8_type },
             false
@@ -1160,18 +1154,18 @@ SEASTAR_THREAD_TEST_CASE(test_udt_logging) {
         auto index_set_type = set_type_impl::get_instance(short_type, false);
         auto f0_type = int32_type;
         auto f1_type = utf8_type;
-        
+
         auto make_tuple = [&](std::optional<std::optional<int32_t>> i, std::optional<std::optional<sstring>> s) {
             return ::make_user_value(udt_type, {
                 i ? ::data_value(*i) : data_value::make_null(f0_type),
                 s ? ::data_value(*s) : data_value::make_null(f1_type),
             });
         };
-        
+
         test_collection(e, udt_type, index_set_type, {
             {
                 "UPDATE ks.tbl set val = { field0: 12, field1: 'ko' } where pk=1 and pk2=11 and ck=111",
-                data_value::make_null(udt_type), 
+                data_value::make_null(udt_type),
                 {
                     {
                         make_tuple(12, "ko"),
@@ -1227,7 +1221,7 @@ SEASTAR_THREAD_TEST_CASE(test_udt_logging) {
                 make_tuple(1, "bolla")
             },
         });
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_frozen_logging) {
@@ -1278,7 +1272,7 @@ SEASTAR_THREAD_TEST_CASE(test_frozen_logging) {
         test_frozen("frozen<set<text>>", "{'a', 'bb', 'ccc'}");
         test_frozen("frozen<map<text, text>>", "{'a': 'bb', 'ccc': 'dddd'}");
         test_frozen("frozen<udt>", "{a: 'bb', ccc: 'dddd'}");
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_update_insert_delete_distinction) {
@@ -1310,7 +1304,32 @@ SEASTAR_THREAD_TEST_CASE(test_update_insert_delete_distinction) {
 
         BOOST_REQUIRE_EQUAL(results[3].size(), 1);
         BOOST_REQUIRE_EQUAL(*results[3].front(), data_value(static_cast<int8_t>(cdc::operation::row_delete)).serialize_nonnull()); // log entry from (3)
-    }, mk_cdc_test_config()).get();
+    }).get();
+}
+
+static std::vector<std::vector<data_value>> get_result(cql_test_env& e,
+        const std::vector<data_type>& col_types, const sstring& query) {
+    auto deser = [] (const data_type& t, const bytes_opt& b) -> data_value {
+        if (!b) {
+            return data_value::make_null(t);
+        }
+        return t->deserialize(*b);
+    };
+
+    auto msg = e.execute_cql(query).get0();
+    auto rows = dynamic_pointer_cast<cql_transport::messages::result_message::rows>(msg);
+    BOOST_REQUIRE(rows);
+
+    std::vector<std::vector<data_value>> res;
+    for (auto&& r: to_bytes(*rows)) {
+        BOOST_REQUIRE_LE(col_types.size(), r.size());
+        std::vector<data_value> res_r;
+        for (size_t i = 0; i < col_types.size(); ++i) {
+            res_r.push_back(deser(col_types[i], r[i]));
+        }
+        res.push_back(std::move(res_r));
+    }
+    return res;
 }
 
 SEASTAR_THREAD_TEST_CASE(test_change_splitting) {
@@ -1335,28 +1354,8 @@ SEASTAR_THREAD_TEST_CASE(test_change_splitting) {
             return make_set_value(keys_type, std::move(s));
         };
 
-        auto deser = [] (const data_type& t, const bytes_opt& b) -> data_value {
-            if (!b) {
-                return data_value::make_null(t);
-            }
-            return t->deserialize(*b);
-        };
-
         auto get_result = [&] (const std::vector<data_type>& col_types, const sstring& s) -> std::vector<std::vector<data_value>> {
-            auto msg = e.execute_cql(s).get0();
-            auto rows = dynamic_pointer_cast<cql_transport::messages::result_message::rows>(msg);
-            BOOST_REQUIRE(rows);
-
-            std::vector<std::vector<data_value>> res;
-            for (auto&& r: to_bytes(*rows)) {
-                BOOST_REQUIRE_LE(col_types.size(), r.size());
-                std::vector<data_value> res_r;
-                for (size_t i = 0; i < col_types.size(); ++i) {
-                    res_r.push_back(deser(col_types[i], r[i]));
-                }
-                res.push_back(std::move(res_r));
-            }
-            return res;
+            return ::get_result(e, col_types, s);
         };
 
         cquery_nofail(e, "create table ks.t (pk int, ck int, s int static, v1 int, v2 int, m map<int, int>, primary key (pk, ck)) with cdc = {'enabled':true}");
@@ -1555,7 +1554,7 @@ SEASTAR_THREAD_TEST_CASE(test_change_splitting) {
             };
             BOOST_REQUIRE_EQUAL(expected, result);
         }
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_batch_with_row_delete) {
@@ -1619,7 +1618,7 @@ SEASTAR_THREAD_TEST_CASE(test_batch_with_row_delete) {
             BOOST_REQUIRE_EQUAL(deser(s_type, r[3]), er[3]);
             BOOST_REQUIRE_EQUAL(deser(oper_type, r[4]), er[4]);
         }
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 struct image_set {
@@ -1928,7 +1927,7 @@ void test_batch_images(bool preimage, bool postimage) {
                 }
             }
         }, preimage, postimage);
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_batch_pre_image) {
@@ -1941,4 +1940,25 @@ SEASTAR_THREAD_TEST_CASE(test_batch_post_image) {
 
 SEASTAR_THREAD_TEST_CASE(test_batch_pre_post_image) {
     test_batch_images(true, true);
+}
+
+// Regression test for #7716
+SEASTAR_THREAD_TEST_CASE(test_postimage_with_no_regular_columns) {
+    do_with_cql_env_thread([] (cql_test_env& e) {
+        using oper_ut = std::underlying_type_t<cdc::operation>;
+
+        cquery_nofail(e, "create table ks.t (pk int, ck int, primary key (pk, ck)) with cdc = {'enabled': true, 'postimage': true}");
+        cquery_nofail(e, "insert into ks.t (pk, ck) values (1, 2)");
+
+        auto result = get_result(e,
+            {data_type_for<oper_ut>(), int32_type, int32_type},
+            "select \"cdc$operation\", pk, ck from ks.t_scylla_cdc_log");
+
+        std::vector<std::vector<data_value>> expected = {
+            { oper_ut(cdc::operation::insert), int32_t(1), int32_t(2) },
+            { oper_ut(cdc::operation::post_image), int32_t(1), int32_t(2) },
+        };
+
+        BOOST_REQUIRE_EQUAL(expected, result);
+    }).get();
 }

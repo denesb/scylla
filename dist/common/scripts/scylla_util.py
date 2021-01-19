@@ -81,7 +81,7 @@ def scyllabindir():
 
 
 # @param headers dict of k:v
-def curl(url, headers=None, byte=False, timeout=3, max_retries=5):
+def curl(url, headers=None, byte=False, timeout=3, max_retries=5, retry_interval=5):
     retries = 0
     while True:
         try:
@@ -91,9 +91,8 @@ def curl(url, headers=None, byte=False, timeout=3, max_retries=5):
                     return res.read()
                 else:
                     return res.read().decode('utf-8')
-        except urllib.error.HTTPError:
-            logging.warning("Failed to grab %s..." % url)
-            time.sleep(5)
+        except urllib.error.URLError:
+            time.sleep(retry_interval)
             retries += 1
             if retries >= max_retries:
                 raise
@@ -177,7 +176,7 @@ class gcp_instance:
         """get list of nvme disks from metadata server"""
         import json
         try:
-            disksREST=self.__instance_metadata("disks")
+            disksREST=self.__instance_metadata("disks", True)
             disksobj=json.loads(disksREST)
             nvmedisks=list(filter(self.isNVME, disksobj))
         except Exception as e:
@@ -225,7 +224,8 @@ class gcp_instance:
 
     def instance_size(self):
         """Returns the size of the instance we are running in. i.e.: 2"""
-        return self.instancetype.split("-")[2]
+        instancetypesplit = self.instancetype.split("-")
+        return instancetypesplit[2] if len(instancetypesplit)>2 else 0
 
     def instance_class(self):
         """Returns the class of the instance we are running in. i.e.: n2"""
@@ -287,22 +287,30 @@ class gcp_instance:
         return self.__firstNvmeSize
 
     def is_recommended_instance(self):
-        if self.is_recommended_instance_size() and not self.is_unsupported_instance_class() and self.is_supported_instance_class():
+        if not self.is_unsupported_instance_class() and self.is_supported_instance_class() and self.is_recommended_instance_size():
             # at least 1:2GB cpu:ram ratio , GCP is at 1:4, so this should be fine
             if self.cpu/self.memoryGB < 0.5:
-              # 30:1 Disk/RAM ratio must be kept at least(AWS), we relax this a little bit
-              # on GCP we are OK with 50:1 , n1-standard-2 can cope with 1 disk, not more
-              diskCount = self.nvmeDiskCount
-              # to reach max performance for > 16 disks we mandate 32 or more vcpus
-              # https://cloud.google.com/compute/docs/disks/local-ssd#performance
-              if diskCount >= 16 and self.cpu < 32:
-                  return False
-              diskSize= self.firstNvmeSize
-              if diskCount < 1:
-                  return False
-              disktoramratio = (diskCount*diskSize)/self.memoryGB
-              if (disktoramratio <= 50) and (disktoramratio > 0):
-                  return True
+                diskCount = self.nvmeDiskCount
+                # to reach max performance for > 16 disks we mandate 32 or more vcpus
+                # https://cloud.google.com/compute/docs/disks/local-ssd#performance
+                if diskCount >= 16 and self.cpu < 32:
+                    logging.warning(
+                        "This machine doesn't have enough CPUs for allocated number of NVMEs (at least 32 cpus for >=16 disks). Performance will suffer.")
+                    return False
+                diskSize = self.firstNvmeSize
+                if diskCount < 1:
+                    return False
+                max_disktoramratio = 105
+                # 30:1 Disk/RAM ratio must be kept at least(AWS), we relax this a little bit
+                # on GCP we are OK with {max_disktoramratio}:1 , n1-standard-2 can cope with 1 disk, not more
+                disktoramratio = (diskCount * diskSize) / self.memoryGB
+                if (disktoramratio > max_disktoramratio):
+                    logging.warning(
+                        f"Instance disk-to-RAM ratio is {disktoramratio}, which is higher than the recommended ratio {max_disktoramratio}. Performance may suffer.")
+                    return False
+                return True
+            else:
+                logging.warning("At least 2G of RAM per CPU is needed. Performance will suffer.")
         return False
 
     def private_ipv4(self):
@@ -387,7 +395,7 @@ class aws_instance:
     def is_aws_instance(cls):
         """Check if it's AWS instance via query to metadata server."""
         try:
-            curl(cls.META_DATA_BASE_URL, max_retries=2)
+            curl(cls.META_DATA_BASE_URL, max_retries=2, retry_interval=1)
             return True
         except (urllib.error.URLError, urllib.error.HTTPError):
             return False
@@ -451,7 +459,7 @@ class aws_instance:
 
     def ebs_disks(self):
         """Returns all EBS disks"""
-        return set(self._disks["ephemeral"])
+        return set(self._disks["ebs"])
 
     def public_ipv4(self):
         """Returns the public IPv4 address of this instance"""
@@ -479,9 +487,7 @@ class aws_instance:
         return curl(self.META_DATA_BASE_URL + "user-data")
 
 
-# When a CLI tool is not installed, use relocatable CLI tool provided by Scylla
 scylla_env = os.environ.copy()
-scylla_env['PATH'] =  '{}:{}'.format(scyllabindir(), scylla_env['PATH'])
 scylla_env['DEBIAN_FRONTEND'] = 'noninteractive'
 
 def run(cmd, shell=False, silent=False, exception=True):

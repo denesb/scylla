@@ -20,6 +20,7 @@
 #include <seastar/core/print.hh>
 #include <seastar/util/log.hh>
 
+#include "cdc/cdc_extension.hh"
 #include "config.hh"
 #include "extensions.hh"
 #include "log.hh"
@@ -688,7 +689,7 @@ db::config::config(std::shared_ptr<db::extensions> exts)
     , replace_address(this, "replace_address", value_status::Used, "", "The listen_address or broadcast_address of the dead node to replace. Same as -Dcassandra.replace_address.")
     , replace_address_first_boot(this, "replace_address_first_boot", value_status::Used, "", "Like replace_address option, but if the node has been bootstrapped successfully it will be ignored. Same as -Dcassandra.replace_address_first_boot.")
     , override_decommission(this, "override_decommission", value_status::Used, false, "Set true to force a decommissioned node to join the cluster")
-    , enable_repair_based_node_ops(this, "enable_repair_based_node_ops", liveness::LiveUpdate, value_status::Used, true, "Set true to use enable repair based node operations instead of streaming based")
+    , enable_repair_based_node_ops(this, "enable_repair_based_node_ops", liveness::LiveUpdate, value_status::Used, false, "Set true to use enable repair based node operations instead of streaming based")
     , ring_delay_ms(this, "ring_delay_ms", value_status::Used, 30 * 1000, "Time a node waits to hear from other nodes before joining the ring in milliseconds. Same as -Dcassandra.ring_delay_ms in cassandra.")
     , shadow_round_ms(this, "shadow_round_ms", value_status::Used, 300 * 1000, "The maximum gossip shadow round time. Can be used to reduce the gossip feature check time during node boot up.")
     , fd_max_interval_ms(this, "fd_max_interval_ms", value_status::Used, 2 * 1000, "The maximum failure_detector interval time in milliseconds. Interval larger than the maximum will be ignored. Larger cluster may need to increase the default.")
@@ -800,6 +801,10 @@ db::config::config()
 db::config::~config()
 {}
 
+void db::config::add_cdc_extension() {
+    _extensions->add_schema_extension<cdc::cdc_extension>(cdc::cdc_extension::NAME);
+}
+
 void db::config::setup_directories() {
     maybe_in_workdir(commitlog_directory, "commitlog");
     maybe_in_workdir(data_file_directories, "data");
@@ -882,7 +887,7 @@ db::fs::path db::config::get_conf_sub(db::fs::path sub) {
 }
 
 bool db::config::check_experimental(experimental_features_t::feature f) const {
-    if (experimental() && f != experimental_features_t::UNUSED) {
+    if (experimental() && f != experimental_features_t::UNUSED && f != experimental_features_t::UNUSED_CDC) {
         return true;
     }
     const auto& optval = experimental_features();
@@ -936,11 +941,13 @@ std::unordered_map<sstring, db::experimental_features_t::feature> db::experiment
     // https://github.com/scylladb/scylla/pull/5369#discussion_r353614807
     // Lightweight transactions are no longer experimental. Map them
     // to UNUSED switch for a while, then remove altogether.
-    return {{"lwt", UNUSED}, {"udf", UDF}, {"cdc", CDC}};
+    // Change Data Capture is no longer experimental. Map it
+    // to UNUSED_CDC switch for a while, then remove altogether.
+    return {{"lwt", UNUSED}, {"udf", UDF}, {"cdc", UNUSED_CDC}, {"alternator-streams", ALTERNATOR_STREAMS}};
 }
 
 std::vector<enum_option<db::experimental_features_t>> db::experimental_features_t::all() {
-    return {UDF, CDC};
+    return {UDF, ALTERNATOR_STREAMS};
 }
 
 template struct utils::config_file::named_value<seastar::log_level>;

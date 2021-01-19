@@ -673,6 +673,8 @@ void process_changes_with_splitting(const mutation& base_mutation, change_proces
                 processor.produce_postimage(&ck);
             }
         }
+
+        processor.end_record();
     }
 }
 
@@ -720,6 +722,8 @@ void process_changes_without_splitting(const mutation& base_mutation, change_pro
             processor.produce_postimage(&cr.key());
         }
     }
+
+    processor.end_record();
 }
 
 } // namespace cdc

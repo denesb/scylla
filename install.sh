@@ -131,7 +131,7 @@ DEBIAN_SSL_CERT_FILE="/etc/ssl/certs/ca-certificates.crt"
 if [ -f "\${DEBIAN_SSL_CERT_FILE}" ]; then
   c=\${DEBIAN_SSL_CERT_FILE}
 fi
-PYTHONPATH="\${d}:\${d}/libexec:\$PYTHONPATH" PATH="\${d}/$pythonpath:\${PATH}" SSL_CERT_FILE="\${c}" exec -a "\$0" "\${d}/libexec/\${b}" "\$@"
+PYTHONPATH="\${d}:\${d}/libexec:\$PYTHONPATH" PATH="\${d}/../bin:\${d}/$pythonpath:\${PATH}" SSL_CERT_FILE="\${c}" exec -a "\$0" "\${d}/libexec/\${b}" "\$@"
 EOF
     chmod +x "$install"
 }
@@ -401,6 +401,10 @@ elif ! $packaging; then
     chown -R scylla:scylla $rdata
     chown -R scylla:scylla $rhkdata
 
+    for file in dist/common/sysctl.d/*.conf; do
+        bn=$(basename "$file")
+        sysctl -p "$rusr"/lib/sysctl.d/"$bn"
+    done
     $rprefix/scripts/scylla_post_install.sh
     echo "Scylla offline install completed."
 fi

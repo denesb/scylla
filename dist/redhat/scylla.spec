@@ -130,10 +130,9 @@ rm -rf $RPM_BUILD_ROOT
 %attr(0755,scylla,scylla) %dir %{_sharedstatedir}/scylla-housekeeping
 %ghost /etc/systemd/system/scylla-helper.slice.d/
 %ghost /etc/systemd/system/scylla-helper.slice.d/memory.conf
-%ghost /etc/systemd/system/scylla-server.service.d/
 %ghost /etc/systemd/system/scylla-server.service.d/capabilities.conf
 %ghost /etc/systemd/system/scylla-server.service.d/mounts.conf
-%ghost /etc/systemd/system/scylla-server.service.d/dependencies.conf
+/etc/systemd/system/scylla-server.service.d/dependencies.conf
 %ghost /etc/systemd/system/var-lib-systemd-coredump.mount
 %ghost /etc/systemd/system/scylla-cpupower.service
 %ghost /etc/systemd/system/var-lib-scylla.mount
@@ -193,6 +192,8 @@ License:        Proprietary
 URL:            http://www.scylladb.com/
 Requires:       kmod
 Obsoletes:      scylla-enterprise-kernel-conf < 2.2
+# tuned overwrites our sysctl settings
+Obsoletes:	tuned
 
 %description kernel-conf
 This package contains Linux kernel configuration changes for the Scylla database.  Install this package
@@ -204,6 +205,7 @@ if Scylla is the main application on your server and you wish to optimize its la
 /usr/lib/systemd/systemd-sysctl 99-scylla-sched.conf >/dev/null 2>&1 || :
 /usr/lib/systemd/systemd-sysctl 99-scylla-aio.conf >/dev/null 2>&1 || :
 /usr/lib/systemd/systemd-sysctl 99-scylla-vm.conf >/dev/null 2>&1 || :
+/usr/lib/systemd/systemd-sysctl 99-scylla-inotify.conf >/dev/null 2>&1 || :
 
 %files kernel-conf
 %defattr(-,root,root)

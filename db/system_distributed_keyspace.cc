@@ -128,6 +128,10 @@ static std::vector<schema_ptr> all_tables(const database& db) {
     return ret;
 }
 
+bool system_distributed_keyspace::is_extra_durable(const sstring& cf_name) {
+    return cf_name == CDC_TOPOLOGY_DESCRIPTION;
+}
+
 system_distributed_keyspace::system_distributed_keyspace(cql3::query_processor& qp, service::migration_manager& mm)
         : _qp(qp)
         , _mm(mm) {

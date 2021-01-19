@@ -201,16 +201,18 @@ public:
 };
 
 struct compaction_writer {
+    shared_sstable sst;
     // We use a ptr for pointer stability and so that it can be null
     // when using a noop monitor.
     sstable_writer writer;
     // The order in here is important. A monitor must be destroyed before the writer it is monitoring since it has a
     // periodic timer that checks the writer.
+    // The writer must be destroyed before the shared_sstable since the it may depend on the sstable
+    // (as in the mx::writer over compressed_file_data_sink_impl case that depends on sstables::compression).
     std::unique_ptr<compaction_write_monitor> monitor;
-    shared_sstable sst;
 
     compaction_writer(std::unique_ptr<compaction_write_monitor> monitor, sstable_writer writer, shared_sstable sst)
-        : writer(std::move(writer)), monitor(std::move(monitor)), sst(std::move(sst)) {}
+        : sst(std::move(sst)), writer(std::move(writer)), monitor(std::move(monitor)) {}
     compaction_writer(sstable_writer writer, shared_sstable sst)
         : compaction_writer(nullptr, std::move(writer), std::move(sst)) {}
 };
@@ -598,10 +600,12 @@ private:
                                          std::move(gc_consumer));
 
             return seastar::async([cfc = std::move(cfc), reader = std::move(reader), this] () mutable {
-                reader.consume_in_thread(std::move(cfc), make_partition_filter(), db::no_timeout);
+                reader.consume_in_thread(std::move(cfc), db::no_timeout);
             });
         });
-        return consumer(make_sstable_reader());
+        // producer will filter out a partition before it reaches the consumer(s)
+        auto producer = make_filtering_reader(make_sstable_reader(), make_partition_filter());
+        return consumer(std::move(producer));
     }
 
     virtual reader_consumer make_interposer_consumer(reader_consumer end_consumer) {

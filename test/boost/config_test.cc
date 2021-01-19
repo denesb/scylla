@@ -920,10 +920,11 @@ SEASTAR_TEST_CASE(test_parse_experimental_features_cdc) {
     auto cfg_ptr = std::make_unique<config>();
     config& cfg = *cfg_ptr;
     cfg.read_from_yaml("experimental_features:\n    - cdc\n", throw_on_error);
-    BOOST_CHECK_EQUAL(cfg.experimental_features(), features{ef::CDC});
-    BOOST_CHECK(cfg.check_experimental(ef::CDC));
+    BOOST_CHECK_EQUAL(cfg.experimental_features(), features{ef::UNUSED_CDC});
+    BOOST_CHECK(cfg.check_experimental(ef::UNUSED_CDC));
     BOOST_CHECK(!cfg.check_experimental(ef::UNUSED));
     BOOST_CHECK(!cfg.check_experimental(ef::UDF));
+    BOOST_CHECK(!cfg.check_experimental(ef::ALTERNATOR_STREAMS));
     return make_ready_future();
 }
 
@@ -932,9 +933,10 @@ SEASTAR_TEST_CASE(test_parse_experimental_features_unused) {
     config& cfg = *cfg_ptr;
     cfg.read_from_yaml("experimental_features:\n    - lwt\n", throw_on_error);
     BOOST_CHECK_EQUAL(cfg.experimental_features(), features{ef::UNUSED});
-    BOOST_CHECK(!cfg.check_experimental(ef::CDC));
+    BOOST_CHECK(!cfg.check_experimental(ef::UNUSED_CDC));
     BOOST_CHECK(cfg.check_experimental(ef::UNUSED));
     BOOST_CHECK(!cfg.check_experimental(ef::UDF));
+    BOOST_CHECK(!cfg.check_experimental(ef::ALTERNATOR_STREAMS));
     return make_ready_future();
 }
 
@@ -943,9 +945,22 @@ SEASTAR_TEST_CASE(test_parse_experimental_features_udf) {
     config& cfg = *cfg_ptr;
     cfg.read_from_yaml("experimental_features:\n    - udf\n", throw_on_error);
     BOOST_CHECK_EQUAL(cfg.experimental_features(), features{ef::UDF});
-    BOOST_CHECK(!cfg.check_experimental(ef::CDC));
+    BOOST_CHECK(!cfg.check_experimental(ef::UNUSED_CDC));
     BOOST_CHECK(!cfg.check_experimental(ef::UNUSED));
     BOOST_CHECK(cfg.check_experimental(ef::UDF));
+    BOOST_CHECK(!cfg.check_experimental(ef::ALTERNATOR_STREAMS));
+    return make_ready_future();
+}
+
+SEASTAR_TEST_CASE(test_parse_experimental_features_alternator_streams) {
+    auto cfg_ptr = std::make_unique<config>();
+    config& cfg = *cfg_ptr;
+    cfg.read_from_yaml("experimental_features:\n    - alternator-streams\n", throw_on_error);
+    BOOST_CHECK_EQUAL(cfg.experimental_features(), features{ef::ALTERNATOR_STREAMS});
+    BOOST_CHECK(!cfg.check_experimental(ef::UNUSED_CDC));
+    BOOST_CHECK(!cfg.check_experimental(ef::UNUSED));
+    BOOST_CHECK(!cfg.check_experimental(ef::UDF));
+    BOOST_CHECK(cfg.check_experimental(ef::ALTERNATOR_STREAMS));
     return make_ready_future();
 }
 
@@ -953,10 +968,11 @@ SEASTAR_TEST_CASE(test_parse_experimental_features_multiple) {
     auto cfg_ptr = std::make_unique<config>();
     config& cfg = *cfg_ptr;
     cfg.read_from_yaml("experimental_features:\n    - cdc\n    - lwt\n    - cdc\n", throw_on_error);
-    BOOST_CHECK_EQUAL(cfg.experimental_features(), (features{ef::CDC, ef::UNUSED, ef::CDC}));
-    BOOST_CHECK(cfg.check_experimental(ef::CDC));
+    BOOST_CHECK_EQUAL(cfg.experimental_features(), (features{ef::UNUSED_CDC, ef::UNUSED, ef::UNUSED_CDC}));
+    BOOST_CHECK(cfg.check_experimental(ef::UNUSED_CDC));
     BOOST_CHECK(cfg.check_experimental(ef::UNUSED));
     BOOST_CHECK(!cfg.check_experimental(ef::UDF));
+    BOOST_CHECK(!cfg.check_experimental(ef::ALTERNATOR_STREAMS));
     return make_ready_future();
 }
 
@@ -968,9 +984,10 @@ SEASTAR_TEST_CASE(test_parse_experimental_features_invalid) {
                        [&cfg] (const sstring& opt, const sstring& msg, std::optional<value_status> status) {
                            BOOST_REQUIRE_EQUAL(opt, "experimental_features");
                            BOOST_REQUIRE_NE(msg.find("line 2, column 7"), msg.npos);
-                           BOOST_CHECK(!cfg.check_experimental(ef::CDC));
+                           BOOST_CHECK(!cfg.check_experimental(ef::UNUSED_CDC));
                            BOOST_CHECK(!cfg.check_experimental(ef::UNUSED));
                            BOOST_CHECK(!cfg.check_experimental(ef::UDF));
+                           BOOST_CHECK(!cfg.check_experimental(ef::ALTERNATOR_STREAMS));
                        });
     return make_ready_future();
 }
@@ -979,9 +996,10 @@ SEASTAR_TEST_CASE(test_parse_experimental_true) {
     auto cfg_ptr = std::make_unique<config>();
     config& cfg = *cfg_ptr;
     cfg.read_from_yaml("experimental: true", throw_on_error);
-    BOOST_CHECK(cfg.check_experimental(ef::CDC));
+    BOOST_CHECK(!cfg.check_experimental(ef::UNUSED_CDC));
     BOOST_CHECK(!cfg.check_experimental(ef::UNUSED));
     BOOST_CHECK(cfg.check_experimental(ef::UDF));
+    BOOST_CHECK(cfg.check_experimental(ef::ALTERNATOR_STREAMS));
     return make_ready_future();
 }
 
@@ -989,8 +1007,9 @@ SEASTAR_TEST_CASE(test_parse_experimental_false) {
     auto cfg_ptr = std::make_unique<config>();
     config& cfg = *cfg_ptr;
     cfg.read_from_yaml("experimental: false", throw_on_error);
-    BOOST_CHECK(!cfg.check_experimental(ef::CDC));
+    BOOST_CHECK(!cfg.check_experimental(ef::UNUSED_CDC));
     BOOST_CHECK(!cfg.check_experimental(ef::UNUSED));
     BOOST_CHECK(!cfg.check_experimental(ef::UDF));
+    BOOST_CHECK(!cfg.check_experimental(ef::ALTERNATOR_STREAMS));
     return make_ready_future();
 }

@@ -70,7 +70,7 @@ namespace db {
 
 /// Enumeration of all valid values for the `experimental` config entry.
 struct experimental_features_t {
-    enum feature { UNUSED, UDF, CDC };
+    enum feature { UNUSED, UDF, UNUSED_CDC, ALTERNATOR_STREAMS };
     static std::unordered_map<sstring, feature> map(); // See enum_option.
     static std::vector<enum_option<experimental_features_t>> all();
 };
@@ -80,6 +80,9 @@ public:
     config();
     config(std::shared_ptr<db::extensions>);
     ~config();
+
+    // For testing only
+    void add_cdc_extension();
 
     /// True iff the feature is enabled.
     bool check_experimental(experimental_features_t::feature f) const;
