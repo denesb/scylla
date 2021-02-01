@@ -46,7 +46,7 @@ static file prepare_test_file(const tmpdir& tmp, const sstring& name = test_file
 }
 
 SEASTAR_THREAD_TEST_CASE(test_mirror_file_create_delete) {
-    init_in_memory_file_store(smp::count);
+    init_in_memory_file_store(smp::count).get();
     auto img = defer([] { deinit_in_memory_file_store().get(); });
     auto tmp = tmpdir();
     auto name = test_file_name;
@@ -61,7 +61,7 @@ SEASTAR_THREAD_TEST_CASE(test_mirror_file_create_delete) {
 }
 
 SEASTAR_THREAD_TEST_CASE(test_mirror_file_rename) {
-    init_in_memory_file_store(smp::count);
+    init_in_memory_file_store(smp::count).get();
     auto img = defer([] { deinit_in_memory_file_store().get(); });
     auto tmp = tmpdir();
     auto old_name = test_file_name;
@@ -81,7 +81,7 @@ SEASTAR_THREAD_TEST_CASE(test_mirror_file_rename) {
 }
 
 SEASTAR_THREAD_TEST_CASE(test_mirror_file_link) {
-    init_in_memory_file_store(smp::count);
+    init_in_memory_file_store(smp::count).get();
     auto img = defer([] { deinit_in_memory_file_store().get(); });
     auto tmp = tmpdir();
     auto old_name = test_file_name;
@@ -105,7 +105,7 @@ SEASTAR_THREAD_TEST_CASE(test_mirror_file_link) {
 SEASTAR_THREAD_TEST_CASE(test_mirror_file_dma_read) {
     using char_type = uint8_t;
 
-    init_in_memory_file_store(smp::count);
+    init_in_memory_file_store(smp::count).get();
     auto img = defer([] { deinit_in_memory_file_store().get(); });
     auto tmp = tmpdir();
     auto name = test_file_name;
@@ -121,13 +121,13 @@ SEASTAR_THREAD_TEST_CASE(test_mirror_file_dma_read) {
 
     mirrored.close().get();
     // remove_memory_file to prevent memory leak
-    remove_memory_file(fpath.native());
+    remove_memory_file(fpath.native()).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_mirror_file_dma_read_exactly) {
     using char_type = uint8_t;
 
-    init_in_memory_file_store(smp::count);
+    init_in_memory_file_store(smp::count).get();
     auto img = defer([] { deinit_in_memory_file_store().get(); });
     auto tmp = tmpdir();
     auto name = test_file_name;
@@ -141,13 +141,13 @@ SEASTAR_THREAD_TEST_CASE(test_mirror_file_dma_read_exactly) {
 
     mirrored.close().get();
     // remove_memory_file to prevent memory leak
-    remove_memory_file(fpath.native());
+    remove_memory_file(fpath.native()).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_mirror_file_dma_read_iov) {
     using char_type = uint8_t;
 
-    init_in_memory_file_store(smp::count);
+    init_in_memory_file_store(smp::count).get();
     auto img = defer([] { deinit_in_memory_file_store().get(); });
     auto tmp = tmpdir();
     auto name = test_file_name;
@@ -176,5 +176,5 @@ SEASTAR_THREAD_TEST_CASE(test_mirror_file_dma_read_iov) {
 
     mirrored.close().get();
     // remove_memory_file to prevent memory leak
-    remove_memory_file(fpath.native());
+    remove_memory_file(fpath.native()).get();
 }
