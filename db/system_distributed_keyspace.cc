@@ -132,9 +132,10 @@ bool system_distributed_keyspace::is_extra_durable(const sstring& cf_name) {
     return cf_name == CDC_TOPOLOGY_DESCRIPTION;
 }
 
-system_distributed_keyspace::system_distributed_keyspace(cql3::query_processor& qp, service::migration_manager& mm)
+system_distributed_keyspace::system_distributed_keyspace(cql3::query_processor& qp, service::migration_manager& mm, service::storage_proxy& sp)
         : _qp(qp)
-        , _mm(mm) {
+        , _mm(mm)
+        , _sp(sp) {
 }
 
 future<> system_distributed_keyspace::create_tables(std::vector<schema_ptr> tables) {
@@ -364,17 +365,33 @@ static set_type_impl::native_type prepare_cdc_streams(const std::vector<cdc::str
     return ret;
 }
 
+static future<mutation> get_cdc_streams_descriptions_mutation(
+        const database& db,
+        db_clock::time_point time,
+        const std::vector<cdc::stream_id>& streams) {
+    auto s = db.find_schema(system_distributed_keyspace::NAME, system_distributed_keyspace::CDC_DESC);
+    mutation m(s, partition_key::from_singular(*s, time));
+    m.set_cell(clustering_key::make_empty(), to_bytes("streams"),
+            make_set_value(cdc_streams_set_type, prepare_cdc_streams(streams)), api::new_timestamp());
+    return make_ready_future<mutation>(std::move(m));
+}
+
 future<>
 system_distributed_keyspace::create_cdc_desc(
         db_clock::time_point time,
         const std::vector<cdc::stream_id>& streams,
         context ctx) {
-    return _qp.execute_internal(
-            format("INSERT INTO {}.{} (time, streams) VALUES (?,?)", NAME, CDC_DESC),
+    using namespace std::chrono_literals;
+    return get_cdc_streams_descriptions_mutation(_qp.db(), time, streams).then([this, ctx] (mutation m) {
+        return _sp.mutate(
+            { std::move(m) },
             quorum_if_many(ctx.num_token_owners),
-            internal_distributed_timeout_config,
-            { time, make_set_value(cdc_streams_set_type, prepare_cdc_streams(streams)) },
-            false).discard_result();
+            db::timeout_clock::now() + 10s,
+            nullptr, // trace_state
+            empty_service_permit(),
+            false // raw_counters
+        );
+    });
 }
 
 future<>
