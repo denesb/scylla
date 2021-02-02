@@ -329,7 +329,7 @@ future<> deinit_in_memory_file_store() {
     return smp::invoke_on_all([] {
         mlogger.debug("Deleting {} chunks. Used memory: {}", free_file_blocks.size(), used_memory);
         while (!free_file_blocks.empty()) {
-            uint8_t* p = reinterpret_cast<uint8_t*>(&free_file_blocks.front());
+            auto* p = &free_file_blocks.front();
             free_file_blocks.pop_front();
             delete p;
         }
