@@ -16,6 +16,7 @@
 
 #include "keys.hh"
 #include "schema_builder.hh"
+#include "database.hh"
 #include "db/config.hh"
 #include "db/system_keyspace.hh"
 #include "db/system_distributed_keyspace.hh"
@@ -26,6 +27,7 @@
 #include "gms/gossiper.hh"
 
 #include "cdc/generation.hh"
+#include "cdc/cdc_options.hh"
 
 extern logging::logger cdc_log;
 
@@ -421,6 +423,181 @@ void update_streams_description(
             }
         });
     }
+}
+
+static db_clock::time_point as_timepoint(const utils::UUID& uuid) {
+    return db_clock::time_point{std::chrono::milliseconds(utils::UUID_gen::get_adjusted_timestamp(uuid))};
+}
+
+// Run in seastar::async context.
+static std::vector<db_clock::time_point> get_cdc_desc_v1_timestamps(
+        db::system_distributed_keyspace& sys_dist_ks,
+        abort_source& abort_src,
+        const noncopyable_function<unsigned()>& get_num_token_owners) {
+    while (true) {
+        try {
+            return sys_dist_ks.get_cdc_desc_v1_timestamps({ get_num_token_owners() }).get();
+        } catch (...) {
+            cdc_log.warn(
+                    "Failed to retrieve generation timestamps for rewriting: {}. Retrying in 60s.",
+                    std::current_exception());
+        }
+        sleep_abortable(std::chrono::seconds(60), abort_src).get();
+    }
+}
+
+// Contains a CDC log table's creation time (extracted from its schema's id)
+// and its CDC TTL setting.
+struct time_and_ttl {
+    db_clock::time_point creation_time;
+    int ttl;
+};
+
+/*
+ * See `maybe_rewrite_streams_descriptions`.
+ * This is the long-running-in-the-background part of that function.
+ * It returns the timestamp of the last rewritten generation (if any).
+ *
+ * Run in seastar::async context.
+ */
+static std::optional<db_clock::time_point> rewrite_streams_descriptions(
+        std::vector<time_and_ttl> times_and_ttls,
+        shared_ptr<db::system_distributed_keyspace> sys_dist_ks,
+        noncopyable_function<unsigned()> get_num_token_owners,
+        abort_source& abort_src) {
+    cdc_log.info("Retrieving generation timestamps for rewriting...");
+    auto tss = get_cdc_desc_v1_timestamps(*sys_dist_ks, abort_src, get_num_token_owners);
+    cdc_log.info("Generation timestamps retrieved.");
+
+    // Find first generation timestamp such that some CDC log table may contain data before this timestamp.
+    // This predicate is monotonic w.r.t the timestamps.
+    auto now = db_clock::now();
+    std::sort(tss.begin(), tss.end());
+    auto first = std::partition_point(tss.begin(), tss.end(), [&] (db_clock::time_point ts) {
+        // partition_point finds first element that does *not* satisfy the predicate.
+        return std::none_of(times_and_ttls.begin(), times_and_ttls.end(),
+                [&] (const time_and_ttl& tat) {
+            // In this CDC log table there are no entries older than the table's creation time
+            // or (now - the table's ttl). We subtract 10s to account for some possible clock drift.
+            // If ttl is set to 0 then entries in this table never expire. In that case we look
+            // only at the table's creation time.
+            auto no_entries_older_than =
+                (tat.ttl == 0 ? tat.creation_time : std::max(tat.creation_time, now - std::chrono::seconds(tat.ttl)))
+                    - std::chrono::seconds(10);
+            return no_entries_older_than < ts;
+        });
+    });
+
+    // Find first generation timestamp such that some CDC log table may contain data in this generation.
+    // This and all later generations need to be written to the new streams table.
+    if (first != tss.begin()) {
+        --first;
+    }
+
+    if (first == tss.end()) {
+        cdc_log.info("No generations to rewrite.");
+        return std::nullopt;
+    }
+
+    cdc_log.info("First generation to rewrite: {}", *first);
+
+    bool each_success = true;
+    max_concurrent_for_each(first, tss.end(), 10, [&] (db_clock::time_point ts) {
+        return repeat([&] {
+            return do_update_streams_description(ts, *sys_dist_ks, { get_num_token_owners() })
+                    .then_wrapped([&] (future<> f) {
+                try {
+                    f.get();
+                    return make_ready_future<stop_iteration>(stop_iteration::yes);
+                } catch (const no_generation_data_exception& e) {
+                    cdc_log.error("Failed to rewrite streams for generation {}: {}. Giving up.", ts, e);
+                    each_success = false;
+                    return make_ready_future<stop_iteration>(stop_iteration::yes);
+                } catch (...) {
+                    cdc_log.warn("Failed to rewrite streams for generation {}: {}. Retrying in 60s.", ts, std::current_exception());
+                }
+
+                return sleep_abortable(std::chrono::seconds(60), abort_src).then([] {
+                    return make_ready_future<stop_iteration>(stop_iteration::no);
+                });
+            });
+        });
+    }).get();
+
+    if (each_success) {
+        cdc_log.info("Rewriting stream tables finished successfully.");
+    } else {
+        cdc_log.info("Rewriting stream tables finished, but some generations could not be rewritten (check the logs).");
+    }
+
+    if (first != tss.end()) {
+        return *std::prev(tss.end());
+    }
+
+    return std::nullopt;
+}
+
+void maybe_rewrite_streams_descriptions(
+        const database& db,
+        shared_ptr<db::system_distributed_keyspace> sys_dist_ks,
+        noncopyable_function<unsigned()> get_num_token_owners,
+        abort_source& abort_src) {
+    if (!db.has_schema(sys_dist_ks->NAME, sys_dist_ks->CDC_DESC_V1)) {
+        // This cluster never went through a Scylla version which used this table
+        // or the user deleted the table. Nothing to do.
+        return;
+    }
+
+    if (db::system_keyspace::cdc_is_rewritten().get()) {
+        return;
+    }
+
+    // For each CDC log table get the TTL setting (from CDC options) and the table's creation time
+    std::vector<time_and_ttl> times_and_ttls;
+    for (auto& [_, cf] : db.get_column_families()) {
+        auto& s = *cf->schema();
+        auto base = cdc::get_base_table(db, s.ks_name(), s.cf_name());
+        if (!base) {
+            // Not a CDC log table.
+            continue;
+        }
+        auto& cdc_opts = base->cdc_options();
+        if (!cdc_opts.enabled()) {
+            // This table is named like a CDC log table but it's not one.
+            continue;
+        }
+
+        times_and_ttls.push_back(time_and_ttl{as_timepoint(s.id()), cdc_opts.ttl()});
+    }
+
+    if (times_and_ttls.empty()) {
+        // There's no point in rewriting old generations' streams (they don't contain any data).
+        cdc_log.info("No CDC log tables present, not rewriting stream tables.");
+        db::system_keyspace::cdc_set_rewritten(std::nullopt).get();
+        return;
+    }
+
+    // It's safe to discard this future: the coroutine keeps system_distributed_keyspace alive
+    // and the abort source's lifetime extends the lifetime of any other service.
+    (void)seastar::async([
+        times_and_ttls = std::move(times_and_ttls), sys_dist_ks = std::move(sys_dist_ks),
+        get_num_token_owners = std::move(get_num_token_owners), &abort_src
+    ] () mutable {
+        // This code is racing with node startup. At this point, we're most likely still waiting for gossip to settle
+        // and some nodes that are UP may still be marked as DOWN by us.
+        // Let's sleep a bit to increase the chance that the first attempt at rewriting succeeds (it's still ok if
+        // it doesn't - we'll retry - but it's nice if we succeed without any warnings).
+        sleep_abortable(std::chrono::seconds(10), abort_src).get();
+
+        cdc_log.info("Rewriting stream tables in the background...");
+        auto last_rewritten = rewrite_streams_descriptions(
+                std::move(times_and_ttls),
+                std::move(sys_dist_ks),
+                std::move(get_num_token_owners),
+                abort_src);
+
+        db::system_keyspace::cdc_set_rewritten(last_rewritten).get();
+    });
 }
 
 } // namespace cdc

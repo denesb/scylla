@@ -539,6 +539,10 @@ void storage_service::join_token_ring(int delay) {
     if (!db::system_keyspace::bootstrap_complete()) {
         // If we're not bootstrapping nor replacing, then we shouldn't have chosen a CDC streams timestamp yet.
         assert(should_bootstrap() || db().local().is_replacing() || !_cdc_streams_ts);
+
+        // Don't try rewriting CDC stream description tables.
+        // See cdc.md design notes, `Streams description table V1 and rewriting` section, for explanation.
+        db::system_keyspace::cdc_set_rewritten(std::nullopt).get();
     }
 
     // now, that the system distributed keyspace is initialized and started,
@@ -620,6 +624,14 @@ void storage_service::join_token_ring(int delay) {
 
     // Retrieve the latest CDC generation seen in gossip (if any).
     scan_cdc_generations();
+
+    // Ensure that the new CDC stream description table has all required streams.
+    // See the function's comment for details.
+    cdc::maybe_rewrite_streams_descriptions(
+            _db.local(), _sys_dist_ks.local_shared(),
+            [ss = this->shared_from_this()] { return ss->get_token_metadata().count_normal_token_owners(); },
+            _abort_source);
+
 }
 
 void storage_service::mark_existing_views_as_built() {

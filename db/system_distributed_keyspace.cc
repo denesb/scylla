@@ -209,11 +209,11 @@ future<> system_distributed_keyspace::stop() {
     return make_ready_future<>();
 }
 
-static const timeout_config internal_distributed_timeout_config = [] {
-    using namespace std::chrono_literals;
-    const auto t = 10s;
+static timeout_config get_timeout_config(db::timeout_clock::duration t) {
     return timeout_config{ t, t, t, t, t, t, t };
-}();
+}
+
+static const timeout_config internal_distributed_timeout_config = get_timeout_config(std::chrono::seconds(10));
 
 future<std::unordered_map<utils::UUID, sstring>> system_distributed_keyspace::view_status(sstring ks_name, sstring view_name) const {
     return _qp.execute_internal(
@@ -549,6 +549,26 @@ system_distributed_keyspace::cdc_get_versioned_streams(db_clock::time_point not_
             }).then([&result] {
                 return make_ready_future<std::map<db_clock::time_point, cdc::streams_version>>(std::move(result));
             });
+        });
+    });
+}
+
+future<std::vector<db_clock::time_point>>
+system_distributed_keyspace::get_cdc_desc_v1_timestamps(context ctx) {
+    return do_with(std::vector<db_clock::time_point>{}, [this, ctx] (std::vector<db_clock::time_point>& res) {
+        return _qp.query_internal(
+                format("SELECT time FROM {}.{}", NAME, CDC_DESC_V1),
+                quorum_if_many(ctx.num_token_owners),
+                // This is a long and expensive scan (mostly due to #8061).
+                // Give it a bit more time than usual.
+                get_timeout_config(std::chrono::seconds(60)),
+                {},
+                1000,
+                [&res] (const cql3::untyped_result_set_row& r) {
+            res.push_back(r.get_as<db_clock::time_point>("time"));
+            return make_ready_future<stop_iteration>(stop_iteration::no);
+        }).then([&res] {
+            return make_ready_future<std::vector<db_clock::time_point>>(std::move(res));
         });
     });
 }
