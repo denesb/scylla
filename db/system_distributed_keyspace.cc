@@ -175,9 +175,10 @@ future<> system_distributed_keyspace::start_workload_prioritization() {
 
 future<> system_distributed_keyspace::start() {
     if (this_shard_id() != 0) {
+        _started = true;
         return make_ready_future<>();
     }
-    return create_tables(all_tables(_qp.db()));
+    return create_tables(all_tables(_qp.db())).then([this] { _started = true; });
 }
 
 future<> system_distributed_keyspace::stop() {
