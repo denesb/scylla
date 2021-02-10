@@ -552,6 +552,11 @@ void maybe_rewrite_streams_descriptions(
         return;
     }
 
+    if (db.get_config().cdc_dont_rewrite_streams()) {
+        cdc_log.warn("Stream rewriting disabled. Manual administrator intervention may be required...");
+        return;
+    }
+
     // For each CDC log table get the TTL setting (from CDC options) and the table's creation time
     std::vector<time_and_ttl> times_and_ttls;
     for (auto& [_, cf] : db.get_column_families()) {
