@@ -88,6 +88,7 @@ void migration_manager::init_messaging_service()
         _feature_listeners.push_back(_feat.cluster_supports_digest_insensitive_to_expiry().when_enabled(update_schema));
         _feature_listeners.push_back(_feat.cluster_supports_cdc().when_enabled(update_schema));
         _feature_listeners.push_back(_feat.cluster_supports_per_table_partitioners().when_enabled(update_schema));
+        _feature_listeners.push_back(_feat.cluster_supports_computed_columns().when_enabled(update_schema));
         _feature_listeners.push_back(_feat.cluster_supports_in_memory_tables().when_enabled(update_schema));
     }
 
