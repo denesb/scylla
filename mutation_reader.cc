@@ -1469,15 +1469,17 @@ future<> evictable_reader::fast_forward_to(const dht::partition_range& pr, db::t
     _end_of_stream = false;
 
     if (_reader) {
-        return _reader->fast_forward_to(pr, timeout);
+        return _reader->fast_forward_to(pr, timeout).then([this] {
+            _range_override.reset();
+        });
     }
     if (!_reader_created || !_irh) {
         return make_ready_future<>();
     }
     if (auto reader_opt = try_resume()) {
-        auto f = reader_opt->fast_forward_to(pr, timeout);
-        return f.then([this, reader = std::move(*reader_opt)] () mutable {
-            maybe_pause(std::move(reader));
+        return reader_opt->fast_forward_to(pr, timeout).then([this, reader_opt = std::move(reader_opt)] () mutable {
+            _range_override.reset();
+            maybe_pause(std::move(*reader_opt));
         });
     }
     return make_ready_future<>();
