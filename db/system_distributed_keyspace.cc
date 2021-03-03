@@ -553,6 +553,18 @@ system_distributed_keyspace::cdc_get_versioned_streams(db_clock::time_point not_
     });
 }
 
+future<db_clock::time_point>
+system_distributed_keyspace::cdc_current_generation_timestamp(context ctx) {
+    return _qp.execute_internal(
+            format("SELECT time FROM {}.{} WHERE key = ? limit 1", NAME, CDC_TIMESTAMPS),
+            quorum_if_many(ctx.num_token_owners),
+            internal_distributed_timeout_config,
+            { CDC_TIMESTAMPS_KEY },
+            false).then([] (::shared_ptr<cql3::untyped_result_set> timestamp_cql) {
+        return timestamp_cql->one().get_as<db_clock::time_point>("time");
+    });
+}
+
 future<std::vector<db_clock::time_point>>
 system_distributed_keyspace::get_cdc_desc_v1_timestamps(context ctx) {
     return do_with(std::vector<db_clock::time_point>{}, [this, ctx] (std::vector<db_clock::time_point>& res) {
