@@ -524,13 +524,13 @@ system_distributed_keyspace::cdc_get_versioned_streams(db_clock::time_point not_
             }
 
             // `time` is the table's clustering key, so the results are already sorted
-            auto first = std::lower_bound(timestamps.begin(), timestamps.end(), not_older_than);
+            auto first = std::lower_bound(timestamps.rbegin(), timestamps.rend(), not_older_than);
             // need first gen _intersecting_ the timestamp.
-            if (first != timestamps.begin()) {
+            if (first != timestamps.rbegin()) {
                 --first;
             }
 
-            return max_concurrent_for_each(first, timestamps.end(), 5, [this, &ctx, &result] (db_clock::time_point ts) {
+            return max_concurrent_for_each(first, timestamps.rend(), 5, [this, &ctx, &result] (db_clock::time_point ts) {
                 return _qp.execute_internal(
                         format("SELECT streams FROM {}.{} WHERE time = ?", NAME, CDC_DESC_V2),
                         quorum_if_many(ctx.num_token_owners),
