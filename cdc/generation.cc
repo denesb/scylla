@@ -347,6 +347,8 @@ db_clock::time_point make_new_cdc_generation(
                 2 * ring_delay + duration_cast<milliseconds>(generation_leeway)));
     sys_dist_ks.insert_cdc_topology_description(ts, std::move(gen), { tm.count_normal_token_owners() }).get();
 
+    cdc_log.info("New CDC generation: {}", ts);
+
     return ts;
 }
 
