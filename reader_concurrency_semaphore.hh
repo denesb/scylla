@@ -188,6 +188,7 @@ private:
     void maybe_admit_waiters() noexcept;
 
     void on_permit_created(reader_permit::impl&) noexcept;
+    void on_permit_destroyed(reader_permit::impl&) noexcept;
 
     std::runtime_error stopped_exception();
 

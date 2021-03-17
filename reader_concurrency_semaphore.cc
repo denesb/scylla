@@ -106,6 +106,8 @@ public:
                         _resources.memory));
             signal(_resources);
         }
+
+        _semaphore.on_permit_destroyed(*this);
     }
 
     reader_concurrency_semaphore& semaphore() {
@@ -166,6 +168,7 @@ struct reader_concurrency_semaphore::permit_list {
     using list_type = boost::intrusive::list<reader_permit::impl, boost::intrusive::constant_time_size<false>>;
 
     list_type permits;
+    uint64_t total_permits = 0;
 };
 
 reader_permit::reader_permit(reader_concurrency_semaphore& semaphore, const schema* const schema, std::string_view op_name)
@@ -608,6 +611,12 @@ void reader_concurrency_semaphore::maybe_admit_waiters() noexcept {
 
 void reader_concurrency_semaphore::on_permit_created(reader_permit::impl& permit) noexcept {
     _permit_list->permits.push_back(permit);
+    ++_permit_list->total_permits;
+}
+
+void reader_concurrency_semaphore::on_permit_destroyed(reader_permit::impl& permit) noexcept {
+    permit.unlink();
+    --_permit_list->total_permits;
 }
 
 reader_permit reader_concurrency_semaphore::make_permit(const schema* const schema, const char* const op_name) {
