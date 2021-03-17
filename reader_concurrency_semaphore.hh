@@ -182,6 +182,8 @@ private:
 
     future<reader_permit::resource_units> do_wait_admission(reader_permit permit, size_t memory, db::timeout_clock::time_point timeout);
 
+    void maybe_admit_waiters() noexcept;
+
 public:
     struct no_limits { };
 
