@@ -869,6 +869,7 @@ class foreign_reader : public flat_mutation_reader::impl {
     // we don't have to wait on the remote reader filling its buffer.
     template <typename Operation, typename Result = futurize_t<std::result_of_t<Operation()>>>
     Result forward_operation(db::timeout_clock::time_point timeout, Operation op) {
+        _permit.mark_blocked();
         return smp::submit_to(_reader.get_owner_shard(), [reader = _reader.get(),
                 read_ahead_future = std::exchange(_read_ahead_future, nullptr),
                 timeout,
@@ -895,6 +896,8 @@ class foreign_reader : public flat_mutation_reader::impl {
                 auto result = std::get<1>(std::move(fut_and_result));
                 return make_ready_future<decltype(result)>(std::move(result));
             }
+        }).finally([this] {
+            _permit.mark_unblocked();
         });
     }
 public:
