@@ -184,6 +184,8 @@ private:
 
     void maybe_admit_waiters() noexcept;
 
+    void on_permit_created(reader_permit::impl&) noexcept;
+
 public:
     struct no_limits { };
 
