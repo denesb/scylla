@@ -187,6 +187,8 @@ private:
     future<reader_permit::resource_units> do_wait_admission(reader_permit permit, size_t memory, db::timeout_clock::time_point timeout);
     void maybe_admit_waiters() noexcept;
 
+    void on_permit_created(reader_permit::impl&) noexcept;
+
     std::runtime_error stopped_exception();
 
     // closes reader in the background.
