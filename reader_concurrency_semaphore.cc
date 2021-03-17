@@ -87,13 +87,17 @@ public:
         : _semaphore(semaphore)
         , _schema(schema)
         , _op_name_view(op_name)
-    { }
+    {
+        _semaphore.on_permit_created(*this);
+    }
     impl(reader_concurrency_semaphore& semaphore, const schema* const schema, sstring&& op_name)
         : _semaphore(semaphore)
         , _schema(schema)
         , _op_name(std::move(op_name))
         , _op_name_view(_op_name)
-    { }
+    {
+        _semaphore.on_permit_created(*this);
+    }
     ~impl() {
         if (_resources) {
             on_internal_error_noexcept(rcslog, format("reader_permit::impl::~impl(): permit {} detected a leak of {{count={}, memory={}}} resources",
@@ -167,13 +171,11 @@ struct reader_concurrency_semaphore::permit_list {
 reader_permit::reader_permit(reader_concurrency_semaphore& semaphore, const schema* const schema, std::string_view op_name)
     : _impl(::seastar::make_shared<reader_permit::impl>(semaphore, schema, op_name))
 {
-    semaphore._permit_list->permits.push_back(*_impl);
 }
 
 reader_permit::reader_permit(reader_concurrency_semaphore& semaphore, const schema* const schema, sstring&& op_name)
     : _impl(::seastar::make_shared<reader_permit::impl>(semaphore, schema, std::move(op_name)))
 {
-    semaphore._permit_list->permits.push_back(*_impl);
 }
 
 void reader_permit::on_waiting() {
@@ -602,6 +604,10 @@ void reader_concurrency_semaphore::maybe_admit_waiters() noexcept {
         }
         _wait_list.pop_front();
     }
+}
+
+void reader_concurrency_semaphore::on_permit_created(reader_permit::impl& permit) noexcept {
+    _permit_list->permits.push_back(permit);
 }
 
 reader_permit reader_concurrency_semaphore::make_permit(const schema* const schema, const char* const op_name) {
