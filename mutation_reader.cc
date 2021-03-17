@@ -1678,6 +1678,8 @@ future<> shard_reader::do_fill_buffer(db::timeout_clock::time_point timeout) {
 }
 
 future<> shard_reader::fill_buffer(db::timeout_clock::time_point timeout) {
+    // FIXME: want to move this to the inner scopes but it makes clang miscompile the code.
+    reader_permit::blocked_guard guard(_permit);
     if (_read_ahead) {
         co_await *std::exchange(_read_ahead, std::nullopt);
         co_return;
@@ -1692,13 +1694,19 @@ future<> shard_reader::next_partition() {
     if (!_reader) {
         co_return;
     }
+
+    // FIXME: want to move this to the inner scopes but it makes clang miscompile the code.
+    reader_permit::blocked_guard guard(_permit);
+
     if (_read_ahead) {
         co_await *std::exchange(_read_ahead, std::nullopt);
     }
+
     clear_buffer_to_next_partition();
     if (!is_buffer_empty()) {
         co_return;
     }
+
     co_return co_await smp::submit_to(_shard, [this] {
         return _reader->next_partition();
     });
@@ -1712,6 +1720,8 @@ future<> shard_reader::fast_forward_to(const dht::partition_range& pr, db::timeo
         // range when created.
         co_return;
     }
+
+    reader_permit::blocked_guard guard(_permit);
 
     if (_read_ahead) {
         co_await *std::exchange(_read_ahead, std::nullopt);
