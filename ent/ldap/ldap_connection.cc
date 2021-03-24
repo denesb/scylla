@@ -110,6 +110,12 @@ ldap_connection::ldap_connection(seastar::connected_socket&& socket) :
             "ldap_set_option restart",
             *this,
             LDAP_OPT_SUCCESS);
+    throw_if_failed(
+            // Chasing referrals with this setup results in libldap crashing.
+            ldap_set_option(_ldap.get(), LDAP_OPT_REFERRALS, LDAP_OPT_OFF),
+            "ldap_set_option no referrals",
+            *this,
+            LDAP_OPT_SUCCESS);
 
     Sockbuf* sb;
     throw_if_failed(ldap_get_option(_ldap.get(), LDAP_OPT_SOCKBUF, &sb), "ldap_get_option", *this, LDAP_OPT_SUCCESS);

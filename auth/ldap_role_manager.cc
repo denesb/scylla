@@ -217,7 +217,7 @@ future<role_set> ldap_role_manager::query_granted(std::string_view grantee_name,
                 .then([this, grantee_name = sstring(grantee_name)] (ldap_msg_ptr res) {
                     mylog.trace("query_granted: got search results");
                     const auto mtype = ldap_msgtype(res.get());
-                    if (mtype != LDAP_RES_SEARCH_ENTRY && mtype != LDAP_RES_SEARCH_RESULT) {
+                    if (mtype != LDAP_RES_SEARCH_ENTRY && mtype != LDAP_RES_SEARCH_RESULT && mtype != LDAP_RES_SEARCH_REFERENCE) {
                         mylog.error("ldap search yielded result {} of type {}", static_cast<const void*>(res.get()), ldap_msgtype(res.get()));
                         throw std::runtime_error("ldap_role_manager: search result has wrong type");
                     }
