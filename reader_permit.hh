@@ -91,11 +91,13 @@ class reader_permit {
 public:
     class resource_units;
     class used_guard;
+    class blocked_guard;
 
     enum class state {
         waiting, // waiting for admission
         active_unused,
         active_used,
+        active_blocked,
         inactive,
         evicted,
     };
@@ -116,6 +118,10 @@ private:
     void mark_used() noexcept;
 
     void mark_unused() noexcept;
+
+    void mark_blocked() noexcept;
+
+    void mark_unblocked() noexcept;
 
     operator bool() const { return bool(_impl); }
 
@@ -195,6 +201,31 @@ public:
     }
     used_guard& operator=(used_guard&&) = delete;
     used_guard& operator=(const used_guard&) = delete;
+};
+
+/// Mark a permit as blocked.
+///
+/// Conceptually, a permit is considered blocked, when at least one reader
+/// associated with it is waiting on I/O or a remote shard as part of a
+/// foreground operation initiated by its consumer. E.g. an sstable reader
+/// waiting on a disk read as part of its `fill_buffer()` call.
+/// This class is an RAII block marker meant to be used by keeping it alive
+/// until said block resolves.
+class reader_permit::blocked_guard {
+    reader_permit_opt _permit;
+public:
+    explicit blocked_guard(reader_permit permit) noexcept : _permit(std::move(permit)) {
+        _permit->mark_blocked();
+    }
+    blocked_guard(blocked_guard&&) noexcept = default;
+    blocked_guard(const blocked_guard&) = delete;
+    ~blocked_guard() {
+        if (_permit) {
+            _permit->mark_unblocked();
+        }
+    }
+    blocked_guard& operator=(blocked_guard&&) = delete;
+    blocked_guard& operator=(const blocked_guard&) = delete;
 };
 
 template <typename Char>
