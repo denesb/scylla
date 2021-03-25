@@ -1395,14 +1395,14 @@ database::query(schema_ptr s, const query::read_command& cmd, query::result_opti
     auto& semaphore = get_reader_concurrency_semaphore();
     auto class_config = query::query_class_config{.semaphore = semaphore, .max_memory_for_unlimited_query = *cmd.max_result_size};
     query::querier_cache_context cache_ctx(_querier_cache, cmd.query_uuid, cmd.is_first_page);
-    return _data_query_stage(&cf,
+    return cf.query(
             std::move(s),
-            seastar::cref(cmd),
+            cmd,
             class_config,
             opts,
-            seastar::cref(ranges),
+            ranges,
             std::move(trace_state),
-            seastar::ref(get_result_memory_limiter()),
+            get_result_memory_limiter(),
             timeout,
             std::move(cache_ctx)).then_wrapped([this, s = _stats, &semaphore, hit_rate = cf.get_global_cache_hit_rate(), op = cf.read_in_progress()] (auto f) {
         if (f.failed()) {
@@ -1427,11 +1427,11 @@ database::query_mutations(schema_ptr s, const query::read_command& cmd, const dh
     auto& semaphore = get_reader_concurrency_semaphore();
     auto class_config = query::query_class_config{.semaphore = semaphore, .max_memory_for_unlimited_query = *cmd.max_result_size};
     query::querier_cache_context cache_ctx(_querier_cache, cmd.query_uuid, cmd.is_first_page);
-    return _mutation_query_stage(&cf,
+    return cf.mutation_query(
             std::move(s),
-            seastar::cref(cmd),
+            cmd,
             class_config,
-            seastar::cref(range),
+            range,
             std::move(trace_state),
             std::move(accounter),
             timeout,
@@ -1548,7 +1548,7 @@ reader_concurrency_semaphore& database::get_reader_concurrency_semaphore() {
 }
 
 future<reader_permit> database::obtain_reader_permit(table& tbl, const char* const op_name, db::timeout_clock::time_point timeout) {
-    return get_reader_concurrency_semaphore().obtain_permit_nowait(tbl.schema().get(), op_name, tbl.estimate_read_memory_cost(), timeout);
+    return get_reader_concurrency_semaphore().obtain_permit(tbl.schema().get(), op_name, tbl.estimate_read_memory_cost(), timeout);
 }
 
 future<reader_permit> database::obtain_reader_permit(schema_ptr schema, const char* const op_name, db::timeout_clock::time_point timeout) {

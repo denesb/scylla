@@ -47,7 +47,7 @@ using namespace seastar;
 /// It's also possible to specify the maximum allowed number of waiting
 /// readers by the `max_queue_length` constructor parameter. When the
 /// number of waiting readers becomes equal or greater than
-/// `max_queue_length` (upon calling `wait_admission()`) an exception of
+/// `max_queue_length` (upon calling `obtain_permit()`) an exception of
 /// type `std::runtime_error` is thrown. Optionally, some additional
 /// code can be executed just before throwing (`prethrow_action` 
 /// constructor parameter).
@@ -184,6 +184,8 @@ private:
     void evict(inactive_read&, evict_reason reason) noexcept;
 
     bool has_available_units(const resources& r) const;
+
+    bool all_used_permits_are_stalled() const;
 
     // Add the permit to the wait queue and return the future which resolves when
     // the permit is admitted (popped from the queue).
