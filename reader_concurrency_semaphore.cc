@@ -713,6 +713,10 @@ bool reader_concurrency_semaphore::has_available_units(const resources& r) const
     return (bool(_resources) && _resources >= r) || _resources.count == _initial_resources.count;
 }
 
+bool reader_concurrency_semaphore::all_used_permits_are_stalled() const {
+    return _permit_list->stats.used_permits == _permit_list->stats.blocked_permits;
+}
+
 future<reader_permit::resource_units> reader_concurrency_semaphore::enqueue_waiter(reader_permit permit, resources r,
         db::timeout_clock::time_point timeout) {
     if (_wait_list.size() >= _max_queue_length) {
@@ -748,22 +752,28 @@ future<reader_permit::resource_units> reader_concurrency_semaphore::do_wait_admi
     auto r = resources(1, static_cast<ssize_t>(memory));
     auto first = _wait_list.empty();
 
-    if (first && has_available_units(r)) {
-        permit.on_admission();
-        return make_ready_future<reader_permit::resource_units>(reader_permit::resource_units(std::move(permit), r));
+    if (!first) {
+        return enqueue_waiter(std::move(permit), r, timeout);
     }
 
-    auto fut = enqueue_waiter(std::move(permit), r, timeout);
-
-    if (first && !_inactive_reads.empty()) {
-        evict_readers_in_background();
+    if (!has_available_units(r)) {
+        auto fut = enqueue_waiter(std::move(permit), r, timeout);
+        if (!_inactive_reads.empty()) {
+            evict_readers_in_background();
+        }
+        return fut;
     }
 
-    return fut;
+    if (!all_used_permits_are_stalled()) {
+        return enqueue_waiter(std::move(permit), r, timeout);
+    }
+
+    permit.on_admission();
+    return make_ready_future<reader_permit::resource_units>(reader_permit::resource_units(std::move(permit), r));
 }
 
 void reader_concurrency_semaphore::maybe_admit_waiters() noexcept {
-    while (!_wait_list.empty() && has_available_units(_wait_list.front().res)) {
+    while (!_wait_list.empty() && has_available_units(_wait_list.front().res) && all_used_permits_are_stalled()) {
         auto& x = _wait_list.front();
         try {
             x.permit.on_admission();
@@ -797,11 +807,13 @@ void reader_concurrency_semaphore::on_permit_unused() noexcept {
     assert(_permit_list->stats.used_permits);
     --_permit_list->stats.used_permits;
     assert(_permit_list->stats.used_permits >= _permit_list->stats.blocked_permits);
+    maybe_admit_waiters();
 }
 
 void reader_concurrency_semaphore::on_permit_blocked() noexcept {
     ++_permit_list->stats.blocked_permits;
     assert(_permit_list->stats.used_permits >= _permit_list->stats.blocked_permits);
+    maybe_admit_waiters();
 }
 
 void reader_concurrency_semaphore::on_permit_unblocked() noexcept {
