@@ -82,6 +82,7 @@ public:
     struct permit_stats {
         uint64_t total_permits = 0;
         uint64_t used_permits = 0;
+        uint64_t blocked_permits = 0;
     };
 
     struct permit_list;
@@ -196,6 +197,9 @@ private:
 
     void on_permit_used() noexcept;
     void on_permit_unused() noexcept;
+
+    void on_permit_blocked() noexcept;
+    void on_permit_unblocked() noexcept;
 
     std::runtime_error stopped_exception();
 
