@@ -149,6 +149,14 @@ public:
         }
     }
 
+    void on_evicted() {
+        if (_was_admitted) {
+            _state = reader_permit::state::evicted;
+        } else {
+            _state = reader_permit::state::registered;
+        }
+    }
+
     void consume(reader_resources res) {
         _resources += res;
         _semaphore.consume(res);
@@ -233,6 +241,9 @@ std::ostream& operator<<(std::ostream& os, reader_permit::state s) {
             break;
         case reader_permit::state::inactive:
             os << "inactive";
+            break;
+        case reader_permit::state::evicted:
+            os << "evicted";
             break;
     }
     return os;
@@ -479,6 +490,7 @@ void reader_concurrency_semaphore::clear_inactive_reads() {
 
 void reader_concurrency_semaphore::evict(inactive_read& ir, evict_reason reason) noexcept {
     ir.detach();
+    ir.reader.permit()._impl->on_evicted();
     std::unique_ptr<inactive_read> irp(&ir);
     try {
         if (ir.notify_handler) {

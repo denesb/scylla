@@ -95,6 +95,7 @@ public:
         waiting, // waiting for admission
         admitted,
         inactive,
+        evicted,
     };
 
     class impl;
