@@ -81,6 +81,7 @@ class reader_permit::impl : public boost::intrusive::list_base_hook<boost::intru
     reader_permit::state _state = reader_permit::state::active_unused;
     uint64_t _used_branches = 0;
     bool _marked_as_used = false;
+    uint64_t _blocked_branches = 0;
 
 private:
     void on_permit_used() {
@@ -143,6 +144,15 @@ public:
             _semaphore.on_permit_unused();
         }
 
+        if (_blocked_branches) {
+            on_internal_error_noexcept(rcslog, format("reader_permit::impl::~impl(): permit {}.{}:{} destroyed with {} blocked branches",
+                        _schema ? _schema->ks_name() : "*",
+                        _schema ? _schema->cf_name() : "*",
+                        _op_name_view,
+                        _blocked_branches));
+            _semaphore.on_permit_unblocked();
+        }
+
         _semaphore.on_permit_destroyed(*this);
     }
 
@@ -167,6 +177,7 @@ public:
     }
 
     void on_admission() {
+        assert(_state != reader_permit::state::active_blocked);
         on_permit_active();
     }
 
@@ -222,6 +233,25 @@ public:
             on_permit_unused();
         }
     }
+
+    void mark_blocked() noexcept {
+        assert(_state == reader_permit::state::active_used || _state == reader_permit::state::active_blocked);
+        ++_blocked_branches;
+        if (_blocked_branches == 1) {
+            _state = reader_permit::state::active_blocked;
+            _semaphore.on_permit_blocked();
+        }
+    }
+
+    void mark_unblocked() noexcept {
+        assert(_blocked_branches);
+        assert(_state == reader_permit::state::active_blocked);
+        --_blocked_branches;
+        if (_blocked_branches == 0) {
+            _state = reader_permit::state::active_used;
+            _semaphore.on_permit_unblocked();
+        }
+    }
 };
 
 struct reader_concurrency_semaphore::permit_list {
@@ -230,6 +260,7 @@ struct reader_concurrency_semaphore::permit_list {
     list_type permits;
     uint64_t total_permits = 0;
     uint64_t used_permits = 0;
+    uint64_t blocked_permits = 0;
 };
 
 reader_permit::reader_permit(reader_concurrency_semaphore& semaphore, const schema* const schema, std::string_view op_name)
@@ -293,6 +324,14 @@ void reader_permit::mark_unused() noexcept {
     _impl->mark_unused();
 }
 
+void reader_permit::mark_blocked() noexcept {
+    _impl->mark_blocked();
+}
+
+void reader_permit::mark_unblocked() noexcept {
+    _impl->mark_unblocked();
+}
+
 std::ostream& operator<<(std::ostream& os, reader_permit::state s) {
     switch (s) {
         case reader_permit::state::waiting:
@@ -303,6 +342,9 @@ std::ostream& operator<<(std::ostream& os, reader_permit::state s) {
             break;
         case reader_permit::state::active_used:
             os << "active/used";
+            break;
+        case reader_permit::state::active_blocked:
+            os << "active/blocked";
             break;
         case reader_permit::state::inactive:
             os << "inactive";
@@ -703,6 +745,17 @@ void reader_concurrency_semaphore::on_permit_used() noexcept {
 void reader_concurrency_semaphore::on_permit_unused() noexcept {
     assert(_permit_list->used_permits);
     --_permit_list->used_permits;
+    assert(_permit_list->used_permits >= _permit_list->blocked_permits);
+}
+
+void reader_concurrency_semaphore::on_permit_blocked() noexcept {
+    ++_permit_list->blocked_permits;
+    assert(_permit_list->used_permits >= _permit_list->blocked_permits);
+}
+
+void reader_concurrency_semaphore::on_permit_unblocked() noexcept {
+    assert(_permit_list->blocked_permits);
+    --_permit_list->blocked_permits;
 }
 
 reader_permit reader_concurrency_semaphore::make_permit(const schema* const schema, const char* const op_name) {

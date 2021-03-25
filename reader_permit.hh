@@ -91,11 +91,13 @@ class reader_permit {
 public:
     class resource_units;
     class used_guard;
+    class blocked_guard;
 
     enum class state {
         waiting, // waiting for admission
         active_unused,
         active_used,
+        active_blocked,
         inactive,
         evicted,
     };
@@ -149,6 +151,10 @@ public:
     void mark_used() noexcept;
 
     void mark_unused() noexcept;
+
+    void mark_blocked() noexcept;
+
+    void mark_unblocked() noexcept;
 };
 
 using reader_permit_opt = optimized_optional<reader_permit>;
@@ -188,6 +194,23 @@ public:
     }
     used_guard& operator=(used_guard&&) = delete;
     used_guard& operator=(const used_guard&) = delete;
+};
+
+class reader_permit::blocked_guard {
+    reader_permit_opt _permit;
+public:
+    explicit blocked_guard(reader_permit permit) noexcept : _permit(std::move(permit)) {
+        _permit->mark_blocked();
+    }
+    blocked_guard(blocked_guard&&) noexcept = default;
+    blocked_guard(const blocked_guard&) = delete;
+    ~blocked_guard() {
+        if (_permit) {
+            _permit->mark_unblocked();
+        }
+    }
+    blocked_guard& operator=(blocked_guard&&) = delete;
+    blocked_guard& operator=(const blocked_guard&) = delete;
 };
 
 template <typename Char>

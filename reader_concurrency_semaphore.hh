@@ -193,6 +193,9 @@ private:
     void on_permit_used() noexcept;
     void on_permit_unused() noexcept;
 
+    void on_permit_blocked() noexcept;
+    void on_permit_unblocked() noexcept;
+
     std::runtime_error stopped_exception();
 
     // closes reader in the background.
