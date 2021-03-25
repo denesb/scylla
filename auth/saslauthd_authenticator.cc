@@ -19,6 +19,7 @@
 #include <seastar/net/socket_defs.hh>
 #include <seastar/util/log.hh>
 #include <system_error>
+#include "common.hh"
 #include "cql3/query_processor.hh"
 #include "database.hh"
 #include "db/config.hh"
@@ -40,7 +41,16 @@ saslauthd_authenticator::saslauthd_authenticator(cql3::query_processor& qp, ::se
     : _socket_path(qp.db().get_config().saslauthd_socket_path())
 {}
 
-future<> saslauthd_authenticator::start() { return make_ready_future(); }
+future<> saslauthd_authenticator::start() {
+    return once_among_shards([this] {
+        return file_exists(_socket_path).then([this] (bool exists) {
+            if (!exists) {
+                mylog.warn("saslauthd socket file {} doesn't exist -- is saslauthd running?", _socket_path);
+            }
+            return make_ready_future();
+        });
+    });
+}
 
 future<> saslauthd_authenticator::stop() { return make_ready_future(); }
 
