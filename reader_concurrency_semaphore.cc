@@ -83,6 +83,12 @@ class reader_permit::impl : public boost::intrusive::list_base_hook<boost::intru
     uint64_t _blocked_branches = 0;
 
 public:
+    enum class ext_state {
+        unused,
+        active,
+        blocked,
+    };
+
     struct value_tag {};
 
     impl(reader_concurrency_semaphore& semaphore, const schema* const schema, const std::string_view& op_name)
@@ -240,6 +246,16 @@ public:
             _semaphore.on_permit_unblocked();
         }
     }
+
+    ext_state get_ext_state() const {
+        if (!_used_branches) {
+            return ext_state::unused;
+        }
+        if (_blocked_branches) {
+            return ext_state::blocked;
+        }
+        return ext_state::active;
+    }
 };
 
 struct reader_concurrency_semaphore::permit_list {
@@ -332,6 +348,21 @@ std::ostream& operator<<(std::ostream& os, reader_permit::state s) {
             break;
         case reader_permit::state::evicted:
             os << "evicted";
+            break;
+    }
+    return os;
+}
+
+std::ostream& operator<<(std::ostream& os, reader_permit::impl::ext_state s) {
+    switch (s) {
+        case reader_permit::impl::ext_state::unused:
+            os << "unused";
+            break;
+        case reader_permit::impl::ext_state::active:
+            os << "active";
+            break;
+        case reader_permit::impl::ext_state::blocked:
+            os << "blocked";
             break;
     }
     return os;
