@@ -115,7 +115,7 @@ table::make_sstable_reader(schema_ptr s,
         }
     }();
 
-    return make_restricted_flat_reader(std::move(ms), std::move(s), std::move(permit), pr, slice, pc, std::move(trace_state), fwd, fwd_mr);
+    return ms.make_reader(std::move(s), std::move(permit), pr, slice, pc, std::move(trace_state), fwd, fwd_mr);
 }
 
 lw_shared_ptr<sstables::sstable_set> table::make_compound_sstable_set() {
@@ -1947,7 +1947,7 @@ table::query(schema_ptr s,
 
         auto querier_opt = cache_ctx.lookup_data_querier(*s, range, qs.cmd.slice, trace_state);
         if (!querier_opt) {
-            auto permit = co_await class_config.semaphore.obtain_permit_nowait(s.get(), "data-query", estimate_read_memory_cost(), timeout);
+            auto permit = co_await class_config.semaphore.obtain_permit(s.get(), "data-query", estimate_read_memory_cost(), timeout);
             querier_opt = query::data_querier(as_mutation_source(), s, std::move(permit), range, qs.cmd.slice,
                     service::get_local_sstable_query_read_priority(), trace_state);
         }
@@ -1988,7 +1988,7 @@ table::mutation_query(schema_ptr s,
 
     auto querier_opt = cache_ctx.lookup_mutation_querier(*s, range, cmd.slice, trace_state);
     if (!querier_opt) {
-        auto permit = co_await class_config.semaphore.obtain_permit_nowait(s.get(), "mutation-query", estimate_read_memory_cost(), timeout);
+        auto permit = co_await class_config.semaphore.obtain_permit(s.get(), "mutation-query", estimate_read_memory_cost(), timeout);
         querier_opt = query::mutation_querier(as_mutation_source(), s, std::move(permit), range, cmd.slice,
                 service::get_local_sstable_query_read_priority(), trace_state);
     }

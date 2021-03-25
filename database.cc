@@ -1546,7 +1546,7 @@ reader_concurrency_semaphore& database::get_reader_concurrency_semaphore() {
 }
 
 future<reader_permit> database::obtain_reader_permit(table& tbl, const char* const op_name, db::timeout_clock::time_point timeout) {
-    return get_reader_concurrency_semaphore().obtain_permit_nowait(tbl.schema().get(), op_name, tbl.estimate_read_memory_cost(), timeout);
+    return get_reader_concurrency_semaphore().obtain_permit(tbl.schema().get(), op_name, tbl.estimate_read_memory_cost(), timeout);
 }
 
 future<reader_permit> database::obtain_reader_permit(schema_ptr schema, const char* const op_name, db::timeout_clock::time_point timeout) {
