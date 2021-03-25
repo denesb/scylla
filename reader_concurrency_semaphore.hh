@@ -188,6 +188,10 @@ private:
 
     void on_permit_destroyed(reader_permit::impl&) noexcept;
 
+    void on_permit_used() noexcept;
+
+    void on_permit_unused() noexcept;
+
 public:
     struct no_limits { };
 

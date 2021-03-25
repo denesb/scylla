@@ -79,6 +79,7 @@ class reader_permit::impl : public boost::intrusive::list_base_hook<boost::intru
     reader_resources _resources;
     reader_permit::state _state = reader_permit::state::registered;
     bool _was_admitted = false;
+    uint64_t _used_branches = 0;
 
 public:
     struct value_tag {};
@@ -109,6 +110,15 @@ public:
             signal(_resources);
         }
 
+        if (_used_branches) {
+            on_internal_error_noexcept(rcslog, format("reader_permit::impl::~impl(): permit {}.{}:{} destroyed with {} used branches",
+                        _schema ? _schema->ks_name() : "*",
+                        _schema ? _schema->cf_name() : "*",
+                        _op_name_view,
+                        _used_branches));
+            _semaphore.on_permit_unused();
+        }
+
         _semaphore.on_permit_destroyed(*this);
     }
 
@@ -135,10 +145,16 @@ public:
     void on_admission() {
         _state = reader_permit::state::admitted;
         _was_admitted = true;
+        if (_used_branches) {
+            _semaphore.on_permit_used();
+        }
     }
 
     void on_register_as_inactive() {
         _state = reader_permit::state::inactive;
+        if (_used_branches && _was_admitted) {
+            _semaphore.on_permit_unused();
+        }
     }
 
     void on_unregister_as_inactive() {
@@ -146,6 +162,9 @@ public:
             _state = reader_permit::state::admitted;
         } else {
             _state = reader_permit::state::registered;
+        }
+        if (_used_branches && _was_admitted) {
+            _semaphore.on_permit_used();
         }
     }
 
@@ -170,6 +189,21 @@ public:
     reader_resources resources() const {
         return _resources;
     }
+
+    void mark_used() noexcept {
+        ++_used_branches;
+        if (_state == state::admitted && _used_branches == 1) {
+            _semaphore.on_permit_used();
+        }
+    }
+
+    void mark_unused() noexcept {
+        assert(_used_branches);
+        --_used_branches;
+        if (_state == state::admitted && _used_branches == 0) {
+            _semaphore.on_permit_unused();
+        }
+    }
 };
 
 struct reader_concurrency_semaphore::permit_list {
@@ -177,6 +211,7 @@ struct reader_concurrency_semaphore::permit_list {
 
     list_type permits;
     uint64_t total_permits = 0;
+    uint64_t used_permits = 0;
 };
 
 reader_permit::reader_permit(reader_concurrency_semaphore& semaphore, const schema* const schema, std::string_view op_name)
@@ -226,6 +261,14 @@ reader_permit::resource_units reader_permit::consume_resources(reader_resources 
 
 reader_resources reader_permit::consumed_resources() const {
     return _impl->resources();
+}
+
+void reader_permit::mark_used() noexcept {
+    _impl->mark_used();
+}
+
+void reader_permit::mark_unused() noexcept {
+    _impl->mark_unused();
 }
 
 std::ostream& operator<<(std::ostream& os, reader_permit::state s) {
@@ -577,6 +620,15 @@ void reader_concurrency_semaphore::on_permit_created(reader_permit::impl& permit
 void reader_concurrency_semaphore::on_permit_destroyed(reader_permit::impl& permit) noexcept {
     permit.unlink();
     --_permit_list->total_permits;
+}
+
+void reader_concurrency_semaphore::on_permit_used() noexcept {
+    ++_permit_list->used_permits;
+}
+
+void reader_concurrency_semaphore::on_permit_unused() noexcept {
+    assert(_permit_list->used_permits);
+    --_permit_list->used_permits;
 }
 
 reader_permit reader_concurrency_semaphore::make_permit(const schema* const schema, const char* const op_name) {
