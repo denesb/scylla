@@ -117,11 +117,12 @@ public:
         }
 
         future<mutation_fragment_opt> operator()(db::timeout_clock::time_point timeout) {
+            auto guard = reader_permit::used_guard(_permit);
             if (is_buffer_empty()) {
                 if (is_end_of_stream()) {
                     return make_ready_future<mutation_fragment_opt>();
                 }
-                return fill_buffer(timeout).then([this, timeout] { return operator()(timeout); });
+                return fill_buffer(timeout).then([this, timeout, guard = std::move(guard)] { return operator()(timeout); });
             }
             return make_ready_future<mutation_fragment_opt>(pop_mutation_fragment());
         }
@@ -131,7 +132,7 @@ public:
         // Stops when consumer returns stop_iteration::yes or end of stream is reached.
         // Next call will start from the next mutation_fragment in the stream.
         future<> consume_pausable(Consumer consumer, db::timeout_clock::time_point timeout) {
-            return repeat([this, consumer = std::move(consumer), timeout] () mutable {
+            return repeat([this, consumer = std::move(consumer), timeout, guard = reader_permit::used_guard(_permit)] () mutable {
                 if (is_buffer_empty()) {
                     if (is_end_of_stream()) {
                         return make_ready_future<stop_iteration>(stop_iteration::yes);
@@ -158,6 +159,7 @@ public:
         // Partitions for which filter(decorated_key) returns false are skipped
         // entirely and never reach the consumer.
         void consume_pausable_in_thread(Consumer consumer, Filter filter, db::timeout_clock::time_point timeout) {
+            reader_permit::used_guard _(_permit);
             while (true) {
                 if (need_preempt()) {
                     seastar::thread::yield();
@@ -250,7 +252,8 @@ public:
         //
         // This method returns whatever is returned from Consumer::consume_end_of_stream().S
         auto consume(Consumer consumer, db::timeout_clock::time_point timeout) {
-            return do_with(consumer_adapter<Consumer>(*this, std::move(consumer)), [this, timeout] (consumer_adapter<Consumer>& adapter) {
+            return do_with(consumer_adapter<Consumer>(*this, std::move(consumer)), reader_permit::used_guard(_permit),
+                    [this, timeout] (consumer_adapter<Consumer>& adapter, reader_permit::used_guard&) {
                 return consume_pausable(std::ref(adapter), timeout).then([this, &adapter] {
                     return adapter._consumer.consume_end_of_stream();
                 });
@@ -418,9 +421,15 @@ public:
     //
     // Can be used to skip over entire partitions if interleaved with
     // `operator()()` calls.
-    future<> next_partition() { return _impl->next_partition(); }
+    future<> next_partition() {
+        reader_permit::used_guard  guard(_impl->_permit);
+        return _impl->next_partition().finally([guard = std::move(guard)] { });
+    }
 
-    future<> fill_buffer(db::timeout_clock::time_point timeout) { return _impl->fill_buffer(timeout); }
+    future<> fill_buffer(db::timeout_clock::time_point timeout) {
+        reader_permit::used_guard  guard(_impl->_permit);
+        return _impl->fill_buffer(timeout).finally([guard = std::move(guard)] { });
+    }
 
     // Changes the range of partitions to pr. The range can only be moved
     // forwards. pr.begin() needs to be larger than pr.end() of the previousl
@@ -429,7 +438,8 @@ public:
     // pr needs to be valid until the reader is destroyed or fast_forward_to()
     // is called again.
     future<> fast_forward_to(const dht::partition_range& pr, db::timeout_clock::time_point timeout) {
-        return _impl->fast_forward_to(pr, timeout);
+        reader_permit::used_guard  guard(_impl->_permit);
+        return _impl->fast_forward_to(pr, timeout).finally([guard = std::move(guard)] { });
     }
     // Skips to a later range of rows.
     // The new range must not overlap with the current range.
@@ -458,7 +468,8 @@ public:
     // In particular one must first enter a partition by fetching a `partition_start`
     // fragment before calling `fast_forward_to`.
     future<> fast_forward_to(position_range cr, db::timeout_clock::time_point timeout) {
-        return _impl->fast_forward_to(std::move(cr), timeout);
+        reader_permit::used_guard  guard(_impl->_permit);
+        return _impl->fast_forward_to(std::move(cr), timeout).finally([guard = std::move(guard)] { });
     }
     // Closes the reader.
     //
