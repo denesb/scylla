@@ -192,6 +192,10 @@ private:
 
     void on_permit_unused() noexcept;
 
+    void on_permit_blocked() noexcept;
+
+    void on_permit_unblocked() noexcept;
+
 public:
     struct no_limits { };
 
