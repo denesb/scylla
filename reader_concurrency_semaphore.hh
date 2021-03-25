@@ -190,6 +190,9 @@ private:
     void on_permit_created(reader_permit::impl&) noexcept;
     void on_permit_destroyed(reader_permit::impl&) noexcept;
 
+    void on_permit_used() noexcept;
+    void on_permit_unused() noexcept;
+
     std::runtime_error stopped_exception();
 
     // closes reader in the background.
