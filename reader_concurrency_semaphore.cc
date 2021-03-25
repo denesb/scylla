@@ -730,7 +730,7 @@ future<reader_permit::resource_units> reader_concurrency_semaphore::do_wait_admi
 }
 
 void reader_concurrency_semaphore::maybe_admit_waiters() noexcept {
-    while (!_wait_list.empty() && has_available_units(_wait_list.front().res) && all_used_permits_are_stalled()) {
+    while (!_wait_list.empty() && can_admit(_wait_list.front().res)) {
         auto& x = _wait_list.front();
         try {
             x.permit.on_admission();
@@ -793,6 +793,10 @@ std::string reader_concurrency_semaphore::dump_diagnostics() const {
     std::ostringstream os;
     do_dump_reader_permit_diagnostics(os, *this, *_permit_list, "user request");
     return os.str();
+}
+
+bool reader_concurrency_semaphore::can_admit(reader_resources res) const {
+    return has_available_units(res) && all_used_permits_are_stalled();
 }
 
 // A file that tracks the memory usage of buffers resulting from read
