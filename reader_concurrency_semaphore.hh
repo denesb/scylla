@@ -81,6 +81,7 @@ public:
     };
     struct permit_stats {
         uint64_t total_permits = 0;
+        uint64_t used_permits = 0;
     };
 
     struct permit_list;
@@ -193,6 +194,9 @@ private:
 
     void on_permit_created(reader_permit::impl&) noexcept;
     void on_permit_destroyed(reader_permit::impl&) noexcept;
+
+    void on_permit_used() noexcept;
+    void on_permit_unused() noexcept;
 
     std::runtime_error stopped_exception();
 
