@@ -970,6 +970,152 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_destroyed_permit_rele
     BOOST_REQUIRE(semaphore.available_resources() == initial_resources);
 }
 
+SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_admission) {
+    class reader : public flat_mutation_reader::impl {
+        std::optional<promise<>> _promise;
+        bool _blocked;
+
+    private:
+        future<> use() {
+            BOOST_REQUIRE(!_promise);
+            _promise.emplace();
+            co_await _promise->get_future();
+        }
+    public:
+        reader(schema_ptr s, reader_permit p) : impl(std::move(s), std::move(p)) { }
+        void done() {
+            BOOST_REQUIRE(_promise);
+            _promise->set_value();
+            _promise.reset();
+        }
+        void block() {
+            _blocked = true;
+            _permit.mark_blocked();
+        }
+        void unblock() {
+            _blocked = false;
+            _permit.mark_unblocked();
+        }
+        void cleanup() {
+            if (_blocked) {
+                unblock();
+            }
+            if (_promise) {
+                done();
+            }
+        }
+        virtual future<> fill_buffer(db::timeout_clock::time_point timeout) override { return use(); }
+        virtual future<> next_partition() override { return use(); }
+        virtual future<> fast_forward_to(const dht::partition_range& pr, db::timeout_clock::time_point timeout) override { return use(); }
+        virtual future<> fast_forward_to(position_range pr, db::timeout_clock::time_point timeout) override { return use(); }
+    };
+
+    simple_schema s;
+    const auto initial_resources = reader_concurrency_semaphore::resources{10, 10 * 1024};
+    reader_concurrency_semaphore semaphore(initial_resources.count, initial_resources.memory, get_name());
+
+    auto impl_ptr = std::make_unique<reader>(s.schema(), semaphore.make_permit(s.schema().get(), get_name()));
+    auto& impl = *impl_ptr;
+    auto reader = flat_mutation_reader(std::move(impl_ptr));
+
+    auto permit = reader.permit();
+    auto op_fut = std::optional<future<>>{};
+
+    auto wait = [&] {
+        impl.done();
+        op_fut->get();
+        op_fut.reset();
+    };
+
+    auto require = [&] (bool condition, const char* description, std::experimental::source_location sl = std::experimental::source_location::current()) {
+        if (condition) {
+            testlog.trace("condition '{}' passed at {}:{}", description, sl.file_name(), sl.line());
+            return;
+        }
+        // have to generate diagnostics before cleanup
+        auto diagnostics = semaphore.dump_diagnostics();
+        impl.cleanup();
+        if (op_fut) {
+            op_fut->get();
+            op_fut.reset();
+        }
+        BOOST_FAIL(fmt::format("condition '{}' failed at {}:{}\ndiagnostics: {}", description, sl.file_name(), sl.line(), diagnostics));
+    };
+
+    op_fut = reader.fill_buffer(db::no_timeout);
+
+    require(semaphore.can_admit(reader_resources{1, 1024}), "permit doesn't block its own admission");
+
+    wait();
+
+    auto res_units = permit.wait_admission(1024, db::no_timeout).get();
+
+    require(semaphore.can_admit(reader_resources{1, 1024}), "not used - can admit");
+
+    op_fut = reader.fill_buffer(db::no_timeout);
+
+    require(!semaphore.can_admit(reader_resources{1, 1024}), "used, not blocked - can't admit");
+
+    impl.block();
+
+    require(semaphore.can_admit(reader_resources{1, 1024}), "used, blocked - can admit");
+
+    impl.unblock();
+
+    require(!semaphore.can_admit(reader_resources{1, 1024}), "used, unblocked - can't admit");
+
+    wait();
+
+    require(semaphore.can_admit(reader_resources{1, 1024}), "unused, unblocked - can admit");
+
+    {
+        auto irh = semaphore.register_inactive_read(std::move(reader));
+
+        require(semaphore.can_admit(reader_resources{1, 1024}), "unused reader is inactive - can admit");
+
+        auto reader_opt = semaphore.unregister_inactive_read(std::move(irh));
+        BOOST_REQUIRE(reader_opt);
+        reader = std::move(*reader_opt);
+    }
+
+    {
+        reader_permit::used_guard _{permit};
+
+        auto irh = semaphore.register_inactive_read(std::move(reader));
+
+        require(semaphore.can_admit(reader_resources{1, 1024}), "used reader is inactive - can admit");
+
+        auto reader_opt = semaphore.unregister_inactive_read(std::move(irh));
+        BOOST_REQUIRE(reader_opt);
+        reader = std::move(*reader_opt);
+    }
+
+    {
+        auto irh = semaphore.register_inactive_read(std::move(reader));
+
+        reader_permit::used_guard _{permit};
+
+        require(semaphore.can_admit(reader_resources{1, 1024}), "reader is inactive, marked used - can admit");
+
+        auto reader_opt = semaphore.unregister_inactive_read(std::move(irh));
+        BOOST_REQUIRE(reader_opt);
+        reader = std::move(*reader_opt);
+    }
+
+    {
+        reader_permit::used_guard _{permit};
+
+        auto irh = semaphore.register_inactive_read(std::move(reader));
+
+        BOOST_REQUIRE(semaphore.try_evict_one_inactive_read());
+
+        require(semaphore.can_admit(reader_resources{1, 1024}), "reader is evicted - can admit");
+
+        auto reader_opt = semaphore.unregister_inactive_read(std::move(irh));
+        BOOST_REQUIRE(!reader_opt);
+    }
+}
+
 static
 sstables::shared_sstable create_sstable(sstables::test_env& env, schema_ptr s, std::vector<mutation> mutations) {
     static thread_local auto tmp = tmpdir();
