@@ -606,6 +606,10 @@ bool reader_concurrency_semaphore::has_available_units(const resources& r) const
     return (bool(_resources) && _resources >= r) || _resources.count == _initial_resources.count;
 }
 
+bool reader_concurrency_semaphore::all_used_permits_are_stalled() const {
+    return _permit_list->blocked_permits >= _permit_list->used_permits;
+}
+
 future<reader_permit::resource_units> reader_concurrency_semaphore::enqueue_waiter(reader_permit permit, resources r,
         db::timeout_clock::time_point timeout) {
     if (_wait_list.size() >= _max_queue_length) {
@@ -634,6 +638,10 @@ future<reader_permit::resource_units> reader_concurrency_semaphore::do_wait_admi
         return enqueue_waiter(std::move(permit), r, timeout);
     }
 
+    if (!all_used_permits_are_stalled()) {
+        return enqueue_waiter(std::move(permit), r, timeout);
+    }
+
     while (!has_available_units(r)) {
         if (!try_evict_one_inactive_read(evict_reason::permit)) {
             return enqueue_waiter(std::move(permit), r, timeout);
@@ -645,7 +653,7 @@ future<reader_permit::resource_units> reader_concurrency_semaphore::do_wait_admi
 }
 
 void reader_concurrency_semaphore::maybe_admit_waiters() noexcept {
-    while (!_wait_list.empty() && has_available_units(_wait_list.front().res)) {
+    while (!_wait_list.empty() && has_available_units(_wait_list.front().res) && all_used_permits_are_stalled()) {
         auto& x = _wait_list.front();
         try {
             x.permit.on_admission();
@@ -675,11 +683,13 @@ void reader_concurrency_semaphore::on_permit_unused() noexcept {
     assert(_permit_list->used_permits);
     --_permit_list->used_permits;
     assert(_permit_list->used_permits >= _permit_list->blocked_permits);
+    maybe_admit_waiters();
 }
 
 void reader_concurrency_semaphore::on_permit_blocked() noexcept {
     ++_permit_list->blocked_permits;
     assert(_permit_list->used_permits >= _permit_list->blocked_permits);
+    maybe_admit_waiters();
 }
 
 void reader_concurrency_semaphore::on_permit_unblocked() noexcept {
