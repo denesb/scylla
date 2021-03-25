@@ -370,81 +370,126 @@ std::ostream& operator<<(std::ostream& os, reader_permit::impl::ext_state s) {
 
 namespace {
 
-struct permit_stats {
-    uint64_t memory = 0;
-    uint64_t count = 0;
+using permit_group_key = std::tuple<const schema*, std::string_view>;
 
-    void add(uint64_t m) {
-        memory += m;
-        ++count;
+struct permit_group_key_hash {
+    size_t operator()(const permit_group_key& k) const {
+        return std::hash<uintptr_t>()(reinterpret_cast<uintptr_t>(std::get<0>(k)))
+            ^ std::hash<std::string_view>()(std::get<1>(k));
+    }
+};
+
+struct permit_group {
+    reader_resources resources;
+    std::vector<const reader_permit::impl*> permits;
+
+    void add(const reader_permit::impl& permit) {
+        resources += permit.resources();
+        permits.push_back(&permit);
+    }
+};
+
+using permit_groups = std::unordered_map<permit_group_key, permit_group, permit_group_key_hash>;
+
+struct permit_stats {
+    uint64_t permits = 0;
+    reader_resources resources;
+
+    void add(const reader_permit::impl& permit) {
+        ++permits;
+        resources += permit.resources();
+    }
+
+    void add(const permit_group& group) {
+        permits += group.permits.size();
+        resources += group.resources;
     }
 
     permit_stats& operator+=(const permit_stats& o) {
-        memory += o.memory;
-        count += o.count;
+        permits += o.permits;
+        resources += o.resources;
         return *this;
     }
 };
 
-using permit_group_key = std::tuple<const schema*, std::string_view, reader_permit::state>;
+template <typename Map>
+std::vector<const typename Map::value_type*> sorted_by_value_resources(const Map& map) {
+    std::vector<const typename Map::value_type*> sorted_values;
+    sorted_values.reserve(map.size());
 
-struct permit_group_key_hash {
-    size_t operator()(const permit_group_key& k) const {
-        using underlying_type = std::underlying_type_t<reader_permit::state>;
-        return std::hash<uintptr_t>()(reinterpret_cast<uintptr_t>(std::get<0>(k)))
-            ^ std::hash<std::string_view>()(std::get<1>(k))
-            ^ std::hash<underlying_type>()(static_cast<underlying_type>(std::get<2>(k)));
-    }
-};
-
-using permit_groups = std::unordered_map<permit_group_key, permit_stats, permit_group_key_hash>;
-
-static permit_stats do_dump_reader_permit_diagnostics(std::ostream& os, const permit_groups& permits, reader_permit::state state, bool sort_by_memory) {
-    struct permit_summary {
-        const schema* s;
-        std::string_view op_name;
-        uint64_t memory;
-        uint64_t count;
-    };
-
-    std::vector<permit_summary> permit_summaries;
-    for (const auto& [k, v] : permits) {
-        const auto& [s, op_name, k_state] = k;
-        if (k_state == state) {
-            permit_summaries.emplace_back(permit_summary{s, op_name, v.memory, v.count});
-        }
+    for (const auto& val : map) {
+        sorted_values.push_back(&val);
     }
 
-    std::ranges::sort(permit_summaries, [sort_by_memory] (const permit_summary& a, const permit_summary& b) {
-        if (sort_by_memory) {
-            return a.memory < b.memory;
-        } else {
-            return a.count < b.count;
-        }
+    std::ranges::sort(sorted_values, [] (const typename Map::value_type* a, const typename Map::value_type* b) {
+        return a->second.resources.memory < b->second.resources.memory;
     });
+
+    return sorted_values;
+}
+
+static permit_stats do_dump_reader_permit_diagnostics(std::ostream& os, const permit_groups& permit_groups) {
+    const auto sorted_permit_groups = sorted_by_value_resources(permit_groups);
 
     permit_stats total;
 
-    auto print_line = [&os, sort_by_memory] (auto col1, auto col2, auto col3) {
-        if (sort_by_memory) {
-            fmt::print(os, "{}\t{}\t{}\n", col2, col1, col3);
-        } else {
-            fmt::print(os, "{}\t{}\t{}\n", col1, col2, col3);
-        }
+    auto print_line = [&os] (auto col1, auto col2, auto col3, auto col4) {
+        fmt::print(os, "{}\t{}\t{}\t{}\n", col1, col2, col3, col4);
+    };
+    auto print_sub_line = [&os] (auto col1, auto col2, auto col3, auto col4) {
+        fmt::print(os, "+ {}\t{}\t{}\t{}\n", col1, col2, col3, col4);
     };
 
-    fmt::print(os, "Permits with state {}, sorted by {}\n", state, sort_by_memory ? "memory" : "count");
-    print_line("count", "memory", "name");
-    for (const auto& summary : permit_summaries) {
-        total.count += summary.count;
-        total.memory += summary.memory;
-        print_line(summary.count, utils::to_hr_size(summary.memory), fmt::format("{}.{}:{}",
-                    summary.s ? summary.s->ks_name() : "*",
-                    summary.s ? summary.s->cf_name() : "*",
-                    summary.op_name));
+    struct permit_state {
+        reader_permit::state state;
+        reader_permit::impl::ext_state ext_state;
+
+        explicit permit_state(const reader_permit::impl& permit) : state(permit.get_state()), ext_state(permit.get_ext_state())
+        { }
+
+        bool operator<(const permit_state& o) const {
+            if (state == o.state) {
+                return ext_state < o.ext_state;
+            }
+            return state < o.state;
+        }
+    };
+    using state_stats_type = std::map<permit_state, permit_stats>;
+
+    print_line("permits", "memory", "count", "name");
+    for (const auto group_ptr : sorted_permit_groups) {
+        auto& [key, group] = *group_ptr;
+        auto [group_schema, group_op_name] = key;
+
+        total.add(group);
+
+        print_line(
+                group.permits.size(),
+                utils::to_hr_size(group.resources.memory),
+                group.resources.count,
+                fmt::format("{}.{}:{}",
+                        group_schema ? group_schema->ks_name() : "*",
+                        group_schema ? group_schema->cf_name() : "*",
+                        group_op_name));
+
+        state_stats_type state_stats;
+        for (const auto permit : group.permits) {
+            state_stats[permit_state(*permit)].add(*permit);
+        }
+
+        const auto sorted_state_stats = sorted_by_value_resources(state_stats);
+
+        for (const auto state_ptr : sorted_state_stats) {
+            auto& [state_key, stats] = *state_ptr;
+            print_sub_line(
+                    stats.permits,
+                    utils::to_hr_size(stats.resources.memory),
+                    stats.resources.count,
+                    fmt::format("{}/{}", state_key.state, state_key.ext_state));
+        }
     }
     fmt::print(os, "\n");
-    print_line(total.count, utils::to_hr_size(total.memory), "total");
+    print_line(total.permits, utils::to_hr_size(total.resources.memory), total.resources.count, "total");
     return total;
 }
 
@@ -453,21 +498,22 @@ static void do_dump_reader_permit_diagnostics(std::ostream& os, const reader_con
     permit_groups permits;
 
     for (const auto& permit : list.permits) {
-        permits[permit_group_key(permit.get_schema(), permit.get_op_name(), permit.get_state())].add(permit.resources().memory);
+        permits[permit_group_key(permit.get_schema(), permit.get_op_name())].add(permit);
     }
 
     permit_stats total;
 
     fmt::print(os, "Semaphore {}: {}, dumping permit diagnostics:\n", semaphore.name(), problem);
-    total += do_dump_reader_permit_diagnostics(os, permits, reader_permit::state::admitted, true);
+    total += do_dump_reader_permit_diagnostics(os, permits);
     fmt::print(os, "\n");
-    total += do_dump_reader_permit_diagnostics(os, permits, reader_permit::state::inactive, false);
-    fmt::print(os, "\n");
-    total += do_dump_reader_permit_diagnostics(os, permits, reader_permit::state::waiting, false);
-    fmt::print(os, "\n");
-    total += do_dump_reader_permit_diagnostics(os, permits, reader_permit::state::registered, false);
-    fmt::print(os, "\n");
-    fmt::print(os, "Total: permits: {}, memory: {}\n", total.count, utils::to_hr_size(total.memory));
+    fmt::print(
+            os,
+            "Total: {} permits ({} used, {} blocked), consuming {} count and {} memory resources\n",
+            list.total_permits,
+            list.used_permits,
+            list.blocked_permits,
+            total.resources.count,
+            utils::to_hr_size(total.resources.memory));
 }
 
 static void maybe_dump_reader_permit_diagnostics(const reader_concurrency_semaphore& semaphore, const reader_concurrency_semaphore::permit_list& list,
