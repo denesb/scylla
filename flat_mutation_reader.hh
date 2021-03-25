@@ -211,7 +211,7 @@ public:
         // Stops when consumer returns stop_iteration::yes or end of stream is reached.
         // Next call will start from the next mutation_fragment in the stream.
         future<> consume_pausable(Consumer consumer, db::timeout_clock::time_point timeout) {
-            return repeat([this, consumer = std::move(consumer), timeout] () mutable {
+            return repeat([this, consumer = std::move(consumer), timeout, guard = reader_permit::used_guard(_permit)] () mutable {
                 if (is_buffer_empty()) {
                     if (is_end_of_stream()) {
                         return make_ready_future<stop_iteration>(stop_iteration::yes);
@@ -238,6 +238,7 @@ public:
         // Partitions for which filter(decorated_key) returns false are skipped
         // entirely and never reach the consumer.
         void consume_pausable_in_thread(Consumer consumer, Filter filter, db::timeout_clock::time_point timeout) {
+            reader_permit::used_guard _(_permit);
             while (true) {
                 if (need_preempt()) {
                     seastar::thread::yield();
@@ -330,7 +331,8 @@ public:
         //
         // This method returns whatever is returned from Consumer::consume_end_of_stream().S
         auto consume(Consumer consumer, db::timeout_clock::time_point timeout) {
-            return do_with(consumer_adapter<Consumer>(*this, std::move(consumer)), [this, timeout] (consumer_adapter<Consumer>& adapter) {
+            return do_with(consumer_adapter<Consumer>(*this, std::move(consumer)), reader_permit::used_guard(_permit),
+                    [this, timeout] (consumer_adapter<Consumer>& adapter, reader_permit::used_guard&) {
                 return consume_pausable(std::ref(adapter), timeout).then([this, &adapter] {
                     return adapter._consumer.consume_end_of_stream();
                 });
