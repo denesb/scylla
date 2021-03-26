@@ -136,6 +136,8 @@ public:
 
     future<resource_units> wait_admission(size_t memory, db::timeout_clock::time_point timeout);
 
+    future<> wait_readmission(db::timeout_clock::time_point timeout);
+
     void consume(reader_resources res);
 
     void signal(reader_resources res);
@@ -153,6 +155,8 @@ public:
     void mark_blocked() noexcept;
 
     void mark_unblocked() noexcept;
+
+    void incorporate(resource_units res);
 };
 
 using reader_permit_opt = optimized_optional<reader_permit>;
