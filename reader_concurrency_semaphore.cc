@@ -79,6 +79,7 @@ class reader_permit::impl
     const schema* _schema;
     sstring _op_name;
     std::string_view _op_name_view;
+    reader_resources _base_resources;
     reader_resources _resources;
     reader_permit::state _state = reader_permit::state::active_unused;
     uint64_t _used_branches = 0;
@@ -138,6 +139,11 @@ public:
         _semaphore.on_permit_created(*this);
     }
     ~impl() {
+        if (_state != reader_permit::state::evicted) {
+            // on_evicted() already signalled _base_resources
+            signal(_base_resources);
+        }
+
         if (_resources) {
             on_internal_error_noexcept(rcslog, format("reader_permit::impl::~impl(): permit {} detected a leak of {{count={}, memory={}}} resources",
                         description(),
@@ -205,6 +211,7 @@ public:
     void on_evicted() {
         assert(_state == reader_permit::state::inactive);
         _state = reader_permit::state::evicted;
+        signal(_base_resources);
     }
 
     void consume(reader_resources res) {
@@ -268,6 +275,20 @@ public:
             on_permit_unblocked();
         }
     }
+
+    void incorporate(resource_units res) {
+        _base_resources = res._resources;
+        res._resources = {};
+    }
+
+    future<> maybe_wait_readmission(db::timeout_clock::time_point timeout) {
+        if (_state != reader_permit::state::evicted) {
+            return make_ready_future<>();
+        }
+        return _semaphore.do_wait_admission(shared_from_this(), _base_resources.memory, timeout).then([this] (resource_units units) {
+            incorporate(std::move(units));
+        });
+    }
 };
 
 struct reader_concurrency_semaphore::permit_list {
@@ -310,6 +331,10 @@ future<reader_permit::resource_units> reader_permit::wait_admission(size_t memor
     return _impl->semaphore().do_wait_admission(*this, memory, timeout);
 }
 
+future<> reader_permit::maybe_wait_readmission(db::timeout_clock::time_point timeout) {
+    return _impl->maybe_wait_readmission(timeout);
+}
+
 void reader_permit::consume(reader_resources res) {
     _impl->consume(res);
 }
@@ -348,6 +373,10 @@ void reader_permit::mark_blocked() noexcept {
 
 void reader_permit::mark_unblocked() noexcept {
     _impl->mark_unblocked();
+}
+
+void reader_permit::incorporate(resource_units res) {
+    _impl->incorporate(std::move(res));
 }
 
 std::ostream& operator<<(std::ostream& os, reader_permit::state s) {
