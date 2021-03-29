@@ -817,6 +817,41 @@ reader_permit reader_concurrency_semaphore::make_permit(const schema* const sche
     return reader_permit(*this, schema, std::move(op_name));
 }
 
+future<reader_permit> reader_concurrency_semaphore::obtain_permit(const schema* const schema, const char* const op_name, size_t memory,
+        db::timeout_clock::time_point timeout) {
+    auto permit = reader_permit(*this, schema, std::string_view(op_name));
+    return do_wait_admission(permit, memory, timeout).then([permit] (reader_permit::resource_units res) mutable {
+        permit.incorporate(std::move(res));
+        return std::move(permit);
+    });
+}
+
+future<reader_permit> reader_concurrency_semaphore::obtain_permit(const schema* const schema, sstring&& op_name, size_t memory,
+        db::timeout_clock::time_point timeout) {
+    auto permit = reader_permit(*this, schema, std::move(op_name));
+    return do_wait_admission(permit, memory, timeout).then([permit] (reader_permit::resource_units res) mutable {
+        permit.incorporate(std::move(res));
+        return std::move(permit);
+    });
+}
+
+future<reader_permit> reader_concurrency_semaphore::obtain_permit_nowait(const schema* const schema, const char* const op_name, size_t memory,
+        db::timeout_clock::time_point timeout) {
+    return make_ready_future<reader_permit>(reader_permit(*this, schema, std::string_view(op_name)));
+}
+future<reader_permit> reader_concurrency_semaphore::obtain_permit_nowait(const schema* const schema, sstring&& op_name, size_t memory,
+        db::timeout_clock::time_point timeout) {
+    return make_ready_future<reader_permit>(reader_permit(*this, schema, std::move(op_name)));
+}
+
+reader_permit reader_concurrency_semaphore::make_tracking_only_permit(const schema* const schema, const char* const op_name) {
+    return reader_permit(*this, schema, std::string_view(op_name));
+}
+
+reader_permit reader_concurrency_semaphore::make_tracking_only_permit(const schema* const schema, sstring&& op_name) {
+    return reader_permit(*this, schema, std::move(op_name));
+}
+
 void reader_concurrency_semaphore::broken(std::exception_ptr ex) {
     if (!ex) {
         ex = std::make_exception_ptr(broken_semaphore{});
