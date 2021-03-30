@@ -688,8 +688,9 @@ static future<partition_checksum> checksum_range_shard(database &db,
         const sstring& keyspace_name, const sstring& cf_name,
         const dht::partition_range_vector& prs, repair_checksum hash_version) {
     auto& cf = db.find_column_family(keyspace_name, cf_name);
-    auto reader = cf.make_streaming_reader(cf.schema(), prs);
-    return partition_checksum::compute(std::move(reader), hash_version);
+    auto permit = co_await db.obtain_reader_permit(cf, "checksum-range-shard", db::no_timeout);
+    auto reader = cf.make_streaming_reader(cf.schema(), std::move(permit), prs);
+    co_return co_await partition_checksum::compute(std::move(reader), hash_version);
 }
 
 // It is counter-productive to allow a large number of range checksum
