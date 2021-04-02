@@ -212,11 +212,11 @@ class read_context : public reader_lifecycle_policy {
     future<> save_reader(shard_id shard, const dht::decorated_key& last_pkey, const std::optional<clustering_key_prefix>& last_ckey);
 
 public:
-    read_context(distributed<database>& db, schema_ptr s, const query::read_command& cmd, const dht::partition_range_vector& ranges,
+    read_context(distributed<database>& db, schema_ptr s, reader_permit permit, const query::read_command& cmd, const dht::partition_range_vector& ranges,
             tracing::trace_state_ptr trace_state)
             : _db(db)
             , _schema(std::move(s))
-            , _permit(_db.local().get_reader_concurrency_semaphore().make_permit(_schema.get(), "multishard-mutation-query"))
+            , _permit(std::move(permit))
             , _cmd(cmd)
             , _ranges(ranges)
             , _trace_state(std::move(trace_state))
@@ -649,13 +649,15 @@ future<page_consume_result<ResultBuilder>> read_page(
 template <typename ResultBuilder>
 future<typename ResultBuilder::result_type> do_query(
         distributed<database>& db,
-        schema_ptr s,
+        table& tbl,
         const query::read_command& cmd,
         const dht::partition_range_vector& ranges,
         tracing::trace_state_ptr trace_state,
         db::timeout_clock::time_point timeout,
         ResultBuilder&& result_builder) {
-    auto ctx = seastar::make_shared<read_context>(db, s, cmd, ranges, trace_state);
+    auto s = tbl.schema();
+    auto permit = co_await db.local().obtain_reader_permit(tbl, "multishard-mutation-query", timeout);
+    auto ctx = seastar::make_shared<read_context>(db, s, std::move(permit), cmd, ranges, trace_state);
 
     co_await ctx->lookup_readers();
 
@@ -704,11 +706,13 @@ static future<std::tuple<foreign_ptr<lw_shared_ptr<typename ResultBuilder::resul
 
         auto result_builder = result_builder_factory(std::move(accounter));
 
-        auto result = co_await do_query<ResultBuilder>(db, s, cmd, ranges, std::move(trace_state), timeout, std::move(result_builder));
+        auto& tbl = local_db.find_column_family(s);
+
+        auto result = co_await do_query<ResultBuilder>(db, tbl, cmd, ranges, std::move(trace_state), timeout, std::move(result_builder));
 
         ++stats.total_reads;
         stats.short_mutation_queries += bool(result.is_short_read());
-        auto hit_rate = local_db.find_column_family(s).get_global_cache_hit_rate();
+        auto hit_rate = tbl.get_global_cache_hit_rate();
         co_return std::tuple(make_foreign(make_lw_shared<typename ResultBuilder::result_type>(std::move(result))), hit_rate);
     } catch (...) {
         ++stats.total_reads_failed;
