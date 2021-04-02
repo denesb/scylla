@@ -703,7 +703,7 @@ memtable::make_flat_reader(schema_ptr s,
 
 flat_mutation_reader
 memtable::make_flush_reader(schema_ptr s, const io_priority_class& pc) {
-    auto permit = _flush_semaphore.make_permit(s.get(), "memtable-flush");
+    auto permit = _flush_semaphore.make_tracking_only_permit(s.get(), "memtable-flush");
     if (group()) {
         return make_flat_mutation_reader<flush_reader>(std::move(s), std::move(permit), shared_from_this());
     } else {

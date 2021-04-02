@@ -460,7 +460,7 @@ sstable_writer_k_l::sstable_writer_k_l(sstable& sst, const schema& s, uint64_t e
     , _run_identifier(cfg.run_identifier)
     , _max_sstable_size(cfg.max_sstable_size)
     , _tombstone_written(false)
-    , _range_tombstones(s, reader_semaphore.make_permit(&_schema, "components-writer"))
+    , _range_tombstones(s, reader_semaphore.make_tracking_only_permit(&_schema, "components-writer"))
     , _version(sst.get_version())
 {
     _sst.generate_toc(_schema.get_compressor_params().get_compressor(), _schema.bloom_filter_fp_chance());
