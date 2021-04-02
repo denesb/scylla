@@ -1547,6 +1547,10 @@ future<reader_permit> database::obtain_reader_permit(table& tbl, const char* con
     return get_reader_concurrency_semaphore().obtain_permit(tbl.schema().get(), op_name, tbl.estimate_read_memory_cost(), timeout);
 }
 
+future<reader_permit> database::obtain_reader_permit(schema_ptr schema, const char* const op_name, db::timeout_clock::time_point timeout) {
+    return obtain_reader_permit(find_column_family(std::move(schema)), op_name, timeout);
+}
+
 std::ostream& operator<<(std::ostream& out, const column_family& cf) {
     return fmt_print(out, "{{column_family: {}/{}}}", cf._schema->ks_name(), cf._schema->cf_name());
 }
@@ -2302,6 +2306,9 @@ flat_mutation_reader make_multishard_streaming_reader(distributed<database>& db,
                 _contexts[shard].semaphore = &cf.streaming_read_concurrency_semaphore();
             }
             return *_contexts[shard].semaphore;
+        }
+        virtual future<reader_permit> obtain_reader_permit(schema_ptr schema, const char* const description, db::timeout_clock::time_point timeout) override {
+            return _db.local().obtain_reader_permit(std::move(schema), description, timeout);
         }
     };
     auto ms = mutation_source([&db] (schema_ptr s,

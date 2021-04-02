@@ -1624,6 +1624,7 @@ public:
     reader_concurrency_semaphore& get_reader_concurrency_semaphore();
 
     future<reader_permit> obtain_reader_permit(table& tbl, const char* const op_name, db::timeout_clock::time_point timeout);
+    future<reader_permit> obtain_reader_permit(schema_ptr schema, const char* const op_name, db::timeout_clock::time_point timeout);
 
     sharded<semaphore>& get_sharded_sst_dir_semaphore() {
         return _sst_dir_semaphore;
