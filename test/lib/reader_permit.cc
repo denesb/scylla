@@ -31,7 +31,7 @@ reader_concurrency_semaphore& semaphore() {
 }
 
 reader_permit make_permit() {
-    return the_semaphore.make_permit(nullptr, "test");
+    return the_semaphore.make_tracking_only_permit(nullptr, "test");
 }
 
 query::query_class_config make_query_class_config() {
