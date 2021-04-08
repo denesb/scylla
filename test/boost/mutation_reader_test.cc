@@ -904,7 +904,7 @@ SEASTAR_TEST_CASE(test_reader_concurrency_semaphore_clear_inactive_reads) {
         reader_concurrency_semaphore semaphore(reader_concurrency_semaphore::no_limits{}, get_name());
 
         for (int i = 0; i < 10; ++i) {
-            handles.emplace_back(semaphore.register_inactive_read(make_empty_flat_reader(s.schema(), semaphore.make_permit(s.schema().get(), get_name()))));
+            handles.emplace_back(semaphore.register_inactive_read(make_empty_flat_reader(s.schema(), semaphore.make_tracking_only_permit(s.schema().get(), get_name()))));
         }
 
         BOOST_REQUIRE(std::all_of(handles.begin(), handles.end(), [] (const reader_concurrency_semaphore::inactive_read_handle& handle) { return bool(handle); }));
@@ -916,7 +916,7 @@ SEASTAR_TEST_CASE(test_reader_concurrency_semaphore_clear_inactive_reads) {
         handles.clear();
 
         for (int i = 0; i < 10; ++i) {
-            handles.emplace_back(semaphore.register_inactive_read(make_empty_flat_reader(s.schema(), semaphore.make_permit(s.schema().get(), get_name()))));
+            handles.emplace_back(semaphore.register_inactive_read(make_empty_flat_reader(s.schema(), semaphore.make_tracking_only_permit(s.schema().get(), get_name()))));
         }
 
         BOOST_REQUIRE(std::all_of(handles.begin(), handles.end(), [] (const reader_concurrency_semaphore::inactive_read_handle& handle) { return bool(handle); }));
@@ -935,14 +935,14 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_destroyed_permit_rele
 
     // Not admitted, active
     {
-        auto permit = semaphore.make_permit(s.schema().get(), get_name());
+        auto permit = semaphore.make_tracking_only_permit(s.schema().get(), get_name());
         auto units2 = permit.consume_memory(1024);
     }
     BOOST_REQUIRE(semaphore.available_resources() == initial_resources);
 
     // Not admitted, inactive
     {
-        auto permit = semaphore.make_permit(s.schema().get(), get_name());
+        auto permit = semaphore.make_tracking_only_permit(s.schema().get(), get_name());
         auto units2 = permit.consume_memory(1024);
 
         auto handle = semaphore.register_inactive_read(make_empty_flat_reader(s.schema(), permit));
@@ -952,17 +952,15 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_destroyed_permit_rele
 
     // Admitted, active
     {
-        auto permit = semaphore.make_permit(s.schema().get(), get_name());
-        auto units1 = permit.wait_admission(1024, db::no_timeout).get0();
-        auto units2 = permit.consume_memory(1024);
+        auto permit = semaphore.obtain_permit(s.schema().get(), get_name(), 1024, db::no_timeout).get0();
+        auto units1 = permit.consume_memory(1024);
     }
     BOOST_REQUIRE(semaphore.available_resources() == initial_resources);
 
     // Admitted, inactive
     {
-        auto permit = semaphore.make_permit(s.schema().get(), get_name());
-        auto units1 = permit.wait_admission(1024, db::no_timeout).get0();
-        auto units2 = permit.consume_memory(1024);
+        auto permit = semaphore.obtain_permit(s.schema().get(), get_name(), 1024, db::no_timeout).get0();
+        auto units1 = permit.consume_memory(1024);
 
         auto handle = semaphore.register_inactive_read(make_empty_flat_reader(s.schema(), permit));
         BOOST_REQUIRE(semaphore.try_evict_one_inactive_read());
@@ -1014,7 +1012,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_admission) {
     const auto initial_resources = reader_concurrency_semaphore::resources{10, 10 * 1024};
     reader_concurrency_semaphore semaphore(initial_resources.count, initial_resources.memory, get_name());
 
-    auto impl_ptr = std::make_unique<reader>(s.schema(), semaphore.make_permit(s.schema().get(), get_name()));
+    auto impl_ptr = std::make_unique<reader>(s.schema(), semaphore.obtain_permit(s.schema().get(), get_name(), 1024, db::no_timeout).get0());
     auto& impl = *impl_ptr;
     auto reader = flat_mutation_reader(std::move(impl_ptr));
 
@@ -1044,11 +1042,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_admission) {
 
     op_fut = reader.fill_buffer(db::no_timeout);
 
-    require(semaphore.can_admit(reader_resources{1, 1024}), "permit doesn't block its own admission");
-
     wait();
-
-    auto res_units = permit.wait_admission(1024, db::no_timeout).get();
 
     require(semaphore.can_admit(reader_resources{1, 1024}), "not used - can admit");
 
@@ -1209,7 +1203,7 @@ public:
             return flat_mutation_reader(std::move(tracker_ptr));
         });
 
-        _reader = make_restricted_flat_reader(std::move(ms), schema, semaphore.make_permit(schema.get(), "reader-wrapper"));
+        _reader = make_restricted_flat_reader(std::move(ms), schema, semaphore.make_tracking_only_permit(schema.get(), "reader-wrapper"));
     }
 
     reader_wrapper(
@@ -1305,8 +1299,7 @@ class dummy_file_impl : public file_impl {
 SEASTAR_TEST_CASE(reader_restriction_file_tracking) {
     return async([&] {
         reader_concurrency_semaphore semaphore(100, 4 * 1024, get_name());
-        auto permit = semaphore.make_permit(nullptr, get_name());
-        permit.wait_admission(0, db::no_timeout).get();
+        auto permit = semaphore.obtain_permit(nullptr, get_name(), 0, db::no_timeout).get();
 
         {
             auto tracked_file = make_tracked_file(file(shared_ptr<file_impl>(make_shared<dummy_file_impl>())), permit);
@@ -3482,7 +3475,7 @@ flat_mutation_reader create_evictable_reader_and_evict_after_first_buffer(
 SEASTAR_THREAD_TEST_CASE(test_evictable_reader_trim_range_tombstones) {
     reader_concurrency_semaphore semaphore(reader_concurrency_semaphore::no_limits{}, get_name());
     simple_schema s;
-    auto permit = semaphore.make_permit(s.schema().get(), get_name());
+    auto permit = semaphore.make_tracking_only_permit(s.schema().get(), get_name());
 
     const auto pkey = s.make_pkey();
     size_t max_buffer_size = 512;
@@ -3573,7 +3566,7 @@ SEASTAR_THREAD_TEST_CASE(test_evictable_reader_self_validation) {
 
     reader_concurrency_semaphore semaphore(reader_concurrency_semaphore::no_limits{}, get_name());
     simple_schema s;
-    auto permit = semaphore.make_permit(s.schema().get(), get_name());
+    auto permit = semaphore.make_tracking_only_permit(s.schema().get(), get_name());
 
     auto pkeys = s.make_pkeys(4);
     std::ranges::sort(pkeys, dht::decorated_key::less_comparator(s.schema()));
@@ -3927,7 +3920,7 @@ SEASTAR_THREAD_TEST_CASE(test_evictable_reader_recreate_before_fast_forward_to) 
 
     reader_concurrency_semaphore semaphore(reader_concurrency_semaphore::no_limits{}, get_name());
     simple_schema s;
-    auto permit = semaphore.make_permit(s.schema().get(), get_name());
+    auto permit = semaphore.make_tracking_only_permit(s.schema().get(), get_name());
     auto pkeys = s.make_pkeys(6);
     boost::sort(pkeys, dht::decorated_key::less_comparator(s.schema()));
 

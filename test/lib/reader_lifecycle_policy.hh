@@ -99,8 +99,7 @@ private:
     struct reader_context {
         reader_concurrency_semaphore* semaphore = nullptr;
         operations_gate::operation op;
-        std::optional<reader_permit> permit;
-        std::optional<future<reader_permit::resource_units>> wait_future;
+        std::optional<future<reader_permit>> wait_future;
         std::optional<const dht::partition_range> range;
         std::optional<const query::partition_slice> slice;
 
@@ -149,9 +148,8 @@ public:
                 ctx->semaphore->unregister_inactive_read(std::move(*handle));
                 ctx->semaphore->broken(std::make_exception_ptr(broken_semaphore{}));
                 if (ctx->wait_future) {
-                    return ctx->wait_future->then_wrapped([ctx = std::move(ctx)] (future<reader_permit::resource_units> f) mutable {
+                    return ctx->wait_future->then_wrapped([ctx = std::move(ctx)] (future<reader_permit> f) mutable {
                         f.ignore_ready_future();
-                        ctx->permit.reset(); // make sure it's destroyed before the semaphore
                     });
                 }
                 return make_ready_future<>();
@@ -167,11 +165,10 @@ public:
         }
         if (_evict_paused_readers) {
             _contexts[shard]->semaphore = &_semaphore_registry.create_semaphore(0, std::numeric_limits<ssize_t>::max(), format("reader_concurrency_semaphore @shard_id={}", shard));
-            _contexts[shard]->permit = _contexts[shard]->semaphore->make_permit(nullptr, "tests::reader_lifecycle_policy");
             // Add a waiter, so that all registered inactive reads are
             // immediately evicted.
             // We don't care about the returned future.
-            _contexts[shard]->wait_future = _contexts[shard]->permit->wait_admission(1, db::no_timeout);
+            _contexts[shard]->wait_future = _contexts[shard]->semaphore->obtain_permit(nullptr, "tests::reader_lifecycle_policy", 1, db::no_timeout);
         } else {
             _contexts[shard]->semaphore = &_semaphore_registry.create_semaphore(reader_concurrency_semaphore::no_limits{});
         }
