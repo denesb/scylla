@@ -339,6 +339,8 @@ using column_family_stats = table_stats;
 
 class database_sstable_write_monitor;
 
+extern const ssize_t new_reader_base_cost;
+
 using enable_backlog_tracker = bool_class<class enable_backlog_tracker_tag>;
 
 struct table_stats {
