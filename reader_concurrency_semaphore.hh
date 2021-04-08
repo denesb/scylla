@@ -285,19 +285,6 @@ public:
     ///
     /// Some permits cannot be associated with any table, so passing nullptr as
     /// the schema parameter is allowed.
-    reader_permit make_permit(const schema* const schema, const char* const op_name);
-    reader_permit make_permit(const schema* const schema, sstring&& op_name);
-
-    /// Make a permit
-    ///
-    /// The permit is associated with a schema, which is the schema of the table
-    /// the read is executed against, and the operation name, which should be a
-    /// name such that we can identify the operation which created this permit.
-    /// Ideally this should be a unique enough name that we not only can identify
-    /// the kind of read, but the exact code-path that was taken.
-    ///
-    /// Some permits cannot be associated with any table, so passing nullptr as
-    /// the schema parameter is allowed.
     future<reader_permit> obtain_permit(const schema* const schema, const char* const op_name, size_t memory, db::timeout_clock::time_point timeout);
     future<reader_permit> obtain_permit(const schema* const schema, sstring&& op_name, size_t memory, db::timeout_clock::time_point timeout);
 
