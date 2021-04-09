@@ -1973,10 +1973,12 @@ table::query(schema_ptr s,
         auto&& range = *qs.current_partition_range++;
 
         auto querier_opt = cache_ctx.lookup_data_querier(*s, range, qs.cmd.slice, trace_state);
-        auto q = querier_opt
-                ? std::move(*querier_opt)
-                : query::data_querier(as_mutation_source(), s, class_config.semaphore.make_permit(s.get(), "data-query"), range, qs.cmd.slice,
-                        service::get_local_sstable_query_read_priority(), trace_state);
+        if (!querier_opt) {
+            auto permit = co_await class_config.semaphore.obtain_permit_nowait(s.get(), "data-query", estimate_read_memory_cost(), timeout);
+            querier_opt = query::data_querier(as_mutation_source(), s, std::move(permit), range, qs.cmd.slice,
+                    service::get_local_sstable_query_read_priority(), trace_state);
+        }
+        auto& q = *querier_opt;
 
         std::exception_ptr ex;
       try {
