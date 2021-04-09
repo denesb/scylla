@@ -94,7 +94,7 @@ public:
         registered, // read is registered, but didn't attempt admission yet
         waiting, // waiting for admission
         admitted,
-        inactive, // un-admitted reads that are registered as inactive
+        inactive,
     };
 
     class impl;

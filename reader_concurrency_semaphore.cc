@@ -78,6 +78,7 @@ class reader_permit::impl : public boost::intrusive::list_base_hook<boost::intru
     std::string_view _op_name_view;
     reader_resources _resources;
     reader_permit::state _state = reader_permit::state::registered;
+    bool _was_admitted = false;
 
 public:
     struct value_tag {};
@@ -133,39 +134,29 @@ public:
 
     void on_admission() {
         _state = reader_permit::state::admitted;
-        _semaphore.consume(_resources);
+        _was_admitted = true;
     }
 
     void on_register_as_inactive() {
-        if (_state != reader_permit::state::admitted) {
-            _state = reader_permit::state::inactive;
-            _semaphore.consume(_resources);
-        }
+        _state = reader_permit::state::inactive;
     }
 
     void on_unregister_as_inactive() {
-        if (_state == reader_permit::state::inactive) {
+        if (_was_admitted) {
+            _state = reader_permit::state::admitted;
+        } else {
             _state = reader_permit::state::registered;
-            _semaphore.signal(_resources);
         }
-    }
-
-    bool should_forward_cost() const {
-        return _state == reader_permit::state::admitted || _state == reader_permit::state::inactive;
     }
 
     void consume(reader_resources res) {
         _resources += res;
-        if (should_forward_cost()) {
-            _semaphore.consume(res);
-        }
+        _semaphore.consume(res);
     }
 
     void signal(reader_resources res) {
         _resources -= res;
-        if (should_forward_cost()) {
-            _semaphore.signal(res);
-        }
+        _semaphore.signal(res);
     }
 
     reader_resources resources() const {
