@@ -1976,10 +1976,12 @@ table::mutation_query(schema_ptr s,
     }
 
     auto querier_opt = cache_ctx.lookup_mutation_querier(*s, range, cmd.slice, trace_state);
-    auto q = querier_opt
-            ? std::move(*querier_opt)
-            : query::mutation_querier(as_mutation_source(), s, class_config.semaphore.make_permit(s.get(), "mutation-query"), range, cmd.slice,
-                    service::get_local_sstable_query_read_priority(), trace_state);
+    if (!querier_opt) {
+        auto permit = co_await class_config.semaphore.obtain_permit(s.get(), "mutation-query", estimate_read_memory_cost(), timeout);
+        querier_opt = query::mutation_querier(as_mutation_source(), s, std::move(permit), range, cmd.slice,
+                service::get_local_sstable_query_read_priority(), trace_state);
+    }
+    auto& q = *querier_opt;
 
     auto rrb = reconcilable_result_builder(*s, cmd.slice, std::move(accounter));
     auto r = co_await q.consume_page(std::move(rrb), cmd.get_row_limit(), cmd.partition_limit, cmd.timestamp, timeout, class_config.max_memory_for_unlimited_query);
