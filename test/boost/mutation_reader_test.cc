@@ -1422,43 +1422,35 @@ SEASTAR_TEST_CASE(restricted_reader_reading) {
     });
 }
 
-SEASTAR_TEST_CASE(restricted_reader_timeout) {
-    return sstables::test_env::do_with_async([&] (sstables::test_env& env) {
+SEASTAR_TEST_CASE(reader_concurrency_semaphore_timeout) {
+    return async([&] () {
         storage_service_for_tests ssft;
         reader_concurrency_semaphore semaphore(2, new_reader_base_cost, get_name());
 
         {
-            simple_schema s;
-            auto tmp = tmpdir();
-            auto sst = create_sstable(env, s, tmp.path().string());
+            auto timeout = db::timeout_clock::now() + std::chrono::duration_cast<db::timeout_clock::time_point::duration>(std::chrono::milliseconds{1});
 
-            auto timeout = std::chrono::duration_cast<db::timeout_clock::time_point::duration>(std::chrono::milliseconds{1});
+            reader_permit_opt permit1 = semaphore.obtain_permit(nullptr, "permit1", new_reader_base_cost, timeout).get();
 
-            auto reader1 = std::make_unique<reader_wrapper>(semaphore, s.schema(), sst, timeout);
-            (*reader1)().get();
-
-            auto reader2 = std::make_unique<reader_wrapper>(semaphore, s.schema(), sst, timeout);
-            auto read2_fut = (*reader2)();
-
-            auto reader3 = std::make_unique<reader_wrapper>(semaphore, s.schema(), sst, timeout);
-            auto read3_fut = (*reader3)();
+            auto permit2_fut = semaphore.obtain_permit(nullptr, "permit2", new_reader_base_cost, timeout);
+            auto permit3_fut = semaphore.obtain_permit(nullptr, "permit3", new_reader_base_cost, timeout);
 
             BOOST_REQUIRE_EQUAL(semaphore.waiters(), 2);
 
-            const auto futures_failed = eventually_true([&] { return read2_fut.failed() && read3_fut.failed(); });
+            const auto futures_failed = eventually_true([&] { return permit2_fut.failed() && permit3_fut.failed(); });
             BOOST_CHECK(futures_failed);
 
             if (futures_failed) {
-                BOOST_CHECK_THROW(std::rethrow_exception(read2_fut.get_exception()), semaphore_timed_out);
-                BOOST_CHECK_THROW(std::rethrow_exception(read3_fut.get_exception()), semaphore_timed_out);
+                BOOST_CHECK_THROW(std::rethrow_exception(permit2_fut.get_exception()), semaphore_timed_out);
+                BOOST_CHECK_THROW(std::rethrow_exception(permit3_fut.get_exception()), semaphore_timed_out);
             } else {
                 // We need special cleanup when the test failed to avoid invalid
                 // memory access.
-                reader1.reset();
-                BOOST_CHECK(eventually_true([&] { return read2_fut.available(); }));
-                reader2.reset();
-                BOOST_CHECK(eventually_true([&] { return read3_fut.available(); }));
-                reader3.reset();
+                permit1 = {};
+                BOOST_CHECK(eventually_true([&] { return permit2_fut.available(); }));
+                permit2_fut.get();
+                BOOST_CHECK(eventually_true([&] { return permit3_fut.available(); }));
+                permit3_fut.get();
             }
        }
 
@@ -1467,37 +1459,31 @@ SEASTAR_TEST_CASE(restricted_reader_timeout) {
     });
 }
 
-SEASTAR_TEST_CASE(restricted_reader_max_queue_length) {
-    return sstables::test_env::do_with_async([&] (sstables::test_env& env) {
-        storage_service_for_tests ssft;
-
-        reader_concurrency_semaphore semaphore(2, new_reader_base_cost, get_name(), 2);
+SEASTAR_TEST_CASE(reader_concurrency_semaphore_max_queue_length) {
+    return async([&] () {
+        reader_concurrency_semaphore semaphore(1, new_reader_base_cost, get_name(), 2);
 
         {
-            simple_schema s;
-            auto tmp = tmpdir();
-            auto sst = create_sstable(env, s, tmp.path().string());
+            reader_permit_opt permit1 = semaphore.obtain_permit(nullptr, "permit1", new_reader_base_cost, db::no_timeout).get();
 
-            auto reader1_ptr = std::make_unique<reader_wrapper>(semaphore, s.schema(), sst);
-            (*reader1_ptr)().get();
+            auto permit2_fut = semaphore.obtain_permit(nullptr, "permit2", new_reader_base_cost, db::no_timeout);
 
-            auto reader2_ptr = std::make_unique<reader_wrapper>(semaphore, s.schema(), sst);
-            auto read2_fut = (*reader2_ptr)();
-
-            auto reader3_ptr = std::make_unique<reader_wrapper>(semaphore, s.schema(), sst);
-            auto read3_fut = (*reader3_ptr)();
-
-            auto reader4 = reader_wrapper(semaphore, s.schema(), sst);
+            auto permit3_fut = semaphore.obtain_permit(nullptr, "permit3", new_reader_base_cost, db::no_timeout);
 
             BOOST_REQUIRE_EQUAL(semaphore.waiters(), 2);
 
-            // The queue should now be full.
-            BOOST_REQUIRE_THROW(reader4().get(), std::runtime_error);
+            auto permit4_fut = semaphore.obtain_permit(nullptr, "permit4", new_reader_base_cost, db::no_timeout);
 
-            reader1_ptr.reset();
-            read2_fut.get();
-            reader2_ptr.reset();
-            read3_fut.get();
+            // The queue should now be full.
+            BOOST_REQUIRE_THROW(permit4_fut.get(), std::runtime_error);
+
+            permit1 = {};
+
+            reader_permit_opt permit2 = permit2_fut.get();
+            permit2 = {};
+
+            reader_permit_opt permit3 = permit3_fut.get();
+            permit3 = {};
         }
 
         REQUIRE_EVENTUALLY_EQUAL(new_reader_base_cost, semaphore.available_resources().memory);
