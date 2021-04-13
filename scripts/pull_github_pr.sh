@@ -27,7 +27,7 @@ for required in jq curl; do
 done
 
 curl() {
-    command curl --request POST --user "${GITHUB_LOGIN}:${GITHUB_TOKEN}" "$@"
+    command curl --user "${GITHUB_LOGIN}:${GITHUB_TOKEN}" "$@"
 }
 
 NL=$'\n'
