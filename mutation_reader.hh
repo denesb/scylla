@@ -493,6 +493,8 @@ public:
     /// This method will be called on the shard where the relevant reader lives.
     virtual reader_concurrency_semaphore& semaphore() = 0;
 
+    virtual future<reader_permit> obtain_reader_permit(schema_ptr schema, const char* const description, db::timeout_clock::time_point timeout) = 0;
+
     /// Pause the reader.
     ///
     /// The purpose of pausing a reader is making it evictable while it is
