@@ -39,6 +39,8 @@ class ldap_connection {
     seastar::input_stream<char> _input_stream; ///< _socket's input.
     seastar::output_stream<char> _output_stream; ///< _socket's output.
     seastar::temporary_buffer<char> _read_buffer; ///< Everything read by Seastar but not yet consumed by Sockbuf_IO.
+    static std::mutex _global_init_mutex; ///< Mutex for protecting global ldap data initialization for older ldap libs -
+                                         /// ref:https://github.com/openldap/openldap/commit/877faea723ecc5721291b0b2f53e34f7921e0f7c
     enum class status {
         // Lowercase, to avoid inadvertently invoking macros:
         up,             ///< Connected, operating normally.

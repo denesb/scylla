@@ -61,6 +61,8 @@ void throw_if_failed(int status, const char* op, const ldap_connection& conn, in
 
 } // anonymous namespace
 
+std::mutex ldap_connection::_global_init_mutex;
+
 void ldap_connection::ldap_deleter::operator()(LDAP* ld) {
     mylog.trace("ldap_deleter: invoking unbind");
     int status = ldap_unbind(ld);
@@ -97,7 +99,10 @@ ldap_connection::ldap_connection(seastar::connected_socket&& socket) :
     static constexpr int LDAP_PROTO_EXT = 4; // From ldap_pvt.h, which isn't always available.
     mylog.trace("constructor invoking ldap_init");
     LDAP* init_result;
-    throw_if_failed(ldap_init_fd(_fd.get(), LDAP_PROTO_EXT, nullptr, &init_result), "ldap_init_fd", *this);
+    {
+        std::lock_guard<std::mutex> global_init_lock{_global_init_mutex};
+        throw_if_failed(ldap_init_fd(_fd.get(), LDAP_PROTO_EXT, nullptr, &init_result), "ldap_init_fd", *this);
+    }
     _ldap.reset(init_result);
     static constexpr int opt_v3 = LDAP_VERSION3;
     throw_if_failed(
