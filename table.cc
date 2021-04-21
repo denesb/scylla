@@ -1763,6 +1763,8 @@ future<> table::populate_views(
     });
 }
 
+const ssize_t new_reader_base_cost{16 * 1024};
+
 size_t table::estimate_read_memory_cost() const {
     return new_reader_base_cost;
 }
