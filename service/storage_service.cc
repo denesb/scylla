@@ -834,13 +834,20 @@ future<> storage_service::check_and_repair_cdc_streams() {
         }
 
         bool should_regenerate = false;
-        std::optional<cdc::topology_description> gen;
+
+        if (!latest) {
+            cdc_log.warn("check_and_repair_cdc_streams: no generation observed in gossip");
+            should_regenerate = true;
+        } else {
+        cdc_log.info("check_and_repair_cdc_streams: last generation observed in gossip: {}", *latest);
 
         static const auto timeout_msg = "Timeout while fetching CDC topology description";
         static const auto topology_read_error_note = "Note: this is likely caused by"
                 " node(s) being down or unreachable. It is recommended to check the network and"
                 " restart/remove the failed node(s), then retry checkAndRepairCdcStreams command";
         static const auto exception_translating_msg = "Translating the exception to `request_execution_exception`";
+
+        std::optional<cdc::topology_description> gen;
         try {
             gen = _sys_dist_ks.local().read_cdc_topology_description(
                     *latest, { _token_metadata.count_normal_token_owners() }).get0();
@@ -883,6 +890,7 @@ future<> storage_service::check_and_repair_cdc_streams() {
                     break;
                 }
             }
+        }
         }
 
         if (!should_regenerate) {
