@@ -19,9 +19,11 @@ import urllib.request
 import yaml
 import psutil
 import sys
-from pathlib import Path
+from pathlib import Path, PurePath
+from subprocess import run, DEVNULL
 
 import distro
+from scylla_sysconfdir import SYSCONFDIR
 
 
 def scriptsdir_p():
@@ -61,6 +63,9 @@ def datadir_p():
 def scyllabindir_p():
     return scylladir_p() / 'bin'
 
+def sysconfdir_p():
+    return Path(SYSCONFDIR)
+
 def scriptsdir():
     return str(scriptsdir_p())
 
@@ -79,6 +84,8 @@ def datadir():
 def scyllabindir():
     return str(scyllabindir_p())
 
+def sysconfdir():
+    return str(sysconfdir_p())
 
 # @param headers dict of k:v
 def curl(url, headers=None, byte=False, timeout=3, max_retries=5, retry_interval=5):
@@ -323,7 +330,7 @@ class gcp_instance:
 
     @staticmethod
     def io_setup():
-        return run('/opt/scylladb/scripts/scylla_io_setup')
+        return run('/opt/scylladb/scripts/scylla_io_setup', shell=True, check=True)
 
     @property
     def user_data(self):
@@ -479,32 +486,15 @@ class aws_instance:
 
     @staticmethod
     def check():
-        return run('/opt/scylladb/scripts/scylla_ec2_check --nic eth0', exception=False)
+        return run('/opt/scylladb/scripts/scylla_ec2_check --nic eth0', shell=True)
 
     @staticmethod
     def io_setup():
-        return run('/opt/scylladb/scripts/scylla_io_setup --ami')
+        return run('/opt/scylladb/scripts/scylla_io_setup --ami', shell=True, check=True)
 
     @property
     def user_data(self):
         return curl(self.META_DATA_BASE_URL + "user-data")
-
-
-scylla_env = os.environ.copy()
-scylla_env['DEBIAN_FRONTEND'] = 'noninteractive'
-
-def run(cmd, shell=False, silent=False, exception=True):
-    stdout = subprocess.DEVNULL if silent else None
-    stderr = subprocess.DEVNULL if silent else None
-    if not shell:
-        cmd = shlex.split(cmd)
-    return subprocess.run(cmd, stdout=stdout, stderr=stderr, shell=shell, check=exception, env=scylla_env).returncode
-
-
-def out(cmd, shell=False, exception=True, timeout=None):
-    if not shell:
-        cmd = shlex.split(cmd)
-    return subprocess.run(cmd, capture_output=True, shell=shell, timeout=timeout, check=exception, encoding='utf-8', env=scylla_env).stdout.strip()
 
 
 def get_id_like():
@@ -521,9 +511,18 @@ def is_redhat_variant():
     d = get_id_like() if get_id_like() else distro.id()
     return ('rhel' in d) or ('fedora' in d) or ('oracle') in d
 
-def is_gentoo_variant():
+def is_gentoo():
     return ('gentoo' in distro.id())
 
+def is_arch():
+    return ('arch' in distro.id())
+
+def is_amzn2():
+    return ('amzn' in distro.id()) and ('2' in distro.version())
+
+def is_suse_variant():
+    d = get_id_like() if get_id_like() else distro.id()
+    return ('suse' in d)
 
 def get_text_from_path(fpath):
     board_vendor_path = Path(fpath)
@@ -583,7 +582,7 @@ SYSTEM_PARTITION_UUIDS = [
 ]
 
 def get_partition_uuid(dev):
-    return out(f'lsblk -n -oPARTTYPE {dev}')
+    return run(f'lsblk -n -oPARTTYPE {dev}', shell=True, check=True, capture_output=True, encoding='utf-8').stdout.strip()
 
 def is_system_partition(dev):
     uuid = get_partition_uuid(dev)
@@ -679,7 +678,7 @@ def get_set_nic_and_disks_config_value(cfg):
 
 
 def swap_exists():
-    swaps = out('swapon --noheadings --raw')
+    swaps = run('swapon --noheadings --raw', shell=True, check=True, capture_output=True, encoding='utf-8').stdout.strip()
     return True if swaps != '' else False
 
 def pkg_error_exit(pkg):
@@ -689,43 +688,60 @@ def pkg_error_exit(pkg):
 def yum_install(pkg):
     if is_offline():
         pkg_error_exit(pkg)
-    return run(f'yum install -y {pkg}')
+    return run(f'yum install -y {pkg}', shell=True, check=True)
 
 def apt_install(pkg):
     if is_offline():
         pkg_error_exit(pkg)
-    return run(f'apt-get install -y {pkg}')
+    apt_env = os.environ.copy()
+    apt_env['DEBIAN_FRONTEND'] = 'noninteractive'
+    return run(f'apt-get install -y {pkg}', shell=True, check=True, env=apt_env)
 
 def emerge_install(pkg):
     if is_offline():
         pkg_error_exit(pkg)
-    return run(f'emerge -uq {pkg}')
+    return run(f'emerge -uq {pkg}', shell=True, check=True)
 
+def pkg_distro():
+    if is_debian_variant():
+        return 'debian'
+    if is_suse_variant():
+        return 'suse'
+    elif is_amzn2():
+        return 'amzn2'
+    else:
+        return distro.id()
+
+pkg_xlat = {'cpupowerutils': {'debian': 'linux-cpupower', 'gentoo':'sys-power/cpupower', 'arch':'cpupower', 'suse': 'cpupower'}}
 def pkg_install(pkg):
+    if pkg in pkg_xlat and pkg_distro() in pkg_xlat[pkg]:
+        pkg = pkg_xlat[pkg][pkg_distro()]
     if is_redhat_variant():
         return yum_install(pkg)
     elif is_debian_variant():
         return apt_install(pkg)
-    elif is_gentoo_variant():
+    elif is_gentoo():
         return emerge_install(pkg)
     else:
         pkg_error_exit(pkg)
 
 def yum_uninstall(pkg):
-    return run(f'yum remove -y {pkg}')
+    return run(f'yum remove -y {pkg}', shell=True, check=True)
 
 def apt_uninstall(pkg):
-    return run(f'apt-get remove -y {pkg}')
+    apt_env = os.environ.copy()
+    apt_env['DEBIAN_FRONTEND'] = 'noninteractive'
+    return run(f'apt-get remove -y {pkg}', shell=True, check=True, env=apt_env)
 
 def emerge_uninstall(pkg):
-    return run(f'emerge --deselect {pkg}')
+    return run(f'emerge --deselect {pkg}', shell=True, check=True)
 
 def pkg_uninstall(pkg):
     if is_redhat_variant():
         return yum_uninstall(pkg)
     elif is_debian_variant():
         return apt_uninstall(pkg)
-    elif is_gentoo_variant():
+    elif is_gentoo():
         return emerge_uninstall(pkg)
     else:
         print(f'WARNING: Package "{pkg}" should be removed.')
@@ -741,7 +757,7 @@ class systemd_unit:
         else:
             self.ctlparam = ''
         try:
-            run('systemctl {} cat {}'.format(self.ctlparam, unit), silent=True)
+            run('systemctl {} cat {}'.format(self.ctlparam, unit), shell=True, check=True, stdout=DEVNULL, stderr=DEVNULL)
         except subprocess.CalledProcessError:
             raise SystemdException('unit {} is not found or invalid'.format(unit))
         self._unit = unit
@@ -750,32 +766,38 @@ class systemd_unit:
         return self._unit
 
     def start(self):
-        return run('systemctl {} start {}'.format(self.ctlparam, self._unit))
+        return run('systemctl {} start {}'.format(self.ctlparam, self._unit), shell=True, check=True)
 
     def stop(self):
-        return run('systemctl {} stop {}'.format(self.ctlparam, self._unit))
+        return run('systemctl {} stop {}'.format(self.ctlparam, self._unit), shell=True, check=True)
 
     def restart(self):
-        return run('systemctl {} restart {}'.format(self.ctlparam, self._unit))
+        return run('systemctl {} restart {}'.format(self.ctlparam, self._unit), shell=True, check=True)
 
     def enable(self):
-        return run('systemctl {} enable {}'.format(self.ctlparam, self._unit))
+        return run('systemctl {} enable {}'.format(self.ctlparam, self._unit), shell=True, check=True)
 
     def disable(self):
-        return run('systemctl {} disable {}'.format(self.ctlparam, self._unit))
+        return run('systemctl {} disable {}'.format(self.ctlparam, self._unit), shell=True, check=True)
 
     def is_active(self):
-        return out('systemctl {} is-active {}'.format(self.ctlparam, self._unit), exception=False)
+        return run('systemctl {} is-active {}'.format(self.ctlparam, self._unit), shell=True, capture_output=True, encoding='utf-8').stdout.strip()
 
     def mask(self):
-        return run('systemctl {} mask {}'.format(self.ctlparam, self._unit))
+        return run('systemctl {} mask {}'.format(self.ctlparam, self._unit), shell=True, check=True)
 
     def unmask(self):
-        return run('systemctl {} unmask {}'.format(self.ctlparam, self._unit))
+        return run('systemctl {} unmask {}'.format(self.ctlparam, self._unit), shell=True, check=True)
 
     @classmethod
     def reload(cls):
-        run('systemctl daemon-reload')
+        run('systemctl daemon-reload', shell=True, check=True)
+
+    @classmethod
+    def available(cls, unit):
+        res = run('systemctl cat {}'.format(unit), shell=True, check=True, stdout=DEVNULL, stderr=DEVNULL)
+        return True if res.returncode == 0 else False
+
 
 class sysconfig_parser:
     def __load(self):
@@ -792,7 +814,10 @@ class sysconfig_parser:
         self.__load()
 
     def __init__(self, filename):
-        self._filename = filename
+        if isinstance(filename, PurePath):
+            self._filename = str(filename)
+        else:
+            self._filename = filename
         if not os.path.exists(filename):
             open(filename, 'a').close()
         with open(filename) as f:

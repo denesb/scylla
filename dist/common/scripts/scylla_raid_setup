@@ -16,7 +16,9 @@ import grp
 import sys
 import stat
 import distro
+from pathlib import Path
 from scylla_util import *
+from subprocess import run
 
 if __name__ == '__main__':
     if os.getuid() > 0:
@@ -73,8 +75,14 @@ if __name__ == '__main__':
             raiddevs_to_try = [args.raiddev, ]
         for fsdev in raiddevs_to_try:
             raiddevname = os.path.basename(fsdev)
-            if not os.path.exists(f'/sys/block/{raiddevname}/md/array_state'):
+            array_state = Path(f'/sys/block/{raiddevname}/md/array_state')
+            # mdX is not allocated
+            if not array_state.exists():
                 break
+            with array_state.open() as f:
+                # allocated, but no devices, not running
+                if f.read().strip() == 'clear':
+                    break
             print(f'{fsdev} is already using')
         else:
             if args.raiddev is None:
@@ -86,14 +94,16 @@ if __name__ == '__main__':
         print('{} is already mounted'.format(mount_at))
         sys.exit(1)
 
-    mntunit_bn = out('systemd-escape -p --suffix=mount {}'.format(mount_at))
+    mntunit_bn = run('systemd-escape -p --suffix=mount {}'.format(mount_at), shell=True, check=True, capture_output=True, encoding='utf-8').stdout.strip()
     mntunit = Path('/etc/systemd/system/{}'.format(mntunit_bn))
     if mntunit.exists():
         print('mount unit {} already exists'.format(mntunit))
         sys.exit(1)
 
-    if not shutil.which('mkfs.xfs') or not shutil.which('mdadm'):
-        pkg_install('xfsprogs mdadm')
+    if not shutil.which('mkfs.xfs'):
+        pkg_install('xfsprogs')
+    if not shutil.which('mdadm'):
+        pkg_install('mdadm')
     try:
         md_service = systemd_unit('mdmonitor.service')
     except SystemdException:
@@ -102,10 +112,10 @@ if __name__ == '__main__':
     print('Creating {type} for scylla using {nr_disk} disk(s): {disks}'.format(type='RAID0' if raid else 'XFS volume', nr_disk=len(disks), disks=args.disks))
     if distro.name() == 'Ubuntu' and distro.version() == '14.04':
         if raid:
-            run('udevadm settle')
-            run('mdadm --create --verbose --force --run {raid} --level=0 -c1024 --raid-devices={nr_disk} {disks}'.format(raid=fsdev, nr_disk=len(disks), disks=args.disks.replace(',', ' ')))
-            run('udevadm settle')
-        run('mkfs.xfs {} -f'.format(fsdev))
+            run('udevadm settle', shell=True, check=True)
+            run('mdadm --create --verbose --force --run {raid} --level=0 -c1024 --raid-devices={nr_disk} {disks}'.format(raid=fsdev, nr_disk=len(disks), disks=args.disks.replace(',', ' ')), shell=True, check=True)
+            run('udevadm settle', shell=True, check=True)
+        run('mkfs.xfs {} -f'.format(fsdev), shell=True, check=True)
     else:
         procs=[]
         for disk in disks:
@@ -120,10 +130,10 @@ if __name__ == '__main__':
         for proc in procs:
             proc.wait()
         if raid:
-            run('udevadm settle')
-            run('mdadm --create --verbose --force --run {raid} --level=0 -c1024 --raid-devices={nr_disk} {disks}'.format(raid=fsdev, nr_disk=len(disks), disks=args.disks.replace(',', ' ')))
-            run('udevadm settle')
-        run('mkfs.xfs {} -f -K'.format(fsdev))
+            run('udevadm settle', shell=True, check=True)
+            run('mdadm --create --verbose --force --run {raid} --level=0 -c1024 --raid-devices={nr_disk} {disks}'.format(raid=fsdev, nr_disk=len(disks), disks=args.disks.replace(',', ' ')), shell=True, check=True)
+            run('udevadm settle', shell=True, check=True)
+        run('mkfs.xfs {} -f -K'.format(fsdev), shell=True, check=True)
 
     if is_debian_variant():
         confpath = '/etc/mdadm/mdadm.conf'
@@ -131,14 +141,14 @@ if __name__ == '__main__':
         confpath = '/etc/mdadm.conf'
 
     if raid:
-        res = out('mdadm --detail --scan')
+        res = run('mdadm --detail --scan', shell=True, check=True, capture_output=True, encoding='utf-8').stdout.strip()
         with open(confpath, 'w') as f:
             f.write(res)
             f.write('\nMAILADDR root')
 
     os.makedirs(mount_at, exist_ok=True)
 
-    uuid = out(f'blkid -s UUID -o value {fsdev}')
+    uuid = run(f'blkid -s UUID -o value {fsdev}', shell=True, check=True, capture_output=True, encoding='utf-8').stdout.strip()
     after = 'local-fs.target'
     if raid:
         after += f' {md_service}'
@@ -186,4 +196,4 @@ WantedBy=multi-user.target
         os.chown(dpath, uid, gid)
 
     if is_debian_variant():
-        run('update-initramfs -u')
+        run('update-initramfs -u', shell=True, check=True)

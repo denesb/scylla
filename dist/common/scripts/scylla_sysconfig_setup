@@ -15,6 +15,7 @@ import argparse
 import subprocess
 import re
 from scylla_util import *
+from subprocess import run
 
 def bool2str(val):
     return 'yes' if val else 'no'
@@ -26,10 +27,7 @@ if __name__ == '__main__':
     if os.getuid() > 0:
         print('Requires root permission.')
         sys.exit(1)
-    if is_redhat_variant():
-        cfg = sysconfig_parser('/etc/sysconfig/scylla-server')
-    else:
-        cfg = sysconfig_parser('/etc/default/scylla-server')
+    cfg = sysconfig_parser(sysconfdir_p() / 'scylla-server')
     set_nic_and_disks = str2bool(get_set_nic_and_disks_config_value(cfg))
     if cfg.has_option('SET_CLOCKSOURCE'):
         set_clocksource = str2bool(cfg.get('SET_CLOCKSOURCE'))
@@ -68,15 +66,15 @@ if __name__ == '__main__':
     network_mode = args.mode if args.mode else cfg.get('NETWORK_MODE')
 
     if args.setup_nic_and_disks:
-        rps_cpus = out('{} --tune net --nic {} --get-cpu-mask'.format(perftune_base_command(), ifname))
+        rps_cpus = run('{} --tune net --nic {} --get-cpu-mask'.format(perftune_base_command(), ifname), shell=True, check=True, capture_output=True, encoding='utf-8').stdout.strip()
         if len(rps_cpus) > 0:
             cpuset = hex2list(rps_cpus)
-            run('/opt/scylladb/scripts/scylla_cpuset_setup --cpuset {}'.format(cpuset))
+            run('/opt/scylladb/scripts/scylla_cpuset_setup --cpuset {}'.format(cpuset), shell=True, check=True)
 
     ethdrv = ''
     ethpciid = ''
     if network_mode == 'dpdk':
-        dpdk_status = out('/opt/scylladb/scripts/dpdk-devbind.py --status')
+        dpdk_status = run('/opt/scylladb/scripts/dpdk-devbind.py --status', shell=True, check=True, capture_output=True, encoding='utf-8').stdout.strip()
         match = re.search('if={} drv=(\S+)'.format(ifname), dpdk_status, flags=re.MULTILINE)
         ethdrv = match.group(1)
         match = re.search('^(\\S+:\\S+:\\S+\.\\S+) [^\n]+ if={} '.format(ifname), dpdk_status, flags=re.MULTILINE)

@@ -221,6 +221,7 @@ if ! $nonroot; then
     done
 fi
 # scylla-server
+install -m755 -d "$rprefix"
 install -m755 -d "$rsysconfdir"
 install -m755 -d "$retc/scylla.d"
 for file in dist/common/sysconfig/*; do
@@ -285,11 +286,12 @@ EnvironmentFile=
 EnvironmentFile=$sysconfdir/scylla-housekeeping
 EOS
     done
+        cat << EOS > "$rprefix"/scripts/scylla_sysconfdir.py
+SYSCONFDIR="$sysconfdir"
+EOS
     fi
-    install -m755 -d "$retc/security/limits.d"
     install -m755 -d "$rusr/bin"
     install -m755 -d "$rhkdata"
-    install -m644 dist/common/limits.d/scylla.conf -Dt "$retc"/security/limits.d
     ln -srf "$rprefix/bin/scylla" "$rusr/bin/scylla"
     ln -srf "$rprefix/bin/iotune" "$rusr/bin/iotune"
     ln -srf "$rprefix/bin/scyllatop" "$rusr/bin/scyllatop"
@@ -342,6 +344,9 @@ StandardOutput=
 StandardOutput=file:$rprefix/scylla-server.log
 StandardError=
 StandardError=inherit
+EOS
+        cat << EOS > "$rprefix"/scripts/scylla_sysconfdir.py
+SYSCONFDIR="$sysconfdir"
 EOS
     fi
 
