@@ -783,6 +783,24 @@ public:
     /// fragment wasn't a `partition_end` fragment.
     bool on_end_of_stream();
 
+    /// Reset the state of the validator to the given partition
+    ///
+    /// Reset the state of the validator as if it has just validated a valid
+    /// partition start with the provided key. This can be used t force a reset
+    /// to a given partition that is normally invalid and hence wouldn't advance
+    /// the internal state. This can be used by users that can correct such
+    /// invalid streams and wish to continue validating it.
+    void reset(dht::decorated_key dk);
+
+    /// Reset the state of the validator to the given fragment
+    ///
+    /// Reset the state of the validator as if it has just validated a valid
+    /// fragment. This can be used t force a reset to a given fragment that is
+    /// normally invalid and hence wouldn't advance the internal state. This
+    /// can be used by users that can correct such invalid streams and wish to
+    /// continue validating it.
+    void reset(const mutation_fragment&);
+
     /// The previous valid fragment kind.
     mutation_fragment::kind previous_mutation_fragment_kind() const {
         return _prev_kind;
