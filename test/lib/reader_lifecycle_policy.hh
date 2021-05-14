@@ -91,6 +91,7 @@ public:
 private:
     using factory_function = std::function<flat_mutation_reader(
             schema_ptr,
+            reader_permit,
             const dht::partition_range&,
             const query::partition_slice&,
             const io_priority_class&,
@@ -126,7 +127,7 @@ public:
     }
     virtual flat_mutation_reader create_reader(
             schema_ptr schema,
-            reader_permit,
+            reader_permit permit,
             const dht::partition_range& range,
             const query::partition_slice& slice,
             const io_priority_class& pc,
@@ -140,7 +141,7 @@ public:
             _contexts[shard] = make_foreign(std::make_unique<reader_context>(range, slice));
         }
         _contexts[shard]->op = _operation_gate.enter();
-        return _factory_function(std::move(schema), *_contexts[shard]->range, *_contexts[shard]->slice, pc, std::move(trace_state), fwd_mr);
+        return _factory_function(std::move(schema), std::move(permit), *_contexts[shard]->range, *_contexts[shard]->slice, pc, std::move(trace_state), fwd_mr);
     }
     virtual future<> destroy_reader(shard_id shard, future<stopped_reader> reader) noexcept override {
         // waited via _operation_gate
@@ -168,11 +169,8 @@ public:
             return *_contexts[shard]->semaphore;
         }
         if (_evict_paused_readers) {
-            _contexts[shard]->semaphore = &_semaphore_registry.create_semaphore(0, std::numeric_limits<ssize_t>::max(), format("reader_concurrency_semaphore @shard_id={}", shard));
-            // Add a waiter, so that all registered inactive reads are
-            // immediately evicted.
-            // We don't care about the returned future.
-            _contexts[shard]->wait_future = _contexts[shard]->semaphore->obtain_permit(nullptr, "tests::reader_lifecycle_policy", 1, db::no_timeout);
+            // Create with no memory, so all inactive reads are immediately evicted.
+            _contexts[shard]->semaphore = &_semaphore_registry.create_semaphore(1, 0, format("reader_concurrency_semaphore @shard_id={}", shard));
         } else {
             _contexts[shard]->semaphore = &_semaphore_registry.create_semaphore(reader_concurrency_semaphore::no_limits{});
         }
