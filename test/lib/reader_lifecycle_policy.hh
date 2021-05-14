@@ -91,6 +91,7 @@ public:
 private:
     using factory_function = std::function<flat_mutation_reader(
             schema_ptr,
+            reader_permit,
             const dht::partition_range&,
             const query::partition_slice&,
             const io_priority_class&,
@@ -125,7 +126,7 @@ public:
     }
     virtual flat_mutation_reader create_reader(
             schema_ptr schema,
-            reader_permit,
+            reader_permit permit,
             const dht::partition_range& range,
             const query::partition_slice& slice,
             const io_priority_class& pc,
@@ -139,7 +140,7 @@ public:
             _contexts[shard] = make_foreign(std::make_unique<reader_context>(range, slice));
         }
         _contexts[shard]->op = _operation_gate.enter();
-        return _factory_function(std::move(schema), *_contexts[shard]->range, *_contexts[shard]->slice, pc, std::move(trace_state), fwd_mr);
+        return _factory_function(std::move(schema), std::move(permit), *_contexts[shard]->range, *_contexts[shard]->slice, pc, std::move(trace_state), fwd_mr);
     }
     virtual future<> destroy_reader(shard_id shard, future<stopped_reader> reader) noexcept override {
         // waited via _operation_gate
