@@ -365,25 +365,31 @@ std::optional<db_clock::time_point> get_streams_timestamp_for(const gms::inet_ad
     return gms::versioned_value::cdc_streams_timestamp_from_string(streams_ts_string);
 }
 
-// Run inside seastar::async context.
-static void do_update_streams_description(
+static future<> do_update_streams_description(
         db_clock::time_point streams_ts,
         db::system_distributed_keyspace& sys_dist_ks,
         db::system_distributed_keyspace::context ctx) {
-    if (sys_dist_ks.cdc_desc_exists(streams_ts, ctx).get0()) {
-        cdc_log.info("Generation {}: streams description table already updated.", streams_ts);
-        return;
-    }
+    return sys_dist_ks.cdc_desc_exists(streams_ts, ctx).then([streams_ts, &sys_dist_ks, ctx] (bool cdc_desc_exists) {
+        if (cdc_desc_exists) {
+            cdc_log.info("Generation {}: streams description table already updated.", streams_ts);
+            return make_ready_future<>();
+        }
 
-    // We might race with another node also inserting the description, but that's ok. It's an idempotent operation.
+        // We might race with another node also inserting the description, but that's ok. It's an idempotent operation.
+        return sys_dist_ks.read_cdc_topology_description(streams_ts, ctx).then(
+                [streams_ts, &sys_dist_ks, ctx] (std::optional<cdc::topology_description> topo) {
+            if (!topo) {
+                throw no_generation_data_exception(streams_ts);
+            }
 
-    auto topo = sys_dist_ks.read_cdc_topology_description(streams_ts, ctx).get0();
-    if (!topo) {
-        throw no_generation_data_exception(streams_ts);
-    }
+            return do_with(std::move(*topo), [streams_ts, &sys_dist_ks, ctx] (const cdc::topology_description& topo) {
+                return sys_dist_ks.create_cdc_desc(streams_ts, topo, ctx).then([streams_ts] {
+                    cdc_log.info("CDC description table successfully updated with generation {}.", streams_ts);
+                });
+            });
 
-    sys_dist_ks.create_cdc_desc(streams_ts, *topo, ctx).get();
-    cdc_log.info("CDC description table successfully updated with generation {}.", streams_ts);
+        });
+    });
 }
 
 void update_streams_description(
@@ -392,7 +398,7 @@ void update_streams_description(
         noncopyable_function<unsigned()> get_num_token_owners,
         abort_source& abort_src) {
     try {
-        do_update_streams_description(streams_ts, *sys_dist_ks, { get_num_token_owners() });
+        do_update_streams_description(streams_ts, *sys_dist_ks, { get_num_token_owners() }).get();
     } catch(...) {
         cdc_log.warn(
             "Could not update CDC description table with generation {}: {}. Will retry in the background.",
@@ -405,7 +411,7 @@ void update_streams_description(
             while (true) {
                 sleep_abortable(std::chrono::seconds(60), abort_src).get();
                 try {
-                    do_update_streams_description(streams_ts, *sys_dist_ks, { get_num_token_owners() });
+                    do_update_streams_description(streams_ts, *sys_dist_ks, { get_num_token_owners() }).get();
                     return;
                 } catch (...) {
                     cdc_log.warn(
