@@ -569,7 +569,7 @@ void storage_service::join_token_ring(int delay) {
         });
     }
 
-    if (!_cdc_streams_ts) {
+    if (!_cdc_streams_ts && _feature_service.cluster_supports_cdc()) {
         // If we didn't choose a CDC streams timestamp at this point, then either
         // 1. we're replacing a node,
         // 2. we've already bootstrapped, but are upgrading from a non-CDC version,
@@ -579,23 +579,25 @@ void storage_service::join_token_ring(int delay) {
         // In the replacing case we won't propose any CDC generation: we're not introducing any new tokens,
         // so the current generation used by the cluster is fine.
 
-        // In the case of an upgrading cluster, one of the nodes is responsible for proposing
-        // the first CDC generation. We'll check if it's us.
+        // In the case of an upgrading cluster, the last upgraded node will enter this `if`
+        // (previous nodes will see `cluster_supports_cdc() == false`). This node will create the first
+        // CDC generation.
 
         // Finally, if we're simply a new node joining the ring but skipping bootstrapping
         // (NEVER DO THAT except for the very first node),
         // we'll propose a new generation just as normally bootstrapping nodes do.
 
-        if (!db().local().is_replacing()
-                && (!db::system_keyspace::bootstrap_complete()
-                    || cdc::should_propose_first_generation(get_broadcast_address(), _gossiper))) {
+        if (!db().local().is_replacing()) {
+            // We're the first node in a fresh cluster
+            // or we're the last node being upgraded during a rolling upgrading procedure.
             try {
                 _cdc_streams_ts = cdc::make_new_cdc_generation(db().local().get_config(),
                         _bootstrap_tokens, _token_metadata, _gossiper,
                         _sys_dist_ks.local(), get_ring_delay(), !_for_testing && !is_first_node());
             } catch (...) {
                 cdc_log.warn(
-                    "Could not create a new CDC generation: {}. This may make it impossible to use CDC. Use nodetool checkAndRepairCdcStreams to fix CDC generation",
+                    "Could not create a new CDC generation: {}. This may make it impossible to use CDC."
+                    " Use `nodetool checkAndRepairCdcStreams` to retry.",
                     std::current_exception());
             }
         }
@@ -648,6 +650,8 @@ void storage_service::mark_existing_views_as_built() {
 
 // Run inside seastar::async context.
 bool storage_service::do_handle_cdc_generation(db_clock::time_point ts) {
+
+    cdc_log.info("Retrieving generation {}...", ts);
 
     auto gen = _sys_dist_ks.local().read_cdc_topology_description(
             ts, { _token_metadata.count_normal_token_owners() }).get0();
@@ -943,9 +947,18 @@ void storage_service::bootstrap() {
         // We don't do any other generation switches (unless we crash before complecting bootstrap).
         assert(!_cdc_streams_ts);
 
-        _cdc_streams_ts = cdc::make_new_cdc_generation(db().local().get_config(),
-                _bootstrap_tokens, _token_metadata, _gossiper,
-                _sys_dist_ks.local(), get_ring_delay(), !_for_testing && !is_first_node());
+        // Introduce a new generation only if the CDC feature is enabled.
+        // This check is added only to handle the scenario of bootstrapping into a mixed cluster
+        // (i.e. in the middle of a rolling upgrade). We may then see that the cluster does not support
+        // the feature, meaning that the not-yet-upgraded nodes don't understand the current CDC generation
+        // format. They may understand one of the old formats (from experimental CDC period), try
+        // to use it when we introduce a new generation to the cluster, and fail. Thus we won't introduce
+        // generations unless we see that the feature is enabled.
+        if (_feature_service.cluster_supports_cdc()) {
+            _cdc_streams_ts = cdc::make_new_cdc_generation(db().local().get_config(),
+                    _bootstrap_tokens, _token_metadata, _gossiper,
+                    _sys_dist_ks.local(), get_ring_delay(), !_for_testing && !is_first_node());
+        }
 
         _gossiper.add_local_application_state({
             // Order is important: both the CDC streams timestamp and tokens must be known when a node handles our status.

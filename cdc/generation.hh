@@ -130,16 +130,6 @@ public:
     {}
 };
 
-/* Should be called when we're restarting and we noticed that we didn't save any streams timestamp in our local tables,
- * which means that we're probably upgrading from a non-CDC/old CDC version (another reason could be
- * that there's a bug, or the user messed with our local tables).
- *
- * It checks whether we should be the node to propose the first generation of CDC streams.
- * The chosen condition is arbitrary, it only tries to make sure that no two nodes propose a generation of streams
- * when upgrading, and nothing bad happens if they for some reason do (it's mostly an optimization).
- */
-bool should_propose_first_generation(const gms::inet_address& me, const gms::gossiper&);
-
 /* Generate a new set of CDC streams and insert it into the distributed cdc_generation_descriptions table.
  * Returns the timestamp of this new generation
  *

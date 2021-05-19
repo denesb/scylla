@@ -276,15 +276,6 @@ public:
     }
 };
 
-bool should_propose_first_generation(const gms::inet_address& me, const gms::gossiper& g) {
-    auto my_host_id = g.get_host_id(me);
-    auto& eps = g.get_endpoint_states();
-    return std::none_of(eps.begin(), eps.end(),
-            [&] (const std::pair<gms::inet_address, gms::endpoint_state>& ep) {
-        return my_host_id < g.get_host_id(ep.first);
-    });
-}
-
 // non-static for testing
 size_t limit_of_streams_in_topology_description() {
     // Each stream takes 16B and we don't want to exceed 4MB so we can have
