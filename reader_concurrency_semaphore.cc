@@ -729,6 +729,7 @@ future<reader_permit::resource_units> reader_concurrency_semaphore::enqueue_wait
     promise<reader_permit::resource_units> pr;
     auto fut = pr.get_future();
     permit.on_waiting();
+    ++_stats.reads_enqueued;
     _wait_list.push_back(entry(std::move(pr), std::move(permit), r), timeout);
     return fut;
 }
@@ -765,6 +766,7 @@ future<reader_permit::resource_units> reader_concurrency_semaphore::do_wait_admi
     }
 
     permit.on_admission();
+    ++_stats.reads_admitted;
     return make_ready_future<reader_permit::resource_units>(reader_permit::resource_units(std::move(permit), r));
 }
 
@@ -774,6 +776,7 @@ void reader_concurrency_semaphore::maybe_admit_waiters() noexcept {
         try {
             x.permit.on_admission();
             x.pr.set_value(reader_permit::resource_units(std::move(x.permit), x.res));
+            ++_stats.reads_admitted;
         } catch (...) {
             x.pr.set_exception(std::current_exception());
         }
