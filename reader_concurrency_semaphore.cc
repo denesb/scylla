@@ -330,10 +330,6 @@ reader_concurrency_semaphore& reader_permit::semaphore() {
     return _impl->semaphore();
 }
 
-future<reader_permit::resource_units> reader_permit::wait_admission(size_t memory, db::timeout_clock::time_point timeout) {
-    return _impl->semaphore().do_wait_admission(*this, memory, timeout);
-}
-
 future<> reader_permit::maybe_wait_readmission(db::timeout_clock::time_point timeout) {
     return _impl->maybe_wait_readmission(timeout);
 }
