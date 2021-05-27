@@ -1642,21 +1642,25 @@ future<> shard_reader::close() noexcept {
             co_await *std::exchange(_read_ahead, std::nullopt);
         }
 
-        auto&& [irh, remote_buffer] = co_await smp::submit_to(_shard, [this] () {
+        co_await smp::submit_to(_shard, [this] {
             auto irh = std::move(*_reader).inactive_read_handle();
             auto reader = flat_mutation_reader(_reader.release()); // avoid another round-trip to destroy _reader
-            auto ret = std::tuple(
-                    make_foreign(std::make_unique<reader_concurrency_semaphore::inactive_read_handle>(std::move(irh))),
-                    make_foreign(std::make_unique<const flat_mutation_reader::tracked_buffer>(reader.detach_buffer())));
-            return reader.close().then([ret = std::move(ret)] () mutable {
-                return std::move(ret);
+
+            auto permit = reader.permit();
+            const auto& schema = *reader.schema();
+
+            auto unconsumed_fragments = reader.detach_buffer();
+            auto rit = std::reverse_iterator(buffer().cend());
+            auto rend = std::reverse_iterator(buffer().cbegin());
+            for (; rit != rend; ++rit) {
+                unconsumed_fragments.emplace_front(schema, permit, *rit); // we are copying from the remote shard.
+            }
+
+            auto sr = reader_lifecycle_policy::stopped_reader{std::move(irh), std::move(unconsumed_fragments)};
+            return reader.close().then([this, sr = std::move(sr)] () mutable {
+                return _lifecycle_policy->destroy_reader(std::move(sr));
             });
         });
-        auto buffer = detach_buffer();
-        for (const auto& mf : *remote_buffer) {
-            buffer.emplace_back(*_schema, _permit, mf); // we are copying from the remote shard.
-        }
-        co_await _lifecycle_policy->destroy_reader(_shard, reader_lifecycle_policy::stopped_reader{std::move(irh), std::move(buffer)});
     } catch (...) {
         mrlog.error("shard_reader::close(): failed to stop reader on shard {}: {}", _shard, std::current_exception());
     }
