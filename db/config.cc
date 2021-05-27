@@ -751,6 +751,8 @@ db::config::config(std::shared_ptr<db::extensions> exts)
         "Time period in seconds after which unused schema versions will be evicted from the local schema registry cache. Default is 1 second.")
     , max_concurrent_requests_per_shard(this, "max_concurrent_requests_per_shard",liveness::LiveUpdate, value_status::Used, std::numeric_limits<uint32_t>::max(),
         "Maximum number of concurrent requests a single shard can handle before it starts shedding extra load. By default, no requests will be shed.")
+    , cdc_dont_rewrite_streams(this, "cdc_dont_rewrite_streams", value_status::Used, false,
+            "Disable rewriting streams from cdc_streams_descriptions to cdc_streams_descriptions_v2. Should not be necessary, but the procedure is expensive and prone to failures; this config option is left as a backdoor in case some user requires manual intervention.")
     , alternator_port(this, "alternator_port", value_status::Used, 0, "Alternator API port")
     , alternator_https_port(this, "alternator_https_port", value_status::Used, 0, "Alternator API HTTPS port")
     , alternator_address(this, "alternator_address", value_status::Used, "0.0.0.0", "Alternator API listening address")
@@ -887,7 +889,7 @@ db::fs::path db::config::get_conf_sub(db::fs::path sub) {
 }
 
 bool db::config::check_experimental(experimental_features_t::feature f) const {
-    if (experimental() && f != experimental_features_t::UNUSED) {
+    if (experimental() && f != experimental_features_t::UNUSED && f != experimental_features_t::UNUSED_CDC) {
         return true;
     }
     const auto& optval = experimental_features();
@@ -941,11 +943,13 @@ std::unordered_map<sstring, db::experimental_features_t::feature> db::experiment
     // https://github.com/scylladb/scylla/pull/5369#discussion_r353614807
     // Lightweight transactions are no longer experimental. Map them
     // to UNUSED switch for a while, then remove altogether.
-    return {{"lwt", UNUSED}, {"udf", UDF}, {"cdc", CDC}, {"alternator-streams", ALTERNATOR_STREAMS}};
+    // Change Data Capture is no longer experimental. Map it
+    // to UNUSED_CDC switch for a while, then remove altogether.
+    return {{"lwt", UNUSED}, {"udf", UDF}, {"cdc", UNUSED_CDC}, {"alternator-streams", ALTERNATOR_STREAMS}};
 }
 
 std::vector<enum_option<db::experimental_features_t>> db::experimental_features_t::all() {
-    return {UDF};
+    return {UDF, ALTERNATOR_STREAMS};
 }
 
 template struct utils::config_file::named_value<seastar::log_level>;

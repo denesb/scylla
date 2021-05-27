@@ -29,6 +29,7 @@
 #include "database_fwd.hh"
 #include "db_clock.hh"
 #include "dht/token.hh"
+#include "utils/chunked_vector.hh"
 
 namespace seastar {
     class abort_source;
@@ -113,33 +114,21 @@ public:
  */ 
 class streams_version {
 public:
-    std::vector<stream_id> streams;
+    utils::chunked_vector<stream_id> streams;
     db_clock::time_point timestamp;
-    std::optional<db_clock::time_point> expired;
 
-    streams_version(std::vector<stream_id> s, db_clock::time_point ts, std::optional<db_clock::time_point> exp)
+    streams_version(utils::chunked_vector<stream_id> s, db_clock::time_point ts)
         : streams(std::move(s))
         , timestamp(ts)
-        , expired(std::move(exp))
     {}
 };
 
-/* Should be called when we're restarting and we noticed that we didn't save any streams timestamp in our local tables,
- * which means that we're probably upgrading from a non-CDC/old CDC version (another reason could be
- * that there's a bug, or the user messed with our local tables).
- *
- * It checks whether we should be the node to propose the first generation of CDC streams.
- * The chosen condition is arbitrary, it only tries to make sure that no two nodes propose a generation of streams
- * when upgrading, and nothing bad happens if they for some reason do (it's mostly an optimization).
- */
-bool should_propose_first_generation(const gms::inet_address& me, const gms::gossiper&);
-
-/*
- * Read this node's streams generation timestamp stored in the LOCAL table.
- * Assumes that the node has successfully bootstrapped, and we're not upgrading from a non-CDC version,
- * so the timestamp is present.
- */
-future<db_clock::time_point> get_local_streams_timestamp();
+class no_generation_data_exception : public std::runtime_error {
+public:
+    no_generation_data_exception(db_clock::time_point generation_ts)
+        : std::runtime_error(format("could not find generation data for timestamp {}", generation_ts))
+    {}
+};
 
 /* Generate a new set of CDC streams and insert it into the distributed cdc_generation_descriptions table.
  * Returns the timestamp of this new generation
@@ -160,7 +149,7 @@ db_clock::time_point make_new_cdc_generation(
         const gms::gossiper& g,
         db::system_distributed_keyspace& sys_dist_ks,
         std::chrono::milliseconds ring_delay,
-        bool for_testing);
+        bool add_delay);
 
 /* Retrieves CDC streams generation timestamp from the given endpoint's application state (broadcasted through gossip).
  * We might be during a rolling upgrade, so the timestamp might not be there (if the other node didn't upgrade yet),
@@ -181,6 +170,20 @@ std::optional<db_clock::time_point> get_streams_timestamp_for(const gms::inet_ad
  */
 void update_streams_description(
         db_clock::time_point,
+        shared_ptr<db::system_distributed_keyspace>,
+        noncopyable_function<unsigned()> get_num_token_owners,
+        abort_source&);
+
+/* Part of the upgrade procedure. Useful in case where the version of Scylla that we're upgrading from
+ * used the "cdc_streams_descriptions" table. This procedure ensures that the new "cdc_streams_descriptions_v2"
+ * table contains streams of all generations that were present in the old table and may still contain data
+ * (i.e. there exist CDC log tables that may contain rows with partition keys being the stream IDs from
+ * these generations).
+ *
+ * Run inside seastar::async context.
+ */
+void maybe_rewrite_streams_descriptions(
+        const database&,
         shared_ptr<db::system_distributed_keyspace>,
         noncopyable_function<unsigned()> get_num_token_owners,
         abort_source&);

@@ -464,6 +464,8 @@ future<executor::request_return_type> executor::describe_stream(client_state& cl
             status = "ENABLED";
         }
     } 
+
+    auto ttl = std::chrono::seconds(opts.ttl());
     
     rjson::set(stream_desc, "StreamStatus", rjson::from_string(status));
 
@@ -483,20 +485,12 @@ future<executor::request_return_type> executor::describe_stream(client_state& cl
     // TODO: label
     // TODO: creation time
 
-    const auto& tm = _proxy.get_token_metadata();
-    // cannot really "resume" query, must iterate all data. because we cannot query neither "time" (pk) > something,
-    // or on expired...
-    // TODO: maybe add secondary index to topology table to enable this?
-    return _sdks.cdc_get_versioned_streams({ tm.count_normal_token_owners() }).then([this, &db, schema, shard_start, limit, ret = std::move(ret), stream_desc = std::move(stream_desc)](std::map<db_clock::time_point, cdc::streams_version> topologies) mutable {
+    auto normal_token_owners = _proxy.get_token_metadata().count_normal_token_owners();
 
-        // filter out cdc generations older than the table or now() - dynamodb_streams_max_window (24h)
-        auto low_ts = std::max(as_timepoint(schema->id()), db_clock::now() - dynamodb_streams_max_window);
+    // filter out cdc generations older than the table or now() - cdc::ttl (typically dynamodb_streams_max_window - 24h)
+    auto low_ts = std::max(as_timepoint(schema->id()), db_clock::now() - ttl);
 
-        auto i = topologies.lower_bound(low_ts);
-        // need first gen _intersecting_ the timestamp.
-        if (i != topologies.begin()) {
-            i = std::prev(i);
-        }
+    return _sdks.cdc_get_versioned_streams(low_ts, { normal_token_owners }).then([this, &db, shard_start, limit, ret = std::move(ret), stream_desc = std::move(stream_desc), ttl] (std::map<db_clock::time_point, cdc::streams_version> topologies) mutable {
 
         auto e = topologies.end();
         auto prev = e;
@@ -504,9 +498,7 @@ future<executor::request_return_type> executor::describe_stream(client_state& cl
 
         std::optional<shard_id> last;
 
-        // i is now at the youngest generation we include. make a mark of it.
-        auto first = i;
-
+        auto i = topologies.begin();
         // if we're a paged query, skip to the generation where we left of.
         if (shard_start) {
             i = topologies.find(shard_start->time);
@@ -532,7 +524,7 @@ future<executor::request_return_type> executor::describe_stream(client_state& cl
         };
 
         // need a prev even if we are skipping stuff
-        if (i != first) {
+        if (i != topologies.begin()) {
             prev = std::prev(i);
         }
 
@@ -1004,7 +996,9 @@ future<executor::request_return_type> executor::get_records(client_state& client
         }
 
         // ugh. figure out if we are and end-of-shard
-        return cdc::get_local_streams_timestamp().then([this, iter, high_ts, start_time, ret = std::move(ret)](db_clock::time_point ts) mutable {
+        auto normal_token_owners = _proxy.get_token_metadata().count_normal_token_owners();
+
+        return _sdks.cdc_current_generation_timestamp({ normal_token_owners }).then([this, iter, high_ts, start_time, ret = std::move(ret)](db_clock::time_point ts) mutable {
             auto& shard = iter.shard;            
 
             if (shard.time < ts && ts < high_ts) {

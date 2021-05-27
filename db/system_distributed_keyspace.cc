@@ -26,12 +26,13 @@
 
 #include <seastar/core/seastar.hh>
 #include <seastar/core/shared_ptr.hh>
+#include <seastar/core/future-util.hh>
 
 #include <boost/range/adaptor/transformed.hpp>
 
 #include <optional>
 #include <vector>
-#include <optional>
+#include <set>
 
 extern logging::logger cdc_log;
 
@@ -82,12 +83,31 @@ schema_ptr cdc_generations() {
 /* A user-facing table providing identifiers of the streams used in CDC generations. */
 schema_ptr cdc_desc() {
     thread_local auto schema = [] {
-        auto id = generate_legacy_id(system_distributed_keyspace::NAME, system_distributed_keyspace::CDC_DESC);
-        return schema_builder(system_distributed_keyspace::NAME, system_distributed_keyspace::CDC_DESC, {id})
+        auto id = generate_legacy_id(system_distributed_keyspace::NAME, system_distributed_keyspace::CDC_DESC_V2);
+        return schema_builder(system_distributed_keyspace::NAME, system_distributed_keyspace::CDC_DESC_V2, {id})
                 /* The timestamp of this CDC generation. */
                 .with_column("time", timestamp_type, column_kind::partition_key)
-                /* The set of stream identifiers used in this CDC generation. */
+                /* For convenience, the list of stream IDs in this generation is split into token ranges
+                 * which the stream IDs were mapped to (by the partitioner) when the generation was created.  */
+                .with_column("range_end", long_type, column_kind::clustering_key)
+                /* The set of stream identifiers used in this CDC generation for the token range
+                 * ending on `range_end`. */
                 .with_column("streams", cdc_streams_set_type)
+                .with_version(system_keyspace::generate_schema_version(id))
+                .build();
+    }();
+    return schema;
+}
+
+/* A user-facing table providing CDC generation timestamps. */
+schema_ptr cdc_timestamps() {
+    thread_local auto schema = [] {
+        auto id = generate_legacy_id(system_distributed_keyspace::NAME, system_distributed_keyspace::CDC_TIMESTAMPS);
+        return schema_builder(system_distributed_keyspace::NAME, system_distributed_keyspace::CDC_TIMESTAMPS, {id})
+                /* This is a single-partition table. The partition key is always "timestamps". */
+                .with_column("key", utf8_type, column_kind::partition_key)
+                /* The timestamp of this CDC generation. */
+                .with_column("time", reversed_type_impl::get_instance(timestamp_type), column_kind::clustering_key)
                 /* Expiration time of this CDC generation (or null if not expired). */
                 .with_column("expired", timestamp_type)
                 .with_version(system_keyspace::generate_schema_version(id))
@@ -108,6 +128,8 @@ schema_ptr service_levels() {
     return schema;
 }
 
+static const sstring CDC_TIMESTAMPS_KEY = "timestamps";
+
 static std::vector<schema_ptr> workload_prioritization_tables() {
     return std::vector({service_levels()});
 }
@@ -117,6 +139,7 @@ static std::vector<schema_ptr> all_tables(const database& db) {
         view_build_status(),
         cdc_generations(),
         cdc_desc(),
+        cdc_timestamps(),
     });
 
     if (db.get_config().create_service_levels_table &&
@@ -132,9 +155,10 @@ bool system_distributed_keyspace::is_extra_durable(const sstring& cf_name) {
     return cf_name == CDC_TOPOLOGY_DESCRIPTION;
 }
 
-system_distributed_keyspace::system_distributed_keyspace(cql3::query_processor& qp, service::migration_manager& mm)
+system_distributed_keyspace::system_distributed_keyspace(cql3::query_processor& qp, service::migration_manager& mm, service::storage_proxy& sp)
         : _qp(qp)
-        , _mm(mm) {
+        , _mm(mm)
+        , _sp(sp) {
 }
 
 future<> system_distributed_keyspace::create_tables(std::vector<schema_ptr> tables) {
@@ -175,20 +199,21 @@ future<> system_distributed_keyspace::start_workload_prioritization() {
 
 future<> system_distributed_keyspace::start() {
     if (this_shard_id() != 0) {
+        _started = true;
         return make_ready_future<>();
     }
-    return create_tables(all_tables(_qp.db()));
+    return create_tables(all_tables(_qp.db())).then([this] { _started = true; });
 }
 
 future<> system_distributed_keyspace::stop() {
     return make_ready_future<>();
 }
 
-static const timeout_config internal_distributed_timeout_config = [] {
-    using namespace std::chrono_literals;
-    const auto t = 10s;
+static timeout_config get_timeout_config(db::timeout_clock::duration t) {
     return timeout_config{ t, t, t, t, t, t, t };
-}();
+}
+
+static const timeout_config internal_distributed_timeout_config = get_timeout_config(std::chrono::seconds(10));
 
 future<std::unordered_map<utils::UUID, sstring>> system_distributed_keyspace::view_status(sstring ks_name, sstring view_name) const {
     return _qp.execute_internal(
@@ -237,27 +262,15 @@ future<> system_distributed_keyspace::remove_view(sstring ks_name, sstring view_
             false).discard_result();
 }
 
-/* We want to make sure that writes/reads to/from cdc_generations and cdc_streams
+/* We want to make sure that writes/reads to/from CDC management-related distributed tables
  * are consistent: a read following an acknowledged write to the same partition should contact
  * at least one of the replicas that the write contacted.
+ *
  * Normally we would achieve that by always using CL = QUORUM,
  * but there's one special case when that's impossible: a single-node cluster. In that case we'll
  * use CL = ONE for writing the data, which will do the right thing -- saving the data in the only
  * possible replica. Until another node joins, reads will also use CL = ONE, retrieving the data
  * from the only existing replica.
- *
- * There is one case where queries wouldn't see the read: if we extend the single-node cluster
- * with two nodes without bootstrapping (so the data won't be streamed to new replicas),
- * and the admin forgets to run repair. Then QUORUM reads might contact only the two new nodes
- * and miss the written entry.
- *
- * Fortunately (aside from the fact that nodes shouldn't be joined without bootstrapping),
- * after the second node joins, it will propose a new CDC generation, so the old entry
- * that was written with CL=ONE won't be used by the cluster anymore. All nodes other than
- * the first one use QUORUM to make the write.
- *
- * And even if the old entry was still needed for some reason, by the time the third node joins,
- * the second node would have already fixed our issue by running read repair on the old entry.
  */
 static db::consistency_level quorum_if_many(size_t num_token_owners) {
     return num_token_owners > 1 ? db::consistency_level::QUORUM : db::consistency_level::ONE;
@@ -342,62 +355,112 @@ system_distributed_keyspace::read_cdc_topology_description(
     });
 }
 
-future<>
-system_distributed_keyspace::expire_cdc_topology_description(
-        db_clock::time_point streams_ts,
-        db_clock::time_point expiration_time,
-        context ctx) {
-    return _qp.execute_internal(
-            format("UPDATE {}.{} SET expired = ? WHERE time = ?", NAME, CDC_TOPOLOGY_DESCRIPTION),
-            quorum_if_many(ctx.num_token_owners),
-            internal_distributed_timeout_config,
-            { expiration_time, streams_ts },
-            false).discard_result();
-}
+static future<std::vector<mutation>> get_cdc_streams_descriptions_v2_mutation(
+        const database& db,
+        db_clock::time_point time,
+        const cdc::topology_description& desc) {
+    auto s = db.find_schema(system_distributed_keyspace::NAME, system_distributed_keyspace::CDC_DESC_V2);
+    return do_with(std::vector<mutation>{mutation{s, partition_key::from_singular(*s, time)}}, size_t{},
+            [s, ts = api::new_timestamp(), time, &desc] (std::vector<mutation>& res, size_t& size_estimate) {
+        return do_for_each(desc.entries(), [s = std::move(s), ts, time, &res, &size_estimate] (const cdc::token_range_description& e) {
+            // We want to keep each mutation below ~1 MB.
+            if (size_estimate >= 1000 * 1000) {
+                res.emplace_back(s, partition_key::from_singular(*s, time));
+                size_estimate = 0;
+            }
 
-static set_type_impl::native_type prepare_cdc_streams(const std::vector<cdc::stream_id>& streams) {
-    set_type_impl::native_type ret;
-    for (auto& s: streams) {
-        ret.push_back(data_value(s.to_bytes()));
-    }
-    return ret;
+            set_type_impl::native_type streams;
+            streams.reserve(e.streams.size());
+            for (auto& stream : e.streams) {
+                streams.push_back(data_value(stream.to_bytes()));
+            }
+
+            // We estimate 20 bytes per stream ID.
+            // Stream IDs themselves weigh 16 bytes each (2 * sizeof(int64_t))
+            // but there's metadata to be taken into account.
+            // It has been verified experimentally that 20 bytes per stream ID is a good estimate.
+            size_estimate += e.streams.size() * 20;
+            res.back().set_cell(clustering_key::from_singular(*s, dht::token::to_int64(e.token_range_end)),
+                    to_bytes("streams"), make_set_value(cdc_streams_set_type, std::move(streams)), ts);
+        }).then([&res] {
+            return make_ready_future<std::vector<mutation>>(std::move(res));
+        });
+    });
 }
 
 future<>
 system_distributed_keyspace::create_cdc_desc(
         db_clock::time_point time,
-        const std::vector<cdc::stream_id>& streams,
+        const cdc::topology_description& desc,
         context ctx) {
-    return _qp.execute_internal(
-            format("INSERT INTO {}.{} (time, streams) VALUES (?,?)", NAME, CDC_DESC),
-            quorum_if_many(ctx.num_token_owners),
-            internal_distributed_timeout_config,
-            { time, make_set_value(cdc_streams_set_type, prepare_cdc_streams(streams)) },
-            false).discard_result();
-}
-
-future<>
-system_distributed_keyspace::expire_cdc_desc(
-        db_clock::time_point streams_ts,
-        db_clock::time_point expiration_time,
-        context ctx) {
-    return _qp.execute_internal(
-            format("UPDATE {}.{} SET expired = ? WHERE time = ?", NAME, CDC_DESC),
-            quorum_if_many(ctx.num_token_owners),
-            internal_distributed_timeout_config,
-            { expiration_time, streams_ts },
-            false).discard_result();
+    using namespace std::chrono_literals;
+    return get_cdc_streams_descriptions_v2_mutation(_qp.db(), time, desc).then([this, ctx] (std::vector<mutation> ms) {
+        return do_with(std::move(ms), std::move(ctx), [this] (std::vector<mutation>& ms, const context& ctx) {
+            return max_concurrent_for_each(ms, 20, [this, &ctx] (mutation& m) {
+                return _sp.mutate(
+                    { std::move(m) },
+                    quorum_if_many(ctx.num_token_owners),
+                    db::timeout_clock::now() + 10s,
+                    nullptr, // trace_state
+                    empty_service_permit(),
+                    false // raw_counters
+                );
+            });
+        });
+    }).then([this, time, ctx] {
+        // Commit the description.
+        return _qp.execute_internal(
+                format("INSERT INTO {}.{} (key, time) VALUES (?, ?)", NAME, CDC_TIMESTAMPS),
+                quorum_if_many(ctx.num_token_owners),
+                internal_distributed_timeout_config,
+                { CDC_TIMESTAMPS_KEY, time },
+                false).discard_result();
+    });
 }
 
 future<bool>
 system_distributed_keyspace::cdc_desc_exists(
         db_clock::time_point streams_ts,
         context ctx) {
+    // Reading from this table on a freshly upgraded node that is the first to announce the CDC_TIMESTAMPS
+    // schema would most likely result in replicas refusing to return data, telling the node that they can't
+    // find the schema. Indeed, it takes some time for the nodes to synchronize their schema; schema is
+    // only eventually consistent.
+    //
+    // This problem doesn't occur on writes since writes enforce schema pull if the receiving replica
+    // notices that the write comes from an unknown schema, but it does occur on reads.
+    //
+    // Hence we work around it with a hack: we send a mutation with an empty partition to force our replicas
+    // to pull the schema.
+    //
+    // This is not strictly necessary; the code that calls this function does it in a retry loop
+    // so eventually, after the schema gets pulled, the read would succeed.
+    // Still, the errors are also unnecessary and if we can get rid of them - let's do it.
+    //
+    // FIXME: find a more elegant way to deal with this ``problem''.
+    if (!_forced_cdc_timestamps_schema_sync) {
+        using namespace std::chrono_literals;
+        auto s = _qp.db().find_schema(system_distributed_keyspace::NAME, system_distributed_keyspace::CDC_TIMESTAMPS);
+        mutation m(s, partition_key::from_singular(*s, CDC_TIMESTAMPS_KEY));
+        return _sp.mutate(
+            { std::move(m) },
+            quorum_if_many(ctx.num_token_owners),
+            db::timeout_clock::now() + 10s,
+            nullptr, // trace_state
+            empty_service_permit(),
+            false // raw_counters
+        ).then([this, streams_ts, ctx] {
+            _forced_cdc_timestamps_schema_sync = true;
+            return cdc_desc_exists(streams_ts, std::move(ctx));
+        });
+    }
+
+    // At this point replicas know the schema, we can perform the actual read...
     return _qp.execute_internal(
-            format("SELECT time FROM {}.{} WHERE time = ?", NAME, CDC_DESC),
+            format("SELECT time FROM {}.{} WHERE key = ? AND time = ?", NAME, CDC_TIMESTAMPS),
             quorum_if_many(ctx.num_token_owners),
             internal_distributed_timeout_config,
-            { streams_ts },
+            { CDC_TIMESTAMPS_KEY, streams_ts },
             false
     ).then([] (::shared_ptr<cql3::untyped_result_set> cql_result) -> bool {
         return !cql_result->empty() && cql_result->one().has("time");
@@ -405,25 +468,82 @@ system_distributed_keyspace::cdc_desc_exists(
 }
 
 future<std::map<db_clock::time_point, cdc::streams_version>> 
-system_distributed_keyspace::cdc_get_versioned_streams(context ctx) {
+system_distributed_keyspace::cdc_get_versioned_streams(db_clock::time_point not_older_than, context ctx) {
     return _qp.execute_internal(
-            format("SELECT * FROM {}.{}", NAME, CDC_DESC),
+            format("SELECT time FROM {}.{} WHERE key = ?", NAME, CDC_TIMESTAMPS),
             quorum_if_many(ctx.num_token_owners),
             internal_distributed_timeout_config,
-            {},
-            false
-    ).then([] (::shared_ptr<cql3::untyped_result_set> cql_result) {
-        std::map<db_clock::time_point, cdc::streams_version> result;
+            { CDC_TIMESTAMPS_KEY },
+            false).then([this, not_older_than, ctx] (::shared_ptr<cql3::untyped_result_set> timestamps_cql) {
+        return do_with(std::move(ctx), std::vector<db_clock::time_point>{}, std::map<db_clock::time_point, cdc::streams_version>{},
+                [this, not_older_than, timestamps_cql = std::move(timestamps_cql)] (
+                    const context& ctx,
+                    std::vector<db_clock::time_point>& timestamps,
+                    std::map<db_clock::time_point, cdc::streams_version>& result) {
+            timestamps.reserve(timestamps_cql->size());
+            for (auto& row : *timestamps_cql) {
+                timestamps.push_back(row.get_as<db_clock::time_point>("time"));
+            }
 
-        for (auto& row : *cql_result) {
-            auto ts = row.get_as<db_clock::time_point>("time");
-            auto exp = row.get_opt<db_clock::time_point>("expired");
-            std::vector<cdc::stream_id> ids;
-            row.get_list_data<bytes>("streams", std::back_inserter(ids)); 
-            result.emplace(ts, cdc::streams_version(std::move(ids), ts, exp));
-        }
+            // `time` is the table's clustering key, so the results are already sorted
+            auto first = std::lower_bound(timestamps.rbegin(), timestamps.rend(), not_older_than);
+            // need first gen _intersecting_ the timestamp.
+            if (first != timestamps.rbegin()) {
+                --first;
+            }
 
-        return result;
+            return max_concurrent_for_each(first, timestamps.rend(), 5, [this, &ctx, &result] (db_clock::time_point ts) {
+                return _qp.execute_internal(
+                        format("SELECT streams FROM {}.{} WHERE time = ?", NAME, CDC_DESC_V2),
+                        quorum_if_many(ctx.num_token_owners),
+                        internal_distributed_timeout_config,
+                        { ts },
+                        false).then([ts, &result] (::shared_ptr<cql3::untyped_result_set> streams_cql) {
+                    return do_with(utils::chunked_vector<cdc::stream_id>{}, std::move(streams_cql),
+                            [ts, &result] (utils::chunked_vector<cdc::stream_id>& ids, ::shared_ptr<cql3::untyped_result_set>& streams_cql) {
+                        return do_for_each(*streams_cql, [&ids] (const cql3::untyped_result_set::row& row) {
+                            row.get_list_data<bytes>("streams", std::back_inserter(ids));
+                        }).then([ts, &result, &ids] {
+                            result.emplace(ts, cdc::streams_version{std::move(ids), ts});
+                        });
+                    });
+                });
+            }).then([&result] {
+                return make_ready_future<std::map<db_clock::time_point, cdc::streams_version>>(std::move(result));
+            });
+        });
+    });
+}
+
+future<db_clock::time_point>
+system_distributed_keyspace::cdc_current_generation_timestamp(context ctx) {
+    return _qp.execute_internal(
+            format("SELECT time FROM {}.{} WHERE key = ? limit 1", NAME, CDC_TIMESTAMPS),
+            quorum_if_many(ctx.num_token_owners),
+            internal_distributed_timeout_config,
+            { CDC_TIMESTAMPS_KEY },
+            false).then([] (::shared_ptr<cql3::untyped_result_set> timestamp_cql) {
+        return timestamp_cql->one().get_as<db_clock::time_point>("time");
+    });
+}
+
+future<std::vector<db_clock::time_point>>
+system_distributed_keyspace::get_cdc_desc_v1_timestamps(context ctx) {
+    return do_with(std::vector<db_clock::time_point>{}, [this, ctx] (std::vector<db_clock::time_point>& res) {
+        return _qp.query_internal(
+                format("SELECT time FROM {}.{}", NAME, CDC_DESC_V1),
+                quorum_if_many(ctx.num_token_owners),
+                // This is a long and expensive scan (mostly due to #8061).
+                // Give it a bit more time than usual.
+                get_timeout_config(std::chrono::seconds(60)),
+                {},
+                1000,
+                [&res] (const cql3::untyped_result_set_row& r) {
+            res.push_back(r.get_as<db_clock::time_point>("time"));
+            return make_ready_future<stop_iteration>(stop_iteration::no);
+        }).then([&res] {
+            return make_ready_future<std::vector<db_clock::time_point>>(std::move(res));
+        });
     });
 }
 

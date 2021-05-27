@@ -815,7 +815,7 @@ const utils::UUID& database::find_uuid(const schema_ptr& schema) const {
     return find_uuid(schema->ks_name(), schema->cf_name());
 }
 
-keyspace& database::find_keyspace(const sstring& name) {
+keyspace& database::find_keyspace(std::string_view name) {
     try {
         return _keyspaces.at(name);
     } catch (...) {
@@ -823,7 +823,7 @@ keyspace& database::find_keyspace(const sstring& name) {
     }
 }
 
-const keyspace& database::find_keyspace(const sstring& name) const {
+const keyspace& database::find_keyspace(std::string_view name) const {
     try {
         return _keyspaces.at(name);
     } catch (...) {
@@ -1005,7 +1005,7 @@ keyspace::make_directory_for_column_family(const sstring& name, utils::UUID uuid
     });
 }
 
-no_such_keyspace::no_such_keyspace(const sstring& ks_name)
+no_such_keyspace::no_such_keyspace(std::string_view ks_name)
     : runtime_error{format("Can't find a keyspace {}", ks_name)}
 {
 }

@@ -31,16 +31,6 @@
 
 using namespace std::string_literals;
 
-static cql_test_config mk_cdc_test_config() {
-    auto ext = std::make_shared<db::extensions>();
-    ext->add_schema_extension<cdc::cdc_extension>(cdc::cdc_extension::NAME);
-    auto cfg = ::make_shared<db::config>(std::move(ext));
-    auto features = cfg->experimental_features();
-    features.emplace_back(db::experimental_features_t::CDC);
-    cfg->experimental_features(features);
-    return cql_test_config(std::move(cfg));
-};
-
 namespace cdc {
 api::timestamp_type find_timestamp(const mutation&);
 utils::UUID generate_timeuuid(api::timestamp_type);
@@ -120,7 +110,7 @@ SEASTAR_THREAD_TEST_CASE(test_find_mutation_timestamp) {
         check_stmt("DELETE vut.b FROM t WHERE pk = 0 AND ck = 0");
         check_stmt("DELETE vfut FROM t WHERE pk = 0 AND ck = 0");
         check_stmt("DELETE vstatic FROM t WHERE pk = 0");
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_generate_timeuuid) {
@@ -188,7 +178,7 @@ SEASTAR_THREAD_TEST_CASE(test_with_cdc_parameter) {
         test("WITH cdc = {'enabled':'false'}", "{'enabled':'true'}", "{'enabled':'false'}", {false}, {true}, {false});
         test("", "{'enabled':'true','preimage':'true','postimage':'true','ttl':'1'}", "{'enabled':'false'}", {false}, {true, true, true, 1}, {false});
         test("WITH cdc = {'enabled':'true','preimage':'true','postimage':'true','ttl':'1'}", "{'enabled':'false'}", "{'enabled':'true','preimage':'false','postimage':'true','ttl':'2'}", {true, true, true, 1}, {false}, {true, false, true, 2});
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_detecting_conflict_of_cdc_log_table_with_existing_table) {
@@ -202,7 +192,7 @@ SEASTAR_THREAD_TEST_CASE(test_detecting_conflict_of_cdc_log_table_with_existing_
         e.execute_cql("CREATE TABLE ks.tbl (a int PRIMARY KEY)").get();
         e.require_table_exists("ks", "tbl").get();
         BOOST_REQUIRE_THROW(e.execute_cql("ALTER TABLE ks.tbl WITH cdc = {'enabled': true}").get(), exceptions::invalid_request_exception);
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_permissions_of_cdc_log_table) {
@@ -236,7 +226,7 @@ SEASTAR_THREAD_TEST_CASE(test_permissions_of_cdc_log_table) {
 
         // Disallow DROP
         assert_unauthorized("DROP TABLE " + log_table);
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_disallow_cdc_on_materialized_view) {
@@ -246,35 +236,52 @@ SEASTAR_THREAD_TEST_CASE(test_disallow_cdc_on_materialized_view) {
 
         BOOST_REQUIRE_THROW(e.execute_cql("CREATE MATERIALIZED VIEW ks.mv AS SELECT a FROM ks.tbl PRIMARY KEY (a) WITH cdc = {'enabled': true}").get(), exceptions::invalid_request_exception);
         e.require_table_does_not_exist("ks", "mv").get();
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_permissions_of_cdc_description) {
     do_with_cql_env_thread([] (cql_test_env& e) {
-        auto test_table = [&e] (const sstring& table_name) {
-            auto assert_unauthorized = [&e] (const sstring& stmt) {
-                testlog.info("Must throw unauthorized_exception: {}", stmt);
-                BOOST_REQUIRE_THROW(e.execute_cql(stmt).get(), exceptions::unauthorized_exception);
-            };
-
-            e.require_table_exists("system_distributed", table_name).get();
-
-            const sstring full_name = "system_distributed." + table_name;
-
-            // Allow MODIFY, SELECT
-            e.execute_cql(format("INSERT INTO {} (time) VALUES (toTimeStamp(now()))", full_name)).get();
-            e.execute_cql(format("UPDATE {} SET expired = toTimeStamp(now()) WHERE time = toTimeStamp(now())", full_name)).get();
-            e.execute_cql(format("DELETE FROM {} WHERE time = toTimeStamp(now())", full_name)).get();
-            e.execute_cql(format("SELECT * FROM {}", full_name)).get();
-
-            // Disallow ALTER, DROP
-            assert_unauthorized(format("ALTER TABLE {} ALTER time TYPE blob", full_name));
-            assert_unauthorized(format("DROP TABLE {}", full_name));
+        auto assert_unauthorized = [&e] (const sstring& stmt) {
+            testlog.info("Must throw unauthorized_exception: {}", stmt);
+            BOOST_REQUIRE_THROW(e.execute_cql(stmt).get(), exceptions::unauthorized_exception);
         };
 
-        test_table("cdc_streams_descriptions");
-        test_table("cdc_generation_descriptions");
-    }, mk_cdc_test_config()).get();
+        auto full_name = [] (const sstring& table_name) {
+            return "system_distributed." + table_name;
+        };
+
+        const sstring generations = "cdc_generation_descriptions";
+        const sstring streams = "cdc_streams_descriptions_v2";
+        const sstring timestamps = "cdc_generation_timestamps";
+
+        for (auto& t : {generations, streams, timestamps}) {
+            e.require_table_exists("system_distributed", t).get();
+
+            // Disallow DROP
+            assert_unauthorized(format("DROP TABLE {}", full_name(t)));
+
+            // Allow SELECT
+            e.execute_cql(format("SELECT * FROM {}", full_name(t))).get();
+        }
+
+        // Disallow ALTER
+        for (auto& t : {generations, streams}) {
+            assert_unauthorized(format("ALTER TABLE {} ALTER time TYPE blob", full_name(t)));
+        }
+        assert_unauthorized(format("ALTER TABLE {} ALTER key TYPE blob", full_name(timestamps)));
+
+        // Allow DELETE
+        for (auto& t : {generations, streams}) {
+            e.execute_cql(format("DELETE FROM {} WHERE time = toTimeStamp(now())", full_name(t))).get();
+        }
+        e.execute_cql(format("DELETE FROM {} WHERE key = 'timestamps'", full_name(timestamps))).get();
+
+        // Allow UPDATE, INSERT
+        e.execute_cql(format("UPDATE {} SET expired = toTimeStamp(now()) WHERE time = toTimeStamp(now())", full_name(generations))).get();
+        e.execute_cql(format("INSERT INTO {} (time) VALUES (toTimeStamp(now()))", full_name(generations))).get();
+        e.execute_cql(format("INSERT INTO {} (time, range_end) VALUES (toTimeStamp(now()), 0)", full_name(streams))).get();
+        e.execute_cql(format("UPDATE {} SET expired = toTimeStamp(now()) WHERE key = 'timestamps' AND time = toTimeStamp(now())", full_name(timestamps))).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_cdc_log_schema) {
@@ -360,7 +367,7 @@ SEASTAR_THREAD_TEST_CASE(test_cdc_log_schema) {
 
         // Check if we missed something
         BOOST_REQUIRE_EQUAL(required_column_count, log_schema->all_columns_count());
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 static std::vector<std::vector<bytes_opt>> to_bytes(const cql_transport::messages::result_message::rows& rows) {
@@ -502,7 +509,7 @@ SEASTAR_THREAD_TEST_CASE(test_primary_key_logging) {
         // DELETE FROM ks.tbl WHERE pk = 1 AND pk2 = 11
         assert_row(1, 11);
         BOOST_REQUIRE(actual_i == actual_end);
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_pre_post_image_logging) {
@@ -601,7 +608,7 @@ SEASTAR_THREAD_TEST_CASE(test_pre_post_image_logging) {
                 }
             }
         }
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_pre_post_image_logging_static_row) {
@@ -675,7 +682,7 @@ SEASTAR_THREAD_TEST_CASE(test_pre_post_image_logging_static_row) {
         test(true, false);
         test(false, true);
         test(false, false);
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_range_deletion) {
@@ -719,7 +726,7 @@ SEASTAR_THREAD_TEST_CASE(test_range_deletion) {
         // ck >= 4 AND ck <= 56
         check_row(4, cdc::operation::range_delete_start_inclusive);
         check_row(56, cdc::operation::range_delete_end_inclusive);
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_add_columns) {
@@ -743,7 +750,7 @@ SEASTAR_THREAD_TEST_CASE(test_add_columns) {
         auto kokos = *inserts.back()[kokos_index];
 
         BOOST_REQUIRE_EQUAL(data_value("kaka"), kokos_type->deserialize(bytes_view(kokos)));
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 // #5582 - just quickly test that we can create the cdc enabled table on a different shard
@@ -765,7 +772,7 @@ SEASTAR_THREAD_TEST_CASE(test_cdc_across_shards) {
         auto rows = select_log(e, "tbl");
 
         BOOST_REQUIRE(!to_bytes_filtered(*rows, cdc::operation::insert).empty());
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_negative_ttl_fail) {
@@ -773,7 +780,7 @@ SEASTAR_THREAD_TEST_CASE(test_negative_ttl_fail) {
         BOOST_REQUIRE_EXCEPTION(e.execute_cql("CREATE TABLE ks.fail (a int PRIMARY KEY, b int) WITH cdc = {'enabled':true,'ttl':'-1'}").get0(),
                 exceptions::configuration_exception,
                 exception_predicate::message_contains("ttl"));
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_ttls) {
@@ -827,7 +834,7 @@ SEASTAR_THREAD_TEST_CASE(test_ttls) {
         };
         test_ttl(0);
         test_ttl(10);
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 // helper funcs + structs for collection testing
@@ -981,7 +988,7 @@ SEASTAR_THREAD_TEST_CASE(test_map_logging) {
             }
 
         });
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_set_logging) {
@@ -1052,7 +1059,7 @@ SEASTAR_THREAD_TEST_CASE(test_set_logging) {
                 ::make_set_value(set_type, { "bolla", "trolla" })
             }
         });
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_list_logging) {
@@ -1144,7 +1151,7 @@ SEASTAR_THREAD_TEST_CASE(test_list_logging) {
             }
             return ::make_list_value(list_type, std::move(cpy));
         });
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_udt_logging) {
@@ -1231,7 +1238,7 @@ SEASTAR_THREAD_TEST_CASE(test_udt_logging) {
                 make_tuple(1, "bolla")
             },
         });
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_frozen_logging) {
@@ -1282,7 +1289,7 @@ SEASTAR_THREAD_TEST_CASE(test_frozen_logging) {
         test_frozen("frozen<set<text>>", "{'a', 'bb', 'ccc'}");
         test_frozen("frozen<map<text, text>>", "{'a': 'bb', 'ccc': 'dddd'}");
         test_frozen("frozen<udt>", "{a: 'bb', ccc: 'dddd'}");
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_update_insert_delete_distinction) {
@@ -1314,7 +1321,7 @@ SEASTAR_THREAD_TEST_CASE(test_update_insert_delete_distinction) {
 
         BOOST_REQUIRE_EQUAL(results[3].size(), 1);
         BOOST_REQUIRE_EQUAL(*results[3].front(), data_value(static_cast<int8_t>(cdc::operation::row_delete)).serialize_nonnull()); // log entry from (3)
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 static std::vector<std::vector<data_value>> get_result(cql_test_env& e,
@@ -1564,7 +1571,7 @@ SEASTAR_THREAD_TEST_CASE(test_change_splitting) {
             };
             BOOST_REQUIRE_EQUAL(expected, result);
         }
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_batch_with_row_delete) {
@@ -1628,7 +1635,7 @@ SEASTAR_THREAD_TEST_CASE(test_batch_with_row_delete) {
             BOOST_REQUIRE_EQUAL(deser(s_type, r[3]), er[3]);
             BOOST_REQUIRE_EQUAL(deser(oper_type, r[4]), er[4]);
         }
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 struct image_set {
@@ -1937,7 +1944,7 @@ void test_batch_images(bool preimage, bool postimage) {
                 }
             }
         }, preimage, postimage);
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_batch_pre_image) {
@@ -1970,5 +1977,5 @@ SEASTAR_THREAD_TEST_CASE(test_postimage_with_no_regular_columns) {
         };
 
         BOOST_REQUIRE_EQUAL(expected, result);
-    }, mk_cdc_test_config()).get();
+    }).get();
 }
