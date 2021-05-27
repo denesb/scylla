@@ -1642,18 +1642,24 @@ future<> shard_reader::close() noexcept {
             co_await *std::exchange(_read_ahead, std::nullopt);
         }
 
-        auto&& [irh, remote_buffer] = co_await smp::submit_to(_shard, [this] {
-            auto ret = std::tuple(
-                    make_foreign(std::make_unique<reader_concurrency_semaphore::inactive_read_handle>(std::move(*_reader).inactive_read_handle())),
-                    make_foreign(std::make_unique<const flat_mutation_reader::tracked_buffer>(_reader->detach_buffer())));
-            _reader.reset();
-            return ret;
+        co_await smp::submit_to(_shard, [this] () -> future<> {
+            auto irh = std::move(*_reader).inactive_read_handle();
+            auto reader = flat_mutation_reader(_reader.release()); // avoid another round-trip to destroy _reader
+
+            auto permit = reader.permit();
+            const auto& schema = *reader.schema();
+
+            auto unconsumed_fragments = reader.detach_buffer();
+            auto rit = std::reverse_iterator(buffer().cend());
+            auto rend = std::reverse_iterator(buffer().cbegin());
+            for (; rit != rend; ++rit) {
+                unconsumed_fragments.emplace_front(schema, permit, *rit); // we are copying from the remote shard.
+            }
+
+            co_await reader.close();
+
+            co_await _lifecycle_policy->destroy_reader(reader_lifecycle_policy::stopped_reader{std::move(irh), std::move(unconsumed_fragments)});
         });
-        auto buffer = detach_buffer();
-        for (const auto& mf : *remote_buffer) {
-            buffer.emplace_back(*_schema, _permit, mf); // we are copying from the remote shard.
-        }
-        co_await _lifecycle_policy->destroy_reader(_shard, reader_lifecycle_policy::stopped_reader{std::move(irh), std::move(buffer)});
     } catch (...) {
         mrlog.error("shard_reader::close(): failed to stop reader on shard {}: {}", _shard, std::current_exception());
     }
