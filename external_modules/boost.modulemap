@@ -1,0 +1,240 @@
+// grep -IR . -e '#include "boost.*"' -h | sort | uniq
+// subfolder -> module
+module boost [system] {
+
+header "boost/any.hpp"
+header "boost/array.hpp"
+header "boost/assign.hpp"
+header "boost/circular_buffer.hpp"
+header "boost/dll.hpp"
+header "boost/dynamic_bitset.hpp"
+header "boost/lexical_cast.hpp"
+header "boost/make_shared.hpp"
+header "boost/next_prior.hpp"
+header "boost/preprocessor.hpp"
+header "boost/type.hpp"
+header "boost/version.hpp"
+export *
+
+module accumulators {
+    header "boost/accumulators/accumulators.hpp"
+    header "boost/accumulators/framework/accumulator_set.hpp"
+    header "boost/accumulators/framework/features.hpp"
+    header "boost/accumulators/statistics/error_of_mean.hpp"
+    header "boost/accumulators/statistics/extended_p_square.hpp"
+    header "boost/accumulators/statistics/extended_p_square_quantile.hpp"
+    header "boost/accumulators/statistics/max.hpp"
+    header "boost/accumulators/statistics/mean.hpp"
+    header "boost/accumulators/statistics/p_square_quantile.hpp"
+    header "boost/accumulators/statistics/stats.hpp"
+    export *
+}
+
+module algorithm {
+    header "boost/algorithm/clamp.hpp"
+    header "boost/algorithm/cxx11/all_of.hpp"
+    header "boost/algorithm/cxx11/any_of.hpp"
+    header "boost/algorithm/cxx11/iota.hpp"
+    header "boost/algorithm/cxx11/is_sorted.hpp"
+    header "boost/algorithm/cxx11/none_of.hpp"
+    header "boost/algorithm/cxx11/partition_copy.hpp"
+    header "boost/algorithm/string/case_conv.hpp"
+    header "boost/algorithm/string/classification.hpp"
+    header "boost/algorithm/string/erase.hpp"
+    header "boost/algorithm/string.hpp"
+    header "boost/algorithm/string/join.hpp"
+    header "boost/algorithm/string/predicate.hpp"
+    header "boost/algorithm/string/replace.hpp"
+    header "boost/algorithm/string/split.hpp"
+    header "boost/algorithm/string/trim_all.hpp"
+    header "boost/algorithm/string/trim.hpp"
+    export *
+}
+
+module asio {
+    header "boost/asio/ip/address_v4.hpp"
+    export *
+}
+
+module bitmap {
+    header "boost/bimap.hpp"
+    header "boost/bimap/unordered_set_of.hpp"
+    export *
+}
+
+module container {
+    header "boost/container/deque.hpp"
+    header "boost/container/small_vector.hpp"
+    header "boost/container/static_vector.hpp"
+    export *
+}
+
+module date_time {
+    header "boost/date_time/c_local_time_adjustor.hpp"
+    header "boost/date_time/posix_time/posix_time.hpp"
+    export *
+}
+
+module functional {
+    header "boost/functional/hash.hpp"
+    export *
+}
+
+module heap {
+    header "boost/heap/binomial_heap.hpp"
+    export *
+}
+
+module icl {
+    header "boost/icl/interval.hpp"
+    header "boost/icl/interval_map.hpp"
+    header "boost/icl/interval_set.hpp"
+    export *
+}
+
+module intrusive {
+    header "boost/intrusive/list.hpp"
+    header "boost/intrusive/parent_from_member.hpp"
+    header "boost/intrusive_ptr.hpp"
+    header "boost/intrusive/set.hpp"
+    header "boost/intrusive/slist.hpp"
+    header "boost/intrusive/unordered_set.hpp"
+    export *
+}
+
+module io {
+    header "boost/io/ios_state.hpp"
+    export *
+}
+
+module iterator {
+    header "boost/iterator/counting_iterator.hpp"
+    header "boost/iterator/filter_iterator.hpp"
+    header "boost/iterator/function_input_iterator.hpp"
+    header "boost/iterator/iterator_facade.hpp"
+    header "boost/iterator/transform_iterator.hpp"
+    export *
+}
+
+module locale {
+    header "boost/locale/encoding.hpp"
+    header "boost/locale/encoding_utf.hpp"
+    export *
+}
+
+module lockfree {
+    header "boost/lockfree/queue.hpp"
+    header "boost/lockfree/spsc_queue.hpp"
+    export *
+}
+
+module move {
+    header "boost/move/iterator.hpp"
+    export *
+}
+
+module mpl {
+    header "boost/mpl/for_each.hpp"
+    header "boost/mpl/range_c.hpp"
+    export *
+}
+
+module multiprecision {
+    header "boost/multiprecision/cpp_int.hpp"
+    export *
+}
+
+module program_options {
+    header "boost/program_options/errors.hpp"
+    header "boost/program_options.hpp"
+    header "boost/program_options/variables_map.hpp"
+    export *
+}
+
+module range {
+    header "boost/range/adaptor/filtered.hpp"
+    header "boost/range/adaptor/indexed.hpp"
+    header "boost/range/adaptor/indirected.hpp"
+    header "boost/range/adaptor/map.hpp"
+    header "boost/range/adaptor/reversed.hpp"
+    header "boost/range/adaptors.hpp"
+    header "boost/range/adaptor/sliced.hpp"
+    header "boost/range/adaptor/transformed.hpp"
+    header "boost/range/adaptor/uniqued.hpp"
+    header "boost/range/algorithm/adjacent_find.hpp"
+    header "boost/range/algorithm/copy.hpp"
+    header "boost/range/algorithm/count.hpp"
+    header "boost/range/algorithm/count_if.hpp"
+    header "boost/range/algorithm/equal.hpp"
+    header "boost/range/algorithm_ext/erase.hpp"
+    header "boost/range/algorithm_ext.hpp"
+    header "boost/range/algorithm_ext/insert.hpp"
+    header "boost/range/algorithm_ext/is_sorted.hpp"
+    header "boost/range/algorithm_ext/push_back.hpp"
+    header "boost/range/algorithm/find_end.hpp"
+    header "boost/range/algorithm/find.hpp"
+    header "boost/range/algorithm/find_if.hpp"
+    header "boost/range/algorithm/for_each.hpp"
+    header "boost/range/algorithm/generate.hpp"
+    header "boost/range/algorithm/heap_algorithm.hpp"
+    header "boost/range/algorithm.hpp"
+    header "boost/range/algorithm/min_element.hpp"
+    header "boost/range/algorithm/partial_sort.hpp"
+    header "boost/range/algorithm/partition.hpp"
+    header "boost/range/algorithm/random_shuffle.hpp"
+    header "boost/range/algorithm/remove.hpp"
+    header "boost/range/algorithm/remove_if.hpp"
+    header "boost/range/algorithm/replace.hpp"
+    header "boost/range/algorithm/reverse.hpp"
+    header "boost/range/algorithm/set_algorithm.hpp"
+    header "boost/range/algorithm/sort.hpp"
+    header "boost/range/algorithm/stable_partition.hpp"
+    header "boost/range/algorithm/transform.hpp"
+    header "boost/range/algorithm/unique.hpp"
+    header "boost/range/algorithm/upper_bound.hpp"
+    header "boost/range/combine.hpp"
+    header "boost/range/empty.hpp"
+    header "boost/range.hpp"
+    header "boost/range/irange.hpp"
+    header "boost/range/iterator_range.hpp"
+    header "boost/range/join.hpp"
+    header "boost/range/numeric.hpp"
+    header "boost/range/size.hpp"
+    export *
+}
+
+module regex {
+    header "boost/regex.hpp"
+    header "boost/regex/icu.hpp"
+    export *
+}
+
+module signals2 {
+    header "boost/signals2/dummy_mutex.hpp"
+    header "boost/signals2.hpp"
+    export *
+}
+
+module test {
+    header "boost/test/included/unit_test.hpp"
+    header "boost/test/unit_test.hpp"
+    export *
+}
+
+module thread {
+    header "boost/thread/barrier.hpp"
+    export *
+}
+
+module units {
+    header "boost/units/detail/utility.hpp"
+    export *
+}
+
+module variant {
+    header "boost/variant/get.hpp"
+    header "boost/variant/variant.hpp"
+    export *
+}
+
+}

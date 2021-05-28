@@ -636,6 +636,8 @@ arg_parser.add_argument('--clang-inline-threshold', action='store', type=int, de
                         help="LLVM-specific inline threshold compilation parameter")
 arg_parser.add_argument('--list-artifacts', dest='list_artifacts', action='store_true', default=False,
                         help='List all available build artifacts, that can be passed to --with')
+arg_parser.add_argument('--modules', dest='modules', action='store_true', default=False,
+                        help='Use C++20 modules (experimental)')
 args = arg_parser.parse_args()
 
 if args.list_artifacts:
@@ -1740,6 +1742,10 @@ with open(buildfile_tmp, 'w') as f:
     for mode in build_modes:
         modeval = modes[mode]
         fmt_lib = 'fmt'
+        if args.modules:
+            modules_cflags=f"-fmodules -fmodules-cache-path=$builddir/{mode}/modules-cache -fmodule-map-file=external_modules/std.modulemap -fmodule-map-file=external_modules/boost.modulemap"
+        else:
+            modules_cflags=""
         f.write(textwrap.dedent('''\
             cxx_ld_flags_{mode} = {cxx_ld_flags}
             ld_flags_{mode} = $cxx_ld_flags_{mode}
@@ -1747,7 +1753,7 @@ with open(buildfile_tmp, 'w') as f:
             libs_{mode} = -l{fmt_lib}
             seastar_libs_{mode} = {seastar_libs}
             rule cxx.{mode}
-              command = $cxx -MD -MT $out -MF $out.d {seastar_cflags} $cxxflags_{mode} $cxxflags $obj_cxxflags -c -o $out $in
+              command = $cxx -MD -MT $out -MF $out.d {modules_cflags} {seastar_cflags} $cxxflags_{mode} $cxxflags $obj_cxxflags -c -o $out $in
               description = CXX $out
               depfile = $out.d
             rule link.{mode}
@@ -1794,7 +1800,7 @@ with open(buildfile_tmp, 'w') as f:
               command = ./test.py --mode={mode} --repeat={test_repeat} --timeout={test_timeout}
               pool = console
               description = TEST {mode}
-            ''').format(mode=mode, antlr3_exec=antlr3_exec, fmt_lib=fmt_lib, test_repeat=test_repeat, test_timeout=test_timeout, **modeval))
+            ''').format(mode=mode, antlr3_exec=antlr3_exec, fmt_lib=fmt_lib, test_repeat=test_repeat, test_timeout=test_timeout, **modeval, modules_cflags=modules_cflags))
         f.write(
             'build {mode}-build: phony {artifacts}\n'.format(
                 mode=mode,

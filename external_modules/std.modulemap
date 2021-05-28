@@ -1,0 +1,172 @@
+// Mirrors https://en.cppreference.com/w/cpp/header
+module std [system] {
+
+module concepts {
+    header "concepts"
+    export *
+}
+
+module coroutines {
+    header "coroutine"
+    export *
+}
+
+module utilities {
+    header "cstdlib"
+    header "csignal"
+    header "csetjmp"
+    header "cstdarg"
+    header "typeinfo"
+    header "typeindex"
+    header "type_traits"
+    header "bitset"
+    header "functional"
+    header "utility"
+    header "ctime"
+    header "chrono"
+    header "cstddef"
+    header "initializer_list"
+    header "tuple"
+    header "any"
+    header "optional"
+    header "variant"
+    header "compare"
+    header "version"
+    header "source_location"
+    header "stacktrace"
+    export *
+}
+
+module dynamic_memory_management {
+    header "new"
+    header "memory"
+    header "scoped_allocator"
+    header "memory_resource"
+    export *
+}
+
+module numeric_limits {
+    header "climits"
+    header "cfloat"
+    header "cstdint"
+    header "cinttypes"
+    header "limits"
+    export *
+}
+
+module error_handling {
+    header "exception"
+    header "stdexcept"
+    textual header "cassert"
+    header "system_error"
+    header "cerrno"
+    export *
+}
+
+module strings {
+    header "cctype"
+    header "cwctype"
+    header "cstring"
+    header "cwchar"
+    header "cuchar"
+    header "string"
+    header "string_view"
+    header "charconv"
+    header "format"
+    export *
+}
+
+module containers {
+    header "array"
+    header "vector"
+    header "deque"
+    header "list"
+    header "forward_list"
+    header "set"
+    header "map"
+    header "unordered_set"
+    header "unordered_map"
+    header "stack"
+    header "queue"
+    header "span"
+    export *
+}
+
+module iterators {
+    header "iterator"
+    export *
+}
+
+module ranges {
+    header "ranges"
+    export *
+}
+
+module algorithm {
+    header "algorithm"
+    header "execution"
+    export *
+}
+
+module numerics {
+    header "complex"
+    header "valarray"
+    header "random"
+    header "numeric"
+    header "ratio"
+    header "cfenv"
+    header "bit"
+    header "numbers"
+    export *
+}
+
+module localization {
+    header "locale"
+    header "clocale"
+    export *
+}
+
+module io {
+    header "iosfwd"
+    header "ios"
+    header "istream"
+    header "ostream"
+    header "iostream"
+    header "fstream"
+    header "sstream"
+    header "syncstream"
+    header "iomanip"
+    header "streambuf"
+    header "cstdio"
+    export *
+}
+
+module filesystem {
+    header "filesystem"
+    export *
+}
+
+module re {
+    header "regex"
+    export *
+}
+
+module atomic {
+    header "atomic"
+    export *
+}
+
+module thread {
+    header "thread"
+    header "stop_token"
+    header "mutex"
+    header "shared_mutex"
+    header "future"
+    header "condition_variable"
+    header "semaphore"
+    header "latch"
+    header "barrier"
+    export *
+}
+
+}
