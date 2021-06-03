@@ -1301,29 +1301,6 @@ private:
 
     cache_tracker _row_cache_tracker;
 
-    inheriting_concrete_execution_stage<future<lw_shared_ptr<query::result>>,
-        column_family*,
-        schema_ptr,
-        const query::read_command&,
-        query::query_class_config,
-        query::result_options,
-        const dht::partition_range_vector&,
-        tracing::trace_state_ptr,
-        query::result_memory_limiter&,
-        db::timeout_clock::time_point,
-        query::querier_cache_context> _data_query_stage;
-
-    inheriting_concrete_execution_stage<future<reconcilable_result>,
-        table*,
-        schema_ptr,
-        const query::read_command&,
-        query::query_class_config,
-        const dht::partition_range&,
-        tracing::trace_state_ptr,
-        query::result_memory_accounter,
-        db::timeout_clock::time_point,
-        query::querier_cache_context> _mutation_query_stage;
-
     inheriting_concrete_execution_stage<
             future<>,
             database*,
