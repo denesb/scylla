@@ -349,8 +349,8 @@ ber_slen_t ldap_connection::write(char const* b, ber_len_t size) {
             set_status(status::err);
         });
     });
-    mylog.trace("write({}) done", size);
-    return size;
+    mylog.trace("write({}) done, status={}", size, _status);
+    return _status == status::up ? size : -1; // _status can be err here if _outstanding_write threw.
 }
 
 ber_slen_t ldap_connection::read(char* b, ber_len_t size) {
@@ -454,4 +454,29 @@ void ldap_connection::set_status(ldap_connection::status s) {
         }
         _msgid_to_promise.clear();
     }
+}
+
+ldap_reuser::ldap_reuser(sequential_producer<ldap_reuser::conn_ptr>::factory_t&& f)
+    : _make_conn(std::move(f)), _reaper(now()) {
+}
+
+void ldap_reuser::reap(conn_ptr& conn) {
+    if (!conn) {
+        return;
+    }
+    if (auto p = conn.release()) { // Safe to close, other fibers are done with it.
+        _reaper = _reaper.then([p = move(p)] () mutable {
+            return p->close().then_wrapped([p = move(p)] (future<> fut) {
+                if (fut.failed()) {
+                    mylog.warn("failure closing dead ldap_connection: {}", fut.get_exception());
+                }
+                /* p disposed here */
+            });
+        });
+    }
+}
+
+future<> ldap_reuser::stop() {
+    reap(_conn);
+    return std::move(_reaper);
 }

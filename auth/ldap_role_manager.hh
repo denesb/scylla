@@ -12,6 +12,7 @@
 #pragma once
 
 #include <memory>
+#include <seastar/core/abort_source.hh>
 #include <stdexcept>
 
 #include "bytes.hh"
@@ -31,14 +32,12 @@ namespace auth {
 /// by querying LDAP, so they are delegated to the standard_role_manager.
 class ldap_role_manager : public role_manager {
     standard_role_manager _std_mgr;
-    // Pointer because it's initialized in start(), it's reset on connection problems, and its non-const
-    // method search() is invoked from our const method query_granted().
-    std::unique_ptr<ldap_connection> _conn;
     seastar::sstring _query_template; ///< LDAP URL dictating which query to make.
     seastar::sstring _target_attr; ///< LDAP entry attribute containing the Scylla role name.
     seastar::sstring _bind_name; ///< Username for LDAP simple bind.
     seastar::sstring _bind_password; ///< Password for LDAP simple bind.
-    size_t _retries; ///< Count of LDAP reconnect retries so far.
+    mutable ldap_reuser _connection_factory; // Potentially modified by query_granted().
+    seastar::abort_source _reconnect_aborter;
   public:
     ldap_role_manager(
             sstring_view query_template, ///< LDAP query template as described in Scylla documentation.
@@ -94,18 +93,13 @@ class ldap_role_manager : public role_manager {
 
     future<> remove_attribute(std::string_view, std::string_view) const override;
 
-    static constexpr size_t retry_limit = 3; ///< Limit for number of LDAP reconnect retries.
-
   private:
     /// Connects to the LDAP server indicated by _query_template and executes LDAP bind using _bind_name and
-    /// _bind_password.
-    future<> connect();
+    /// _bind_password.  Returns the resulting ldap_connection.
+    future<lw_shared_ptr<ldap_connection>> connect();
 
-    /// If _retries is under retry_limit, attempts to reconnect to LDAP.
-    future<> reconnect();
-
-    /// Releases _conn's managed object, closes it, and deletes it in the future.
-    void reset_connection();
+    /// Invokes connect() repeatedly with backoff, until it succeeds or retry limit is reached.
+    future<seastar::lw_shared_ptr<ldap_connection>> reconnect();
 
     /// Macro-expands _query_template, returning the result.
     sstring get_url(std::string_view user) const;

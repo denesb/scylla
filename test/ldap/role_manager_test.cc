@@ -224,6 +224,10 @@ const auto default_query_template = fmt::format(
         "ldap://localhost:{}/{}?cn?sub?(uniqueMember=uid={{USER}},ou=People,dc=example,dc=com)",
         ldap_port, base_dn);
 
+const auto flaky_server_query_template = fmt::format(
+        "ldap://localhost:{}/{}?cn?sub?(uniqueMember=uid={{USER}},ou=People,dc=example,dc=com)",
+        std::stoi(ldap_port) + 2, base_dn);
+
 auto make_ldap_manager(cql_test_env& env, sstring query_template = default_query_template) {
     auto stop_role_manager = [] (auth::ldap_role_manager* m) {
         m->stop().get();
@@ -284,13 +288,28 @@ SEASTAR_TEST_CASE(ldap_wrong_role) {
     });
 }
 
+SEASTAR_TEST_CASE(ldap_reconnect) {
+    return do_with_cql_env_thread([](cql_test_env& env) {
+        auto m = make_ldap_manager(env, flaky_server_query_template);
+        m->start().get0();
+        create_ldap_roles(*m);
+        std::vector<future<role_set>> queries;
+        constexpr int noq = 1000;
+        queries.reserve(noq);
+        for (int i = 0; i < noq; ++i) {
+            queries.push_back(m->query_granted("jsmith", auth::recursive_role_query::no)
+                              .handle_exception([] (std::exception_ptr) { return role_set{}; }));
+        }
+        when_all(queries.begin(), queries.end()).get();
+    });
+}
+
+using exception_predicate::message_contains;
+
 SEASTAR_TEST_CASE(ldap_wrong_url) {
     return do_with_cql_env_thread([](cql_test_env& env) {
         auto m = make_ldap_manager(env, "wrong:/UR?L");
-        m->start().get0();
-        create_ldap_roles(*m);
-        BOOST_REQUIRE_EQUAL(role_set{"cassandra"},
-                            m->query_granted("cassandra", auth::recursive_role_query::no).get0());
+        BOOST_REQUIRE_EXCEPTION(m->start().get0(), std::runtime_error, message_contains("server address"));
     });
 }
 
@@ -298,9 +317,8 @@ SEASTAR_TEST_CASE(ldap_wrong_server_name) {
     return do_with_cql_env_thread([](cql_test_env& env) {
         auto m = make_ldap_manager(env, "ldap://server.that.will.never.exist.scylladb.com");
         m->start().get0();
-        create_ldap_roles(*m);
-        BOOST_REQUIRE_EQUAL(role_set{"cassandra"},
-                            m->query_granted("cassandra", auth::recursive_role_query::no).get0());
+        BOOST_REQUIRE_EXCEPTION(m->query_granted("jdoe", auth::recursive_role_query::no).get0(),
+                                std::runtime_error, message_contains("reconnect fail"));
     });
 }
 
@@ -308,9 +326,8 @@ SEASTAR_TEST_CASE(ldap_wrong_port) {
     return do_with_cql_env_thread([](cql_test_env& env) {
         auto m = make_ldap_manager(env, "ldap://localhost:2");
         m->start().get0();
-        create_ldap_roles(*m);
-        BOOST_REQUIRE_EQUAL(role_set{"cassandra"},
-                            m->query_granted("cassandra", auth::recursive_role_query::no).get0());
+        BOOST_REQUIRE_EXCEPTION(m->query_granted("jdoe", auth::recursive_role_query::no).get0(),
+                                std::runtime_error, message_contains("reconnect fail"));
     });
 }
 
@@ -375,7 +392,6 @@ SEASTAR_TEST_CASE(ldap_delegates_attributes) {
 }
 
 using exceptions::invalid_request_exception;
-using exception_predicate::message_contains;
 
 SEASTAR_TEST_CASE(ldap_forbids_grant) {
     return do_with_cql_env_thread([](cql_test_env& env) {

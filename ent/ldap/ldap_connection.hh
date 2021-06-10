@@ -21,6 +21,8 @@
 #include <seastar/core/sstring.hh>
 #include <seastar/net/api.hh>
 
+#include "utils/sequential_producer.hh"
+
 /// Functor to invoke ldap_msgfree.
 struct ldap_msg_deleter {
     void operator()(LDAPMessage* p) {
@@ -106,6 +108,8 @@ class ldap_connection {
     /// Cannot be moved, since it spawns continuations that capture \c this.
     ldap_connection(ldap_connection&&) = delete;
 
+    bool is_live() const { return _status == status::up; }
+
   private:
     // Sockbuf_IO functionality (see Sockbuf_IO manpage):
     static int sbi_ctrl(Sockbuf_IO_Desc* sid, int option, void* value) noexcept;
@@ -150,4 +154,49 @@ class ldap_connection {
     /// Sets _status to \p s.  If s != status::up, sends an exception to each _msgid_to_promise
     /// element, then clears _msgid_to_promise.
     void set_status(ldap_connection::status s);
+};
+
+/// Reuses an ldap_connection as long as it is live, then transparently creates a new one, ad infinitum.  Cleans up
+/// all the created connections.
+class ldap_reuser {
+  public:
+    using conn_ptr = seastar::lw_shared_ptr<ldap_connection>;
+
+  private:
+    sequential_producer<conn_ptr> _make_conn; // TODO: This type can be a parameter.
+    conn_ptr _conn;
+    seastar::future<> _reaper; ///< Closes and deletes all connections produced.
+
+  public:
+    ldap_reuser(sequential_producer<conn_ptr>::factory_t&& f);
+    ldap_reuser(ldap_reuser&&) = delete; // Spawns continuations that capture *this; don't move it, pls.
+    ldap_reuser& operator=(ldap_reuser&&) = delete; // Spawns continuations that capture *this; don't move it, pls.
+
+    /// Must resolve before destruction.
+    seastar::future<> stop();
+
+    /// Invokes fn on a valid ldap_connection, managing its lifetime and validity.
+    template<std::invocable<ldap_connection&> Func>
+    std::invoke_result_t<Func, ldap_connection&> with_connection(Func fn) {
+        if (_conn && _conn->is_live()) {
+            return invoke(std::move(fn));
+        } else {
+            return _make_conn().then([this, fn = std::move(fn)] (conn_ptr&& conn) mutable {
+                _conn = std::move(conn);
+                _make_conn.clear(); // So _make_conn doesn't keep a shared-pointer copy that escapes reaping.
+                return invoke(std::move(fn));
+            });
+        }
+    }
+
+  private:
+    /// Invokes fn on a copy of _conn and schedules its reaping.
+    template<std::invocable<ldap_connection&> Func>
+    std::invoke_result_t<Func, ldap_connection&> invoke(Func fn) {
+        conn_ptr conn(_conn);
+        return fn(*conn).finally([this, conn = std::move(conn)] () mutable { reap(conn); });
+    }
+
+    /// Decreases conn reference count.  If this is the last fiber using conn, closes and disposes of it.
+    void reap(conn_ptr& conn);
 };

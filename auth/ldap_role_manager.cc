@@ -87,7 +87,8 @@ ldap_role_manager::ldap_role_manager(
         sstring_view query_template, sstring_view target_attr, sstring_view bind_name, sstring_view bind_password,
         cql3::query_processor& qp, ::service::migration_manager& mm)
         : _std_mgr(qp, mm), _query_template(query_template), _target_attr(target_attr), _bind_name(bind_name)
-      , _bind_password(bind_password), _retries(0) {
+        , _bind_password(bind_password)
+        , _connection_factory(bind(std::mem_fn(&ldap_role_manager::reconnect), std::ref(*this))) {
 }
 
 ldap_role_manager::ldap_role_manager(cql3::query_processor& qp, ::service::migration_manager& mm)
@@ -109,77 +110,65 @@ const resource_set& ldap_role_manager::protected_resources() const {
 }
 
 future<> ldap_role_manager::start() {
-    return when_all(_std_mgr.start(), connect()).discard_result();
+    if (!parse_url(get_url("dummy-user"))) { // Just need host and port -- any user should do.
+        return make_exception_future(
+                std::runtime_error(fmt::format("error getting LDAP server address from template {}", _query_template)));
+    }
+    return _std_mgr.start();
 }
 
-future<> ldap_role_manager::connect() {
+using conn_ptr = lw_shared_ptr<ldap_connection>;
+
+future<conn_ptr> ldap_role_manager::connect() {
     const auto desc = parse_url(get_url("dummy-user")); // Just need host and port -- any user should do.
     if (!desc) {
-        return make_ready_future();
+        return make_exception_future<conn_ptr>(
+                std::runtime_error("connect attempted before a successful start"));
     }
     return net::dns::resolve_name(desc->lud_host).then([this, port = desc->lud_port] (net::inet_address host) {
         const socket_address addr(host, uint16_t(port));
         return seastar::connect(addr).then([this] (connected_socket sock) {
-            _conn = std::make_unique<ldap_connection>(std::move(sock));
-            return _conn->simple_bind(_bind_name.c_str(), _bind_password.c_str()).then(
-                    [this] (ldap_msg_ptr response) {
+            auto conn = make_lw_shared<ldap_connection>(std::move(sock));
+            return conn->simple_bind(_bind_name.c_str(), _bind_password.c_str()).then(
+                    [this, conn = std::move(conn)] (ldap_msg_ptr response) {
                         if (!response || ldap_msgtype(response.get()) != LDAP_RES_BIND) {
-                            reset_connection();
-                            throw std::runtime_error(format("simple_bind error: {}", _conn->get_error()));
+                            throw std::runtime_error(format("simple_bind error: {}", conn->get_error()));
                         }
-                    }).handle_exception([this] (std::exception_ptr e) {
-                        mylog.error("giving up due to LDAP bind error: {}", e);
-                        reset_connection();
+                        return make_ready_future<conn_ptr>(std::move(conn));
                     });
         });
-    }).handle_exception([this] (std::exception_ptr e) {
-        mylog.error("error connecting to the LDAP server: '{}'; attempting to reconnect", e);
-        return reconnect();
     });
 }
 
-future<> ldap_role_manager::reconnect() {
-    mylog.trace("reconnect()");
-    reset_connection();
-    if (_retries < retry_limit) {
-        ++_retries;
-        mylog.trace("reconnect() increasing count to {}", _retries);
+future<conn_ptr> ldap_role_manager::reconnect() {
+    using std::optional;
+    return do_with(5u, [this] (unsigned& retries_left) {
         using namespace std::literals::chrono_literals;
-        return sleep(1s * (1 << _retries)).then([this] {
-            mylog.trace("reconnect() invoking connect()");
-            return connect().then([this] {
-                mylog.trace("reconnect() success, resetting count to 0");
-                _retries = 0;
-            }).handle_exception([this] (std::exception_ptr e) {
-                mylog.error("reconnect failed: {}", e);
-                return reconnect();
+        return exponential_backoff_retry::do_until_value(1s, 32s, _reconnect_aborter, [this, &retries_left] {
+            if (!retries_left) {
+                return make_ready_future<optional<conn_ptr>>(conn_ptr{});
+            }
+            mylog.trace("reconnect() retrying ({} attempts left)", retries_left);
+            --retries_left;
+            return connect().then([this] (conn_ptr conn) {
+                mylog.trace("reconnect() success");
+                return optional<conn_ptr>(std::move(conn));
+            }).handle_exception([this] (std::exception_ptr ex) {
+                mylog.error("error in reconnect: {}", ex);
+                return optional<conn_ptr>{};
             });
+        }).then([this] (conn_ptr conn) {
+            mylog.trace("reconnect() finished backoff, conn={}", reinterpret_cast<void*>(conn.get()));
+            return conn ? make_ready_future<conn_ptr>(std::move(conn)) :
+                    make_exception_future<conn_ptr>(
+                            std::runtime_error("reconnect failed after 5 attempts"));
         });
-    } else {
-        mylog.error("giving up on reconnect after {} attempts", _retries);
-        return make_ready_future();
-    }
-}
-
-void ldap_role_manager::reset_connection() {
-    if (_conn) {
-        auto p = _conn.release();
-        mylog.trace("reset_connection({})", static_cast<const void*>(p));
-        // OK to drop the continuation, which frees all its resources and holds no potentially dangling
-        // references.  There is no infinite spawning because this code is gated on retry_limit.
-        (void) p->close().then_wrapped([p] (future<>) {
-            mylog.trace("reset_connection() deleting {}", static_cast<const void*>(p));
-            delete p;
-        });
-        mylog.trace("reset_connection({}) done", static_cast<const void*>(p));
-    }
+    });
 }
 
 future<> ldap_role_manager::stop() {
-    return when_all(
-            _std_mgr.stop(),
-            _conn ? _conn->close() : now())
-            .discard_result();
+    _reconnect_aborter.request_abort();
+    return _std_mgr.stop().then([this] { return _connection_factory.stop(); });
 }
 
 future<> ldap_role_manager::create(std::string_view name, const role_config& config) const {
@@ -203,26 +192,25 @@ future<> ldap_role_manager::revoke(std::string_view, std::string_view) const {
 }
 
 future<role_set> ldap_role_manager::query_granted(std::string_view grantee_name, recursive_role_query) const {
-    try {
-        if (!_conn) {
-            return make_ready_future<role_set>(role_set{sstring(grantee_name)});
-        }
-        auto desc = parse_url(get_url(grantee_name.data()));
-        if (!desc) {
-            return make_ready_future<role_set>(role_set{sstring(grantee_name)});
-        }
-        return _conn->search(desc->lud_dn, desc->lud_scope, desc->lud_filter, desc->lud_attrs,
-                             /*attrsonly=*/0, /*serverctrls=*/nullptr, /*clientctrls=*/nullptr,
-                             /*timeout=*/nullptr, /*sizelimit=*/0)
-                .then([this, grantee_name = sstring(grantee_name)] (ldap_msg_ptr res) {
+    const auto url = get_url(grantee_name.data());
+    auto desc = parse_url(url);
+    if (!desc) {
+        return make_exception_future<role_set>(std::runtime_error(format("Error parsing URL {}", url)));
+    }
+    return _connection_factory.with_connection([this, desc = move(desc), grantee_name = sstring(grantee_name)]
+                                               (ldap_connection& conn) {
+        return conn.search(desc->lud_dn, desc->lud_scope, desc->lud_filter, desc->lud_attrs,
+                           /*attrsonly=*/0, /*serverctrls=*/nullptr, /*clientctrls=*/nullptr,
+                           /*timeout=*/nullptr, /*sizelimit=*/0)
+                .then([this, &conn, grantee_name = std::move(grantee_name)] (ldap_msg_ptr res) {
                     mylog.trace("query_granted: got search results");
                     const auto mtype = ldap_msgtype(res.get());
                     if (mtype != LDAP_RES_SEARCH_ENTRY && mtype != LDAP_RES_SEARCH_RESULT && mtype != LDAP_RES_SEARCH_REFERENCE) {
-                        mylog.error("ldap search yielded result {} of type {}", static_cast<const void*>(res.get()), ldap_msgtype(res.get()));
+                        mylog.error("ldap search yielded result {} of type {}", static_cast<const void*>(res.get()), mtype);
                         throw std::runtime_error("ldap_role_manager: search result has wrong type");
                     }
                     return do_with(
-                            get_attr_values(_conn->get_ldap(), res.get(), _target_attr.c_str()),
+                            get_attr_values(conn.get_ldap(), res.get(), _target_attr.c_str()),
                             auth::role_set{grantee_name},
                             [this] (const std::vector<sstring>& values, auth::role_set& valid_roles) {
                                 // Each value is a role to be granted.
@@ -239,9 +227,7 @@ future<role_set> ldap_role_manager::query_granted(std::string_view grantee_name,
                                 });
                             });
                 });
-    } catch (...) {
-        return make_exception_future<role_set>(std::current_exception());
-    }
+    });
 }
 
 future<role_set> ldap_role_manager::query_all() const {
