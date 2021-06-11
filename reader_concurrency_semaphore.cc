@@ -574,6 +574,27 @@ void reader_concurrency_semaphore::inactive_read_handle::abandon() noexcept {
     }
 }
 
+void reader_concurrency_semaphore::do_flush() noexcept {
+    while (!_ready_list.empty()) {
+        auto& e = _ready_list.front();
+        // running func below may invalidate all references into _ready_list
+        auto pr = std::move(e.pr);
+
+        try {
+            e.func(std::move(e.permit)).forward_to(std::move(pr));
+        } catch (...) {
+            pr.set_exception(std::current_exception());
+        }
+
+        _ready_list.pop_front();
+
+        if (need_preempt()) {
+            break;
+        }
+    }
+    _empty = _ready_list.empty();
+}
+
 void reader_concurrency_semaphore::signal(const resources& r) noexcept {
     _resources += r;
     maybe_admit_waiters();
@@ -581,7 +602,8 @@ void reader_concurrency_semaphore::signal(const resources& r) noexcept {
 
 reader_concurrency_semaphore::reader_concurrency_semaphore(int count, ssize_t memory, sstring name, size_t max_queue_length,
         std::function<void()> prethrow_action)
-    : _initial_resources(count, memory)
+    : execution_stage(name)
+    , _initial_resources(count, memory)
     , _resources(count, memory)
     , _wait_list(expiry_handler(*this))
     , _name(std::move(name))
@@ -745,7 +767,7 @@ bool reader_concurrency_semaphore::has_available_units(const resources& r) const
     return (bool(_resources) && _resources >= r) || _resources.count == _initial_resources.count;
 }
 
-future<> reader_concurrency_semaphore::enqueue_waiter(reader_permit permit, db::timeout_clock::time_point timeout) {
+future<> reader_concurrency_semaphore::enqueue_waiter(reader_permit permit, db::timeout_clock::time_point timeout, read_func func) {
     if (_wait_list.size() >= _max_queue_length) {
         _stats.total_reads_shed_due_to_overload++;
         if (_prethrow_action) {
@@ -758,7 +780,7 @@ future<> reader_concurrency_semaphore::enqueue_waiter(reader_permit permit, db::
     promise<> pr;
     auto fut = pr.get_future();
     permit.on_waiting();
-    _wait_list.push_back(entry(std::move(pr), std::move(permit)), timeout);
+    _wait_list.push_back(entry(std::move(pr), std::move(permit), std::move(func)), timeout);
     return fut;
 }
 
@@ -772,15 +794,18 @@ void reader_concurrency_semaphore::evict_readers_in_background() {
     });
  }
 
-future<> reader_concurrency_semaphore::do_wait_admission(reader_permit permit, db::timeout_clock::time_point timeout) {
-    auto first = _wait_list.empty();
+future<> reader_concurrency_semaphore::do_wait_admission(reader_permit permit, db::timeout_clock::time_point timeout, read_func func) {
+    auto first = _wait_list.empty() && _ready_list.empty();
 
     if (first && has_available_units(permit.base_resources())) {
         permit.on_admission();
+        if (func) {
+            return with_ready_permit(std::move(permit), std::move(func));
+        }
         return make_ready_future<>();
     }
 
-    auto fut = enqueue_waiter(std::move(permit), timeout);
+    auto fut = enqueue_waiter(std::move(permit), timeout, std::move(func));
 
     if (first && !_inactive_reads.empty()) {
         evict_readers_in_background();
@@ -794,7 +819,12 @@ void reader_concurrency_semaphore::maybe_admit_waiters() noexcept {
         auto& x = _wait_list.front();
         try {
             x.permit.on_admission();
-            x.pr.set_value();
+            if (x.func) {
+                _ready_list.emplace_back(std::move(x));
+                _empty = false;
+            } else {
+                x.pr.set_value();
+            }
         } catch (...) {
             x.pr.set_exception(std::current_exception());
         }
@@ -877,6 +907,19 @@ reader_permit reader_concurrency_semaphore::make_tracking_only_permit(const sche
 
 reader_permit reader_concurrency_semaphore::make_tracking_only_permit(const schema* const schema, sstring&& op_name) {
     return reader_permit(*this, schema, std::move(op_name), {});
+}
+
+future<> reader_concurrency_semaphore::with_permit(const schema* const schema, const char* const op_name, size_t memory,
+        db::timeout_clock::time_point timeout, read_func func) {
+    return do_wait_admission(reader_permit(*this, schema, std::string_view(op_name), {1, static_cast<ssize_t>(memory)}), timeout, std::move(func));
+}
+
+future<> reader_concurrency_semaphore::with_ready_permit(reader_permit permit, read_func func) {
+    promise<> pr;
+    auto fut = pr.get_future();
+    _ready_list.emplace_back(std::move(pr), std::move(permit), std::move(func));
+    _empty = false;
+    return fut;
 }
 
 void reader_concurrency_semaphore::broken(std::exception_ptr ex) {
