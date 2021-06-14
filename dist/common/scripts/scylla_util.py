@@ -25,6 +25,7 @@ from subprocess import run, DEVNULL
 import distro
 from scylla_sysconfdir import SYSCONFDIR
 
+from multiprocessing import cpu_count
 
 def scriptsdir_p():
     p = Path(sys.argv[0]).resolve()

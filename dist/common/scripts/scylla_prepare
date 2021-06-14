@@ -16,7 +16,6 @@ import platform
 import distro
 
 from scylla_util import *
-from multiprocessing import cpu_count
 from subprocess import run
 
 def get_mode_cpuset(nic, mode):
@@ -91,16 +90,6 @@ def verify_cpu():
                     print('\nIf this is a virtual machine, please update its CPU feature configuration or upgrade to a newer hypervisor.')
                     sys.exit(1)
 
-def configure_aio_slots():
-    with open('/proc/sys/fs/aio-max-nr') as f:
-        aio_max_nr = int(f.read())
-    # (10000 + 1024 + 2) * ncpus for scylla,
-    # 65536 for other apps
-    required_aio_slots = cpu_count() * 11026 + 65536
-    if aio_max_nr < required_aio_slots:
-        with open('/proc/sys/fs/aio-max-nr', 'w') as f:
-            f.write(str(required_aio_slots))
-
 if __name__ == '__main__':
     verify_cpu()
 
@@ -114,8 +103,6 @@ if __name__ == '__main__':
     if ami == 'yes' and os.path.exists('/etc/scylla/ami_disabled'):
         os.remove('/etc/scylla/ami_disabled')
         sys.exit(1)
-
-    configure_aio_slots()
 
     if mode == 'virtio':
         tap = cfg.get('TAP')
@@ -146,4 +133,3 @@ if __name__ == '__main__':
             print(f'Exception occurred while creating perftune.yaml: {e}')
             print('To fix the error, please re-run scylla_setup.')
             sys.exit(1)
-

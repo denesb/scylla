@@ -143,6 +143,27 @@ def test_update_condition_eq_unequal(test_table_s):
             ConditionExpression='q = :oldval',
             ExpressionAttributeValues={':val1': 3, ':oldval': 2})
 
+# In test_update_condition_eq_unequal() above we saw that a non-existent
+# attribute is not "=" to a value. Here we check what happens when two
+# non-existent attributes are checked for equality. It turns out, they should
+# *not* be considered equal. In short, an unset attribute is never equal to
+# anything - not even to another unset attribute.
+# Reproduces issue #8511.
+def test_update_condition_eq_two_unset(test_table_s):
+    p = random_string()
+    with pytest.raises(ClientError, match='ConditionalCheckFailedException'):
+        test_table_s.update_item(Key={'p': p},
+            UpdateExpression='SET a = :val1',
+            ConditionExpression='q = z',
+            ExpressionAttributeValues={':val1': 2})
+    test_table_s.update_item(Key={'p': p},
+        AttributeUpdates={'a': {'Value': 1, 'Action': 'PUT'}})
+    with pytest.raises(ClientError, match='ConditionalCheckFailedException'):
+        test_table_s.update_item(Key={'p': p},
+            UpdateExpression='SET a = :val1',
+            ConditionExpression='q = z',
+            ExpressionAttributeValues={':val1': 3})
+
 # Check that set equality is checked correctly. Unlike string equality (for
 # example), it cannot be done with just naive string comparison of the JSON
 # representation, and we need to allow for any order. (see issue #5021)
@@ -163,6 +184,39 @@ def test_update_condition_eq_set(test_table_s):
         ConditionExpression='a = :oldval',
         ExpressionAttributeValues={':val1': 3, ':oldval': set(['chinchilla', 'cat', 'dog', 'mouse'])})
     assert 'b' in test_table_s.get_item(Key={'p': p}, ConsistentRead=True)['Item']
+
+# The above test (test_update_condition_eq_set()) checked equality of simple
+# set attributes. But an attributes can contain a nested document, where the
+# set sits in a deep level (the set itself is a leaf in this heirarchy because
+# it can only contain numbers, strings or bytes). We need to correctly support
+# equality check in that case too.
+# Reproduces issue #8514.
+@pytest.mark.skip(reason="test needs nested update not yet in branch 4.3")
+def test_update_condition_eq_nested_set(test_table_s):
+    p = random_string()
+    # Because boto3 sorts the set values we give it, in order to generate a
+    # set with a different order, we need to build it incrementally.
+    test_table_s.update_item(Key={'p': p},
+        AttributeUpdates={'a': {'Value': {'b': 'c', 'd': ['e', 'f', set(['g', 'h'])], 'i': set(['j', 'k'])}, 'Action': 'PUT'}})
+    test_table_s.update_item(Key={'p': p},
+        UpdateExpression='ADD a.d[2] :val1, a.i :val2',
+        ExpressionAttributeValues={':val1': set(['l', 'm']), ':val2': set(['n', 'o'])})
+    # Sanity check - the attribute contains the set we think it does
+    expected = {'b': 'c', 'd': ['e', 'f', set(['g', 'h', 'l', 'm'])], 'i': set(['j', 'k', 'n', 'o'])}
+    assert test_table_s.get_item(Key={'p': p}, ConsistentRead=True)['Item']['a'] == expected
+    # Now finally check that condition expression check knows the equality too.
+    test_table_s.update_item(Key={'p': p},
+        UpdateExpression='SET b = :val1',
+        ConditionExpression='a = :oldval',
+        ExpressionAttributeValues={':val1': 3, ':oldval': expected})
+    assert 'b' in test_table_s.get_item(Key={'p': p}, ConsistentRead=True)['Item']
+    # Check that equality can also fail, if the inner set differs
+    wrong = {'b': 'c', 'd': ['e', 'f', set(['g', 'h', 'l', 'bad'])], 'i': set(['j', 'k', 'n', 'o'])}
+    with pytest.raises(ClientError, match='ConditionalCheckFailedException'):
+        test_table_s.update_item(Key={'p': p},
+            UpdateExpression='SET b = :val1',
+            ConditionExpression='a = :oldval',
+            ExpressionAttributeValues={':val1': 4, ':oldval': wrong})
 
 # Test for ConditionExpression with operator "<>" (non-equality),
 def test_update_condition_ne(test_table_s):
@@ -203,6 +257,54 @@ def test_update_condition_ne(test_table_s):
         ConditionExpression='z <> :oldval',
         ExpressionAttributeValues={':newval': 3, ':oldval': 1})
     assert test_table_s.get_item(Key={'p': p}, ConsistentRead=True)['Item']['c'] == 3
+
+# Check that set inequality is checked correctly. This reproduces the same
+# bug #5021 that we reproduced above in test_update_condition_eq_set(), just
+# that here we check the inequality operator instead of equality.
+# Reproduces issue #8513.
+def test_update_condition_ne_set(test_table_s):
+    p = random_string()
+    # Because boto3 sorts the set values we give it, in order to generate a
+    # set with a different order, we need to build it incrementally.
+    test_table_s.update_item(Key={'p': p},
+        AttributeUpdates={'a': {'Value': set(['dog', 'chinchilla']), 'Action': 'PUT'}})
+    test_table_s.update_item(Key={'p': p},
+        UpdateExpression='ADD a :val1',
+        ExpressionAttributeValues={':val1': set(['cat', 'mouse'])})
+    # Sanity check - the attribute contains the set we think it does
+    assert test_table_s.get_item(Key={'p': p}, ConsistentRead=True)['Item']['a'] == set(['chinchilla', 'cat', 'dog', 'mouse'])
+    # Now check that condition expression check knows there is no inequality
+    # here.
+    with pytest.raises(ClientError, match='ConditionalCheckFailedException'):
+        test_table_s.update_item(Key={'p': p},
+            UpdateExpression='SET b = :val1',
+            ConditionExpression='a <> :oldval',
+            ExpressionAttributeValues={':val1': 2, ':oldval': set(['chinchilla', 'cat', 'dog', 'mouse'])})
+    # As a sanity check, also check something which should be unequal:
+    test_table_s.update_item(Key={'p': p},
+        UpdateExpression='SET b = :val1',
+        ConditionExpression='a <> :oldval',
+        ExpressionAttributeValues={':val1': 3, ':oldval': set(['chinchilla', 'cat', 'dog', 'horse'])})
+    assert 'b' in test_table_s.get_item(Key={'p': p}, ConsistentRead=True)['Item']
+
+# In test_update_condition_ne() above we saw that a non-existent attribute is
+# "not equal" to any value. Here we check what happens when two non-existent
+# attributes are checked for non-equality. It turns out, they are also
+# considered "not equal". In short, an unset attribute is always "not equal" to
+# anything - even to another unset attribute.
+# Reproduces issue #8511.
+def test_update_condition_ne_two_unset(test_table_s):
+    p = random_string()
+    test_table_s.update_item(Key={'p': p},
+        UpdateExpression='SET a = :val1',
+        ConditionExpression='q <> z',
+        ExpressionAttributeValues={':val1': 2})
+    assert test_table_s.get_item(Key={'p': p}, ConsistentRead=True)['Item']['a'] == 2
+    test_table_s.update_item(Key={'p': p},
+        UpdateExpression='SET a = :val1',
+        ConditionExpression='q <> z',
+        ExpressionAttributeValues={':val1': 3})
+    assert test_table_s.get_item(Key={'p': p}, ConsistentRead=True)['Item']['a'] == 3
 
 # Test for ConditionExpression with operator "<"
 def test_update_condition_lt(test_table_s):
@@ -304,6 +406,45 @@ def test_update_condition_lt(test_table_s):
             ConditionExpression=':oldval < x',
             ExpressionAttributeValues={':newval': 2, ':oldval': 1})
     assert test_table_s.get_item(Key={'p': p}, ConsistentRead=True)['Item']['z'] == 4
+
+# In test_update_condition_lt() above we saw that a non-existent attribute is
+# not "<" any value. Here we check what happens when two non-existent
+# attributes are compared with "<". It turns out that the result of such
+# comparison is also false.
+# The same is true for other order operators - any order comparison involving
+# one unset attribute should be false - even if the second operand is an
+# unset attribute as well. Note that the <> operator is different - it is
+# always results in true if one of the operands is an unset attribute (see
+# test_update_condition_ne_two_unset() above).
+# This test is related to issue #8511 (although it passed even before fixing
+# that issue).
+def test_update_condition_comparison_two_unset(test_table_s):
+    p = random_string()
+    ops = ['<', '<=', '>', '>=']
+    for op in ops:
+        with pytest.raises(ClientError, match='ConditionalCheckFailedException'):
+            test_table_s.update_item(Key={'p': p},
+                UpdateExpression='SET a = :val1',
+                ConditionExpression='q ' + op + ' z',
+                ExpressionAttributeValues={':val1': 2})
+    with pytest.raises(ClientError, match='ConditionalCheckFailedException'):
+        test_table_s.update_item(Key={'p': p},
+            UpdateExpression='SET a = :val1',
+            ConditionExpression='q between z and x',
+            ExpressionAttributeValues={':val1': 2})
+    test_table_s.update_item(Key={'p': p},
+        AttributeUpdates={'a': {'Value': 1, 'Action': 'PUT'}})
+    for op in ops:
+        with pytest.raises(ClientError, match='ConditionalCheckFailedException'):
+            test_table_s.update_item(Key={'p': p},
+                UpdateExpression='SET a = :val1',
+                ConditionExpression='q ' + op + ' z',
+                ExpressionAttributeValues={':val1': 3})
+    with pytest.raises(ClientError, match='ConditionalCheckFailedException'):
+        test_table_s.update_item(Key={'p': p},
+            UpdateExpression='SET a = :val1',
+            ConditionExpression='q between z and x',
+            ExpressionAttributeValues={':val1': 2})
 
 # Test for ConditionExpression with operator "<="
 def test_update_condition_le(test_table_s):
