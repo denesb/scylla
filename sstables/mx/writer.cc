@@ -554,7 +554,7 @@ private:
     std::optional<key> _partition_key;
     std::optional<key> _first_key, _last_key;
     index_sampling_state _index_sampling_state;
-    reader_concurrency_semaphore _semaphore;
+    std::optional<reader_concurrency_semaphore> _semaphore;
     std::optional<range_tombstone_stream> _range_tombstones; // to be able to destroy before the semaphore is stopped
     bytes_ostream _tmp_bufs;
 
@@ -756,8 +756,6 @@ public:
         : sstable_writer::writer_impl(sst, s, pc, cfg)
         , _enc_stats(enc_stats)
         , _shard(shard)
-        , _semaphore(reader_concurrency_semaphore::no_limits{}, "mx writer")
-        , _range_tombstones(range_tombstone_stream(_schema, _semaphore.make_permit(&s, "mx-writer")))
         , _tmp_bufs(_sst.sstable_buffer_size)
         , _sst_schema(make_sstable_schema(s, _enc_stats, _cfg))
         , _run_identifier(cfg.run_identifier)
@@ -806,6 +804,9 @@ public:
         _pi_write_m.desired_block_size = cfg.promoted_index_block_size;
         _index_sampling_state.summary_byte_cost = _cfg.summary_byte_cost;
         prepare_summary(_sst._components->summary, estimated_partitions, _schema.min_index_interval());
+
+        _semaphore.emplace(reader_concurrency_semaphore::no_limits{}, "mx writer");
+        _range_tombstones.emplace(_schema, _semaphore->make_permit(&s, "mx-writer"));
     }
 
     ~writer();
@@ -832,7 +833,9 @@ writer::~writer() {
     close_writer(_index_writer);
     close_writer(_data_writer);
     _range_tombstones.reset();
-    _semaphore.stop().get();
+    if (_semaphore) {
+        _semaphore->stop().get();
+    }
 }
 
 void writer::maybe_set_pi_first_clustering(const writer::clustering_info& info) {
