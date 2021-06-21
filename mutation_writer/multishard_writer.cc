@@ -27,6 +27,7 @@
 #include <seastar/core/future-util.hh>
 #include <seastar/core/queue.hh>
 #include <seastar/core/smp.hh>
+#include <seastar/core/coroutine.hh>
 
 namespace mutation_writer {
 
@@ -40,7 +41,7 @@ public:
     shard_writer(schema_ptr s,
         std::unique_ptr<reader_concurrency_semaphore> semaphore,
         flat_mutation_reader reader,
-        std::function<future<> (flat_mutation_reader reader)> consumer);
+        std::function<future<> (flat_mutation_reader reader)> consumer) noexcept;
     future<> consume();
     future<> close() noexcept;
 };
@@ -83,8 +84,8 @@ public:
 shard_writer::shard_writer(schema_ptr s,
     std::unique_ptr<reader_concurrency_semaphore> semaphore,
     flat_mutation_reader reader,
-    std::function<future<> (flat_mutation_reader reader)> consumer)
-    : _s(s)
+    std::function<future<> (flat_mutation_reader reader)> consumer) noexcept
+    : _s(std::move(s))
     , _semaphore(std::move(semaphore))
     , _reader(std::move(reader))
     , _consumer(std::move(consumer)) {
@@ -121,12 +122,20 @@ future<> multishard_writer::make_shard_writer(unsigned shard) {
     _queue_reader_handles[shard] = std::move(handle);
     return smp::submit_to(shard, [gs = global_schema_ptr(_s),
             consumer = _consumer,
-            reader = make_foreign(std::make_unique<flat_mutation_reader>(std::move(reader)))] () mutable {
+            reader = make_foreign(std::make_unique<flat_mutation_reader>(std::move(reader)))
+    ] () mutable -> future<foreign_ptr<std::unique_ptr<shard_writer>>> {
         auto s = gs.get();
         auto semaphore = std::make_unique<reader_concurrency_semaphore>(reader_concurrency_semaphore::no_limits{}, "shard_writer");
-        auto permit = semaphore->make_permit(s.get(), "multishard-writer");
-        auto this_shard_reader = make_foreign_reader(s, std::move(permit), std::move(reader));
-        return make_foreign(std::make_unique<shard_writer>(gs.get(), std::move(semaphore), std::move(this_shard_reader), consumer));
+        std::exception_ptr ex;
+        try {
+            auto permit = semaphore->make_permit(s.get(), "multishard-writer");
+            auto this_shard_reader = make_foreign_reader(s, std::move(permit), std::move(reader));
+            co_return make_foreign(std::make_unique<shard_writer>(gs.get(), std::move(semaphore), std::move(this_shard_reader), consumer));
+        } catch (...) {
+            ex = std::current_exception();
+        }
+        co_await semaphore->stop();
+        std::rethrow_exception(std::move(ex));
     }).then([this, shard] (foreign_ptr<std::unique_ptr<shard_writer>> writer) {
         _shard_writers[shard] = std::move(writer);
         _pending_consumers.push_back(consume(shard));
