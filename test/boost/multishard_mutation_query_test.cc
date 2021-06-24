@@ -953,6 +953,7 @@ run_fuzzy_test_workload(fuzzy_test_config cfg, distributed<database>& db, schema
 SEASTAR_THREAD_TEST_CASE(fuzzy_test) {
     auto db_cfg = make_shared<db::config>();
     db_cfg->enable_commitlog(false);
+    db_cfg->enable_cache(false);
 
     do_with_cql_env_thread([] (cql_test_env& env) -> future<> {
         // REPLACE RANDOM SEED HERE.
@@ -963,10 +964,15 @@ SEASTAR_THREAD_TEST_CASE(fuzzy_test) {
 
         auto pop_desc = create_fuzzy_test_table(env, rnd_engine);
 
+        env.db().invoke_on_all([] (database& db) {
+            return db.flush_all_memtables();
+        }).get();
+
 #if defined DEBUG
         auto cfg = fuzzy_test_config{seed, std::chrono::seconds{8}, 1, 1};
 #elif defined DEVEL
-        auto cfg = fuzzy_test_config{seed, std::chrono::seconds{2}, 8, 4};
+        auto cfg = fuzzy_test_config{seed, std::chrono::seconds{2}, 16, 48};
+        //auto cfg = fuzzy_test_config{seed, std::chrono::seconds{2}, 16, 256};
 #else
         auto cfg = fuzzy_test_config{seed, std::chrono::seconds{2}, 16, 256};
 #endif
@@ -976,6 +982,9 @@ SEASTAR_THREAD_TEST_CASE(fuzzy_test) {
 
         const auto& partitions = pop_desc.partitions;
         smp::invoke_on_all([cfg, db = &env.db(), gs = global_schema_ptr(pop_desc.schema), &partitions] {
+            // Set the amount of resources to the lowest number at which a
+            // single reader can still be admitted.
+            db->local().get_reader_concurrency_semaphore().set_resources({1, 0});
             return run_fuzzy_test_workload(cfg, *db, gs.get(), partitions);
         }).handle_exception([seed] (std::exception_ptr e) {
             testlog.error("Test workload failed with exception {}."

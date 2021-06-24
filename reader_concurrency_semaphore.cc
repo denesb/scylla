@@ -387,6 +387,7 @@ void reader_concurrency_semaphore::set_resources(resources res) {
     auto diff = _initial_resources - res;
     _resources -= diff;
     _initial_resources = res;
+    rcslog.info("{} set_resources(): _initial={} available={}", _name, _initial_resources, _resources);
 }
 
 void reader_concurrency_semaphore::signal(const resources& r) noexcept {

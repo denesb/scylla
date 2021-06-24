@@ -449,9 +449,13 @@ population_description create_test_table(cql_test_env& env, const sstring& ks_na
 
     uint64_t live_row_count = 0;
     uint64_t dead_row_count = 0;
+    uint64_t partitions_with_now_rows = 0;
     for (auto& part : pop_desc.partitions) {
         live_row_count += std::max(part.live_rows.size(), uint64_t(part.has_static_row));
         dead_row_count += part.dead_rows.size();
+        if (!part.live_rows.size() && !part.dead_rows.size()) {
+            ++partitions_with_now_rows;
+        }
         testlog.trace("Partition {}, has_static_rows={}, rows={}, (of which live={} and dead={})",
                 part.dkey,
                 part.has_static_row,
@@ -466,14 +470,15 @@ population_description create_test_table(cql_test_env& env, const sstring& ks_na
     assert_that(msg).is_rows().with_rows({{serialized(int64_t(live_row_count))}});
 
     testlog.info("Done. Population summary: written {} partitions, {} rows, {} range tombstones and {} bytes;"
-            " have (after de-duplication) {} partitions, {} live rows and {} dead rows.",
+            " have (after de-duplication) {} partitions, {} live rows and {} dead rows, of which {} partitions with no clustering rows.",
             res.written_partition_count,
             res.written_row_count,
             res.written_rt_count,
             res.written_bytes,
             pop_desc.partitions.size(),
             live_row_count,
-            dead_row_count);
+            dead_row_count,
+            partitions_with_now_rows);
 
     return pop_desc;
 }
