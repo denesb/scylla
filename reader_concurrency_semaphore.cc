@@ -383,6 +383,12 @@ void reader_concurrency_semaphore::inactive_read_handle::abandon() noexcept {
     }
 }
 
+void reader_concurrency_semaphore::set_resources(resources res) {
+    auto diff = _initial_resources - res;
+    _resources -= diff;
+    _initial_resources = res;
+}
+
 void reader_concurrency_semaphore::signal(const resources& r) noexcept {
     _resources += r;
     while (!_wait_list.empty() && has_available_units(_wait_list.front().res)) {

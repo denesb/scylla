@@ -577,3 +577,31 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_stop_waits_on_permits
         f.get();
     }
 }
+
+SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_set_resources) {
+    const auto original_initial_res = reader_resources{10, 2048};
+    reader_concurrency_semaphore semaphore(original_initial_res.count, original_initial_res.memory, get_name());
+
+    BOOST_REQUIRE_EQUAL(semaphore.initial_resources(), original_initial_res);
+    BOOST_REQUIRE_EQUAL(semaphore.available_resources(), original_initial_res);
+
+    const auto consumed_resources = reader_resources{1, 1024};
+    semaphore.consume(consumed_resources);
+
+    BOOST_REQUIRE_EQUAL(semaphore.initial_resources(), original_initial_res);
+    BOOST_REQUIRE_EQUAL(semaphore.available_resources(), original_initial_res - consumed_resources);
+
+    const auto new_initial_res1 = reader_resources{20, 4096};
+    semaphore.set_resources(new_initial_res1);
+
+    BOOST_REQUIRE_EQUAL(semaphore.initial_resources(), new_initial_res1);
+    BOOST_REQUIRE_EQUAL(semaphore.available_resources(), new_initial_res1 - consumed_resources);
+
+    const auto new_initial_res2 = reader_resources{5, 1024};
+    semaphore.set_resources(new_initial_res2);
+
+    BOOST_REQUIRE_EQUAL(semaphore.initial_resources(), new_initial_res2);
+    BOOST_REQUIRE_EQUAL(semaphore.available_resources(), new_initial_res2 - consumed_resources);
+
+    semaphore.stop().get();
+}

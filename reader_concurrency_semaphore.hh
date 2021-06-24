@@ -160,7 +160,7 @@ public:
     };
 
 private:
-    const resources _initial_resources;
+    resources _initial_resources;
     resources _resources;
 
     expiring_fifo<entry, expiry_handler, db::timeout_clock> _wait_list;
@@ -302,6 +302,13 @@ public:
     const resources available_resources() const {
         return _resources;
     }
+
+    /// Set the available resources of the semaphore.
+    ///
+    /// After this call initial_resources() will return the specified amount. The
+    /// available resources is also adjusted according to the change compared to
+    /// the previous resource amount.
+    void set_resources(resources res);
 
     void consume(resources r) {
         _resources -= r;
