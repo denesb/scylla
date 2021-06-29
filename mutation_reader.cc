@@ -1092,6 +1092,20 @@ private:
     void validate_position_in_partition(position_in_partition_view pos) const;
     bool should_drop_fragment(const mutation_fragment& mf);
     bool maybe_trim_range_tombstone(mutation_fragment& mf) const;
+
+    // Can we cut the buffer as it is now?
+    //
+    // We have to ensure we stop at a fragment such that if the reader is
+    // evicted and recreated later, we won't be skipping any fragments.
+    // Practically, range tombstones are the only ones that are
+    // problematic to end the buffer on. This is due to the fact range
+    // tombstones can have the same position that multiple following range
+    // tombstones, or a single following clustering row in the stream has.
+    // When a range tombstone is the last in the buffer, we have to continue
+    // to read until we are sure we've read all fragments sharing the same
+    // position, so that we can safely continue reading from after said
+    // position.
+    bool can_cut_buffer(const flat_mutation_reader& reader) const;
     future<> do_fill_buffer(flat_mutation_reader& reader, db::timeout_clock::time_point timeout);
     future<> fill_buffer(flat_mutation_reader& reader, db::timeout_clock::time_point timeout);
 
@@ -1377,6 +1391,31 @@ bool evictable_reader::maybe_trim_range_tombstone(mutation_fragment& mf) const {
     return true;
 }
 
+bool evictable_reader::can_cut_buffer(const flat_mutation_reader& reader) const {
+    // The only problematic fragment kind is the range tombstone.
+    // All other fragment kinds are safe to end the buffer on, and
+    // are guaranteed to represent progress vs. the last buffer fill.
+    if (!buffer().back().is_range_tombstone()) {
+        return true;
+    }
+    if (reader.is_buffer_empty()) {
+        return reader.is_end_of_stream();
+    }
+    const auto& next_pos = reader.peek_buffer().position();
+    // To ensure safe progress we have to ensure the following:
+    //
+    // _next_position_in_partition < buffer.back().position() < next_pos
+    //
+    // * The first condition is to ensure we made progress since the
+    // last buffer fill. Otherwise we might get into an endless loop if
+    // the reader is recreated after each `fill_buffer()` call.
+    // * The second condition is to ensure we have seen all fragments
+    // with the same position. Otherwise we might jump over those
+    // remaining fragments with the same position as the last
+    // fragment's in the buffer when the reader is recreated.
+    return _tri_cmp(_next_position_in_partition, buffer().back().position()) < 0 && _tri_cmp(buffer().back().position(), next_pos) < 0;
+}
+
 future<> evictable_reader::do_fill_buffer(flat_mutation_reader& reader, db::timeout_clock::time_point timeout) {
     if (!_drop_partition_start && !_drop_static_row) {
         auto fill_buf_fut = reader.fill_buffer(timeout);
@@ -1409,42 +1448,7 @@ future<> evictable_reader::fill_buffer(flat_mutation_reader& reader, db::timeout
             push_mutation_fragment(std::move(mf));
         }
         reader.move_buffer_content_to(*this);
-        auto stop = [this, &reader] {
-            // The only problematic fragment kind is the range tombstone.
-            // All other fragment kinds are safe to end the buffer on, and
-            // are guaranteed to represent progress vs. the last buffer fill.
-            if (!buffer().back().is_range_tombstone()) {
-                return true;
-            }
-            if (reader.is_buffer_empty()) {
-                return reader.is_end_of_stream();
-            }
-            const auto& next_pos = reader.peek_buffer().position();
-            // To ensure safe progress we have to ensure the following:
-            //
-            // _next_position_in_partition < buffer.back().position() < next_pos
-            //
-            // * The first condition is to ensure we made progress since the
-            // last buffer fill. Otherwise we might get into an endless loop if
-            // the reader is recreated after each `fill_buffer()` call.
-            // * The second condition is to ensure we have seen all fragments
-            // with the same position. Otherwise we might jump over those
-            // remaining fragments with the same position as the last
-            // fragment's in the buffer when the reader is recreated.
-            return _tri_cmp(_next_position_in_partition, buffer().back().position()) < 0 && _tri_cmp(buffer().back().position(), next_pos) < 0;
-        };
-        // Read additional fragments until it is safe to stop, if needed.
-        // We have to ensure we stop at a fragment such that if the reader is
-        // evicted and recreated later, we won't be skipping any fragments.
-        // Practically, range tombstones are the only ones that are
-        // problematic to end the buffer on. This is due to the fact range
-        // tombstones can have the same position that multiple following range
-        // tombstones, or a single following clustering row in the stream has.
-        // When a range tombstone is the last in the buffer, we have to continue
-        // to read until we are sure we've read all fragments sharing the same
-        // position, so that we can safely continue reading from after said
-        // position.
-        return do_until(stop, [this, &reader, timeout] {
+        return do_until(std::bind(&evictable_reader::can_cut_buffer, this, std::ref(reader)), [this, &reader, timeout] {
             if (reader.is_buffer_empty()) {
                 return do_fill_buffer(reader, timeout);
             }
