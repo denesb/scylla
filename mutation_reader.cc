@@ -1416,54 +1416,41 @@ bool evictable_reader::can_cut_buffer(const flat_mutation_reader& reader) const 
     return _tri_cmp(_next_position_in_partition, buffer().back().position()) < 0 && _tri_cmp(buffer().back().position(), next_pos) < 0;
 }
 
-future<> evictable_reader::do_fill_buffer(flat_mutation_reader& reader, db::timeout_clock::time_point timeout) {
-    if (!_drop_partition_start && !_drop_static_row) {
-        auto fill_buf_fut = reader.fill_buffer(timeout);
-        if (_validate_partition_key) {
-            fill_buf_fut = fill_buf_fut.then([this, &reader] {
-                maybe_validate_partition_start(reader.buffer());
-            });
-        }
-        return fill_buf_fut;
-    }
-    return repeat([this, &reader, timeout] {
-        return reader.fill_buffer(timeout).then([this, &reader] {
-            maybe_validate_partition_start(reader.buffer());
-            while (!reader.is_buffer_empty() && should_drop_fragment(reader.peek_buffer())) {
-                reader.pop_mutation_fragment();
-            }
-            return stop_iteration(reader.is_buffer_full() || reader.is_end_of_stream());
-        });
-    });
-}
-
 future<> evictable_reader::fill_buffer(flat_mutation_reader& reader, db::timeout_clock::time_point timeout) {
-    return do_fill_buffer(reader, timeout).then([this, &reader, timeout] {
-        if (reader.is_buffer_empty()) {
-            return make_ready_future<>();
+    co_await reader.fill_buffer(timeout);
+
+    if (reader.is_buffer_empty()) {
+        co_return;
+    }
+
+    maybe_validate_partition_start(reader.buffer());
+
+    while (should_drop_fragment(reader.peek_buffer())) {
+        reader.pop_mutation_fragment();
+        if (!co_await reader.peek(timeout)) {
+            co_return;
         }
-        while (_trim_range_tombstones && !reader.is_buffer_empty()) {
-            auto mf = reader.pop_mutation_fragment();
-            _trim_range_tombstones = maybe_trim_range_tombstone(mf);
-            push_mutation_fragment(std::move(mf));
+    }
+
+    while (_trim_range_tombstones) {
+        if (auto mf_opt = co_await reader(timeout); mf_opt) {
+            _trim_range_tombstones = maybe_trim_range_tombstone(*mf_opt);
+            push_mutation_fragment(std::move(*mf_opt));
+        } else {
+            co_return;
         }
-        reader.move_buffer_content_to(*this);
-        return do_until(std::bind(&evictable_reader::can_cut_buffer, this, std::ref(reader)), [this, &reader, timeout] {
-            if (reader.is_buffer_empty()) {
-                return do_fill_buffer(reader, timeout);
-            }
-            if (_trim_range_tombstones) {
-                auto mf = reader.pop_mutation_fragment();
-                _trim_range_tombstones = maybe_trim_range_tombstone(mf);
-                push_mutation_fragment(std::move(mf));
-            } else {
-                push_mutation_fragment(reader.pop_mutation_fragment());
-            }
-            return make_ready_future<>();
-        });
-    }).then([this, &reader] {
-        update_next_position(reader);
-    });
+    }
+
+    // when on the fast path, only this is executed
+    reader.move_buffer_content_to(*this);
+
+    while (!can_cut_buffer(reader)) {
+        if (auto mf_opt = co_await reader(timeout); mf_opt) {
+            push_mutation_fragment(std::move(*mf_opt));
+        } else {
+            co_return;
+        }
+    }
 }
 
 evictable_reader::evictable_reader(
@@ -1493,6 +1480,7 @@ future<> evictable_reader::fill_buffer(db::timeout_clock::time_point timeout) {
     }
     return with_closeable(resume_or_create_reader(), [this, timeout] (flat_mutation_reader& reader) mutable {
         return fill_buffer(reader, timeout).then([this, &reader] {
+            update_next_position(reader);
             _end_of_stream = reader.is_end_of_stream() && reader.is_buffer_empty();
             maybe_pause(std::move(reader));
         });
