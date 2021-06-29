@@ -1395,11 +1395,11 @@ bool evictable_reader::can_cut_buffer(const flat_mutation_reader& reader) const 
     // The only problematic fragment kind is the range tombstone.
     // All other fragment kinds are safe to end the buffer on, and
     // are guaranteed to represent progress vs. the last buffer fill.
-    if (!buffer().back().is_range_tombstone()) {
-        return true;
-    }
     if (reader.is_buffer_empty()) {
         return reader.is_end_of_stream();
+    }
+    if (!buffer().back().is_range_tombstone()) {
+        return true;
     }
     const auto& next_pos = reader.peek_buffer().position();
     // To ensure safe progress we have to ensure the following:
