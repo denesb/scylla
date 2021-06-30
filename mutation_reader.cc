@@ -1386,18 +1386,14 @@ bool evictable_reader::maybe_trim_range_tombstone(mutation_fragment& mf) const {
 }
 
 future<> evictable_reader::do_fill_buffer(flat_mutation_reader& reader, db::timeout_clock::time_point timeout) {
-    if (!_drop_partition_start && !_drop_static_row) {
-        auto fill_buf_fut = reader.fill_buffer(timeout);
-        if (_validate_partition_key) {
-            fill_buf_fut = fill_buf_fut.then([this, &reader] {
-                maybe_validate_partition_start(reader.buffer());
-            });
-        }
-        return fill_buf_fut;
-    }
     return repeat([this, &reader, timeout] {
         return reader.fill_buffer(timeout).then([this, &reader] {
-            maybe_validate_partition_start(reader.buffer());
+            if (reader.is_buffer_empty()) {
+                return stop_iteration::yes;
+            }
+            if (_validate_partition_key) {
+                maybe_validate_partition_start(reader.buffer());
+            }
             while (!reader.is_buffer_empty() && should_drop_fragment(reader.peek_buffer())) {
                 reader.pop_mutation_fragment();
             }
