@@ -1088,7 +1088,7 @@ private:
     void adjust_partition_slice();
     flat_mutation_reader recreate_reader();
     flat_mutation_reader resume_or_create_reader();
-    void maybe_validate_partition_start(const flat_mutation_reader::tracked_buffer& buffer);
+    void validate_partition_start(const flat_mutation_reader::tracked_buffer& buffer);
     void validate_position_in_partition(position_in_partition_view pos) const;
     bool should_drop_fragment(const mutation_fragment& mf);
     bool maybe_trim_range_tombstone(mutation_fragment& mf) const;
@@ -1270,11 +1270,7 @@ static void require(bool condition, const char* msg, const Arg&... arg) {
     }
 }
 
-void evictable_reader::maybe_validate_partition_start(const flat_mutation_reader::tracked_buffer& buffer) {
-    if (!_validate_partition_key || buffer.empty()) {
-        return;
-    }
-
+void evictable_reader::validate_partition_start(const flat_mutation_reader::tracked_buffer& buffer) {
     // If this is set we can assume the first fragment is a partition-start.
     const auto& ps = buffer.front().as_partition_start();
     const auto tri_cmp = dht::ring_position_comparator(*_schema);
@@ -1392,7 +1388,7 @@ future<> evictable_reader::do_fill_buffer(flat_mutation_reader& reader, db::time
                 return stop_iteration::yes;
             }
             if (_validate_partition_key) {
-                maybe_validate_partition_start(reader.buffer());
+                validate_partition_start(reader.buffer());
             }
             while (!reader.is_buffer_empty() && should_drop_fragment(reader.peek_buffer())) {
                 reader.pop_mutation_fragment();

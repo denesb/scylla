@@ -3224,7 +3224,7 @@ SEASTAR_THREAD_TEST_CASE(test_evictable_reader_self_validation) {
     const int second_buffer_ck = first_ck + 100;
     const int last_ck = second_buffer_ck + 100;
 
-    static const char partition_error_prefix[] = "maybe_validate_partition_start(): validation failed";
+    static const char partition_error_prefix[] = "validate_partition_start(): validation failed";
     static const char position_in_partition_error_prefix[] = "validate_position_in_partition(): validation failed";
     static const char trim_range_tombstones_error_prefix[] = "maybe_trim_range_tombstone(): validation failed";
 
