@@ -31,15 +31,17 @@ namespace tests {
 
 class frozen_mutation {
     simple_schema _schema;
+    reader_concurrency_semaphore _semaphore;
 
     mutation _one_small_row;
     ::frozen_mutation _frozen_one_small_row;
 public:
     frozen_mutation()
-        : _one_small_row(_schema.schema(), _schema.make_pkey(0))
+        : _semaphore(reader_concurrency_semaphore::no_limits{}, __FILE__)
+        , _one_small_row(_schema.schema(), _schema.make_pkey(0))
         , _frozen_one_small_row(_one_small_row)
     {
-        _one_small_row.apply(_schema.make_row(tests::make_permit(), _schema.make_ckey(0), "value"));
+        _one_small_row.apply(_schema.make_row(_semaphore.make_permit(_schema.schema().get(), "value"), _schema.make_ckey(0), "value"));
         _frozen_one_small_row = freeze(_one_small_row);
     }
 
@@ -47,26 +49,40 @@ public:
 
     const mutation& one_small_row() const { return _one_small_row; }
     const ::frozen_mutation& frozen_one_small_row() const { return _frozen_one_small_row; }
+
+    future<> stop() { return _semaphore.stop(); }
 };
 
 PERF_TEST_F(frozen_mutation, freeze_one_small_row)
 {
-    auto frozen = freeze(one_small_row());
-    perf_tests::do_not_optimize(frozen);
+    {
+        auto frozen = freeze(one_small_row());
+        perf_tests::do_not_optimize(frozen);
+    }
+    perf_tests::stop_measuring_time();
+    return stop();
 }
 
 PERF_TEST_F(frozen_mutation, unfreeze_one_small_row)
 {
-    auto m = frozen_one_small_row().unfreeze(schema());
-    perf_tests::do_not_optimize(m);
+    {
+        auto m = frozen_one_small_row().unfreeze(schema());
+        perf_tests::do_not_optimize(m);
+    }
+    perf_tests::stop_measuring_time();
+    return stop();
 }
 
 PERF_TEST_F(frozen_mutation, apply_one_small_row)
 {
-    auto m = mutation(schema(), frozen_one_small_row().key());
-    mutation_application_stats app_stats;
-    m.partition().apply(*schema(), frozen_one_small_row().partition(), *schema(), app_stats);
-    perf_tests::do_not_optimize(m);
+    {
+        auto m = mutation(schema(), frozen_one_small_row().key());
+        mutation_application_stats app_stats;
+        m.partition().apply(*schema(), frozen_one_small_row().partition(), *schema(), app_stats);
+        perf_tests::do_not_optimize(m);
+    }
+    perf_tests::stop_measuring_time();
+    return stop();
 }
 
 }

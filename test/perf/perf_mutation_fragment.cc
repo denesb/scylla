@@ -30,6 +30,7 @@ namespace tests {
 
 class clustering_row {
     mutable simple_schema _schema;
+    reader_concurrency_semaphore_wrapper _semaphore;
     reader_permit _permit;
     clustering_key _key;
 
@@ -40,9 +41,10 @@ class clustering_row {
     mutation_fragment _row_4;
     mutation_fragment _row_4k;
     mutation_fragment _row_1M;
+
 public:
     clustering_row()
-        : _permit(tests::make_permit())
+        : _permit(_semaphore.make_permit())
         , _key(_schema.make_ckey(0))
         , _value_4(4, 'a')
         , _value_4k(4 * 1024, 'b')
@@ -53,6 +55,7 @@ public:
     { }
 
     schema_ptr schema() const { return _schema.schema(); }
+    reader_permit permit() const { return _permit; }
 
     mutation_fragment& clustering_row_4() {
         return _row_4;
@@ -99,19 +102,19 @@ PERF_TEST_F(clustering_row, make_1M)
 
 PERF_TEST_F(clustering_row, copy_4)
 {
-    auto mf = mutation_fragment(*schema(), tests::make_permit(), clustering_row_4());
+    auto mf = mutation_fragment(*schema(), permit(), clustering_row_4());
     perf_tests::do_not_optimize(mf);
 }
 
 PERF_TEST_F(clustering_row, copy_4k)
 {
-    auto mf = mutation_fragment(*schema(), tests::make_permit(), clustering_row_4k());
+    auto mf = mutation_fragment(*schema(), permit(), clustering_row_4k());
     perf_tests::do_not_optimize(mf);
 }
 
 PERF_TEST_F(clustering_row, copy_1M)
 {
-    auto mf = mutation_fragment(*schema(), tests::make_permit(), clustering_row_1M());
+    auto mf = mutation_fragment(*schema(), permit(), clustering_row_1M());
     perf_tests::do_not_optimize(mf);
 }
 
