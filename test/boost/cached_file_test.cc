@@ -30,7 +30,7 @@
 #include "test/lib/random_utils.hh"
 #include "test/lib/log.hh"
 #include "test/lib/tmpdir.hh"
-#include "test/lib/reader_permit.hh"
+#include "test/lib/reader_concurrency_semaphore.hh"
 
 #include "utils/cached_file.hh"
 
@@ -86,11 +86,12 @@ test_file make_test_file(size_t size) {
 }
 
 SEASTAR_THREAD_TEST_CASE(test_reading_from_small_file) {
+    tests::reader_concurrency_semaphore_wrapper semaphore;
     test_file tf = make_test_file(1024);
 
     {
         cached_file::metrics metrics;
-        cached_file cf(tf.f, tests::make_permit(), metrics, 0, tf.contents.size());
+        cached_file cf(tf.f, semaphore.make_permit(), metrics, 0, tf.contents.size());
 
         {
             BOOST_REQUIRE_EQUAL(tf.contents, read_to_string(cf, 0));
@@ -127,7 +128,7 @@ SEASTAR_THREAD_TEST_CASE(test_reading_from_small_file) {
     {
         size_t off = 100;
         cached_file::metrics metrics;
-        cached_file cf(tf.f, tests::make_permit(), metrics, off, tf.contents.size() - off);
+        cached_file cf(tf.f, semaphore.make_permit(), metrics, off, tf.contents.size() - off);
 
         BOOST_REQUIRE_EQUAL(tf.contents.substr(off), read_to_string(cf, 0));
         BOOST_REQUIRE_EQUAL(tf.contents.substr(off + 2), read_to_string(cf, 2));
@@ -136,11 +137,12 @@ SEASTAR_THREAD_TEST_CASE(test_reading_from_small_file) {
 }
 
 SEASTAR_THREAD_TEST_CASE(test_invalidation) {
+    tests::reader_concurrency_semaphore_wrapper semaphore;
     auto page_size = cached_file::page_size;
     test_file tf = make_test_file(page_size * 2);
 
     cached_file::metrics metrics;
-    cached_file cf(tf.f, tests::make_permit(), metrics, 0, page_size * 2);
+    cached_file cf(tf.f, semaphore.make_permit(), metrics, 0, page_size * 2);
 
     // Reads one page, half of the first page and half of the second page.
     auto read = [&] {
@@ -226,12 +228,13 @@ SEASTAR_THREAD_TEST_CASE(test_invalidation) {
 }
 
 SEASTAR_THREAD_TEST_CASE(test_invalidation_skewed_cached_file) {
+    tests::reader_concurrency_semaphore_wrapper semaphore;
     auto page_size = cached_file::page_size;
     test_file tf = make_test_file(page_size * 3);
 
     size_t offset = page_size / 2;
     cached_file::metrics metrics;
-    cached_file cf(tf.f, tests::make_permit(), metrics, offset, page_size * 2);
+    cached_file cf(tf.f, semaphore.make_permit(), metrics, offset, page_size * 2);
 
     // Reads one page, half of the first page and half of the second page.
     auto read = [&] {
