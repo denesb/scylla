@@ -87,20 +87,16 @@ test_using_reusable_sst(schema_ptr s, sstring dir, unsigned long gen, Func&& fun
     });
 }
 
-future<index_list> index_read(schema_ptr schema, sstring path) {
-    return test_using_reusable_sst(std::move(schema), std::move(path), 1, [] (test_env& env, sstable_ptr ptr) {
-        return sstables::test(ptr).read_indexes();
-    });
-}
-
 SEASTAR_TEST_CASE(simple_index_read) {
-    return index_read(uncompressed_schema(), uncompressed_dir()).then([] (auto vec) {
+    return test_using_reusable_sst(uncompressed_schema(), uncompressed_dir(), 1, [] (test_env& env, sstable_ptr ptr) -> future<> {
+        auto vec = co_await sstables::test(ptr).read_indexes(env.make_reader_permit());
         BOOST_REQUIRE(vec.size() == 4);
     });
 }
 
 SEASTAR_TEST_CASE(composite_index_read) {
-    return index_read(composite_schema(), "test/resource/sstables/composite").then([] (auto vec) {
+    return test_using_reusable_sst(composite_schema(), "test/resource/sstables/composite", 1, [] (test_env& env, sstable_ptr ptr) -> future<> {
+        auto vec = co_await sstables::test(ptr).read_indexes(env.make_reader_permit());
         BOOST_REQUIRE(vec.size() == 20);
     });
 }
@@ -319,7 +315,7 @@ SEASTAR_TEST_CASE(uncompressed_random_access_read) {
     return test_using_reusable_sst(uncompressed_schema(), uncompressed_dir(), 1, [this] (auto& env, auto sstp) {
         // note: it's important to pass on a shared copy of sstp to prevent its
         // destruction until the continuation finishes reading!
-        return sstables::test(sstp).data_read(97, 6).then([sstp] (temporary_buffer<char> buf) {
+        return sstables::test(sstp).data_read(env.make_reader_permit(), 97, 6).then([sstp] (temporary_buffer<char> buf) {
             BOOST_REQUIRE(sstring(buf.get(), buf.size()) == "gustaf");
             return make_ready_future<>();
         });
@@ -329,7 +325,7 @@ SEASTAR_TEST_CASE(uncompressed_random_access_read) {
 SEASTAR_TEST_CASE(compressed_random_access_read) {
     auto s = make_schema_for_compressed_sstable();
     return test_using_reusable_sst(std::move(s), "test/resource/sstables/compressed", 1, [this] (auto& env, auto sstp) {
-        return sstables::test(sstp).data_read(97, 6).then([sstp] (temporary_buffer<char> buf) {
+        return sstables::test(sstp).data_read(env.make_reader_permit(), 97, 6).then([sstp] (temporary_buffer<char> buf) {
             BOOST_REQUIRE(sstring(buf.get(), buf.size()) == "gustaf");
             return make_ready_future<>();
         });
@@ -816,7 +812,7 @@ SEASTAR_TEST_CASE(all_in_place) {
 
 SEASTAR_TEST_CASE(full_index_search) {
     return test_using_reusable_sst(uncompressed_schema(), uncompressed_dir(), 1, [] (auto& env, auto sstp) {
-        return sstables::test(sstp).read_indexes().then([sstp] (auto index_list) {
+        return sstables::test(sstp).read_indexes(env.make_reader_permit()).then([sstp] (auto index_list) {
             int idx = 0;
             for (auto& ie: index_list) {
                 auto key = key::from_bytes(to_bytes(ie.get_key_bytes()));
@@ -954,9 +950,9 @@ static future<shared_sstable> load_large_partition_sst(test_env& env, const ssta
 SEASTAR_TEST_CASE(promoted_index_read) {
   return for_each_sstable_version([] (const sstables::sstable::version_types version) {
     return test_env::do_with([version] (test_env& env) {
-      return load_large_partition_sst(env, version).then([] (auto sstp) {
+      return load_large_partition_sst(env, version).then([&env] (auto sstp) {
         schema_ptr s = large_partition_schema();
-        return sstables::test(sstp).read_indexes().then([sstp] (index_list vec) {
+        return sstables::test(sstp).read_indexes(env.make_reader_permit()).then([sstp] (index_list vec) {
             BOOST_REQUIRE(vec.size() == 1);
             BOOST_REQUIRE(vec.front().get_promoted_index_size() > 0);
         });

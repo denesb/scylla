@@ -76,7 +76,7 @@ SEASTAR_THREAD_TEST_CASE(test_empty_index) {
                  .build();
     sstable_ptr sstp = env.reusable_sst(s, "test/resource/sstables/empty_index", 36, sstable_version_types::mc).get0();
     sstp->load().get();
-    auto fut = sstables::test(sstp).read_indexes();
+    auto fut = sstables::test(sstp).read_indexes(env.make_reader_permit());
     BOOST_REQUIRE_EXCEPTION(fut.get(), malformed_sstable_exception, exception_predicate::message_equals(
         "missing index entry in sstable test/resource/sstables/empty_index/mc-36-big-Index.db"));
   }).get();
