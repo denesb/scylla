@@ -51,6 +51,7 @@
 
 #include <seastar/core/future-util.hh>
 #include <seastar/core/scheduling.hh>
+#include <seastar/core/coroutine.hh>
 #include <seastar/util/closeable.hh>
 
 #include "sstables.hh"
@@ -1569,11 +1570,109 @@ static std::unique_ptr<compaction> make_compaction(column_family& cf, sstables::
     return descriptor.options.visit(visitor_factory);
 }
 
+static future<compaction_info> validate_sstables(sstables::compaction_descriptor descriptor, column_family& cf) {
+    auto schema = cf.schema();
+
+    sstring formatted_msg = "{} [";
+    auto sstables = make_lw_shared<sstables::sstable_set>(sstables::make_partitioned_sstable_set(schema, make_lw_shared<sstable_list>(sstable_list{}), false));
+    for (const auto& sst : descriptor.sstables) {
+        formatted_msg += format("{}:level={:d}:origin={}, ", sst->get_filename(), sst->get_sstable_level(), sst->get_origin());
+        sstables->insert(sst);
+    }
+    formatted_msg += "]{}";
+
+    auto info = make_lw_shared<compaction_info>();
+    info->type = descriptor.options.type();
+    info->cf = &cf;
+    info->sstables = descriptor.sstables.size();
+    info->ks_name = schema->ks_name();
+    info->cf_name = schema->cf_name();
+
+    cf.get_compaction_manager().register_compaction(info);
+    auto deregister_compaction = defer([&cf, info] {
+        cf.get_compaction_manager().deregister_compaction(info);
+    });
+
+    clogger.info(std::string_view(formatted_msg), "Validating", "");
+
+    auto validator = mutation_fragment_stream_validator(*schema);
+    auto permit = cf.compaction_concurrency_semaphore().make_permit(schema.get(), "Validation");
+    auto reader = sstables->make_local_shard_sstable_reader(schema, permit, query::full_partition_range, schema->full_slice(), descriptor.io_priority,
+            tracing::trace_state_ptr(), ::streamed_mutation::forwarding::no, ::mutation_reader::forwarding::no, default_read_monitor_generator());
+
+    bool valid = true;
+    std::exception_ptr ex;
+
+    try {
+        while (auto mf_opt = co_await reader(db::no_timeout)) {
+            if (info->is_stop_requested()) [[unlikely]] {
+                // Compaction manager will catch this exception and re-schedule the compaction.
+                throw compaction_stop_exception(info->ks_name, info->cf_name, info->stop_requested);
+            }
+
+            const auto& mf = *mf_opt;
+
+            if (const auto mf_valid = validator(mf); !mf_valid) {
+                valid = false;
+                const auto& key = validator.previous_partition_key();
+
+                clogger.error("[validating {}.{}] Invalid {} fragment {}in partition {} ({}):"
+                        " fragment has non-monotonic position {} compared to previous position {}.",
+                        schema->ks_name(),
+                        schema->cf_name(),
+                        mf.mutation_fragment_kind(),
+                        mf.has_key() ? format("with key {} ({}) ", mf.key().with_schema(*schema), mf.key()) : "",
+                        key.key().with_schema(*schema),
+                        key,
+                        mf.position(),
+                        validator.previous_position());
+
+                validator.reset(mf);
+            }
+
+            if (!mf.is_partition_start()) {
+                continue;
+            }
+            const auto& ps = mf.as_partition_start();
+
+            if (const auto ps_valid = validator(ps.key()); !ps_valid) {
+                valid = false;
+                const auto& new_key = ps.key();
+                const auto& current_key = validator.previous_partition_key();
+                clogger.error("[validating {}.{}] Out-of-order partition {} ({}) (previous being {} ({}))",
+                        schema->ks_name(),
+                        schema->cf_name(),
+                        new_key.key().with_schema(*schema),
+                        new_key,
+                        current_key.key().with_schema(*schema),
+                        current_key);
+                validator.reset(new_key);
+            }
+        }
+    } catch (...) {
+        ex = std::current_exception();
+    }
+
+    co_await reader.close();
+
+    if (ex) {
+        std::rethrow_exception(std::move(ex));
+    }
+
+    clogger.info(std::string_view(formatted_msg), "Validated", valid ? " - sstables are valid" : " - sstables are invalid");
+
+    co_return *info;
+}
+
 future<compaction_info>
 compact_sstables(sstables::compaction_descriptor descriptor, column_family& cf) {
     if (descriptor.sstables.empty()) {
         throw std::runtime_error(format("Called {} compaction with empty set on behalf of {}.{}", compaction_name(descriptor.options.type()),
                 cf.schema()->ks_name(), cf.schema()->cf_name()));
+    }
+    if (descriptor.options.type() == compaction_type::Validation) {
+        // Bypass the usual compaction machinery for validation compaction
+        return validate_sstables(std::move(descriptor), cf);
     }
     auto c = make_compaction(cf, std::move(descriptor));
     if (c->enable_garbage_collected_sstable_writer()) {
