@@ -4620,6 +4620,95 @@ std::vector<mutation_fragment> write_corrupt_sstable(test_env& env, sstable& sst
     return corrupt_fragments;
 }
 
+SEASTAR_TEST_CASE(sstable_validation_test) {
+    cql_test_config test_cfg;
+
+    auto& db_cfg = *test_cfg.db_config;
+
+    // Disable cache to filter out its possible "corrections" to the corrupt sstable.
+    db_cfg.enable_cache(false);
+    db_cfg.enable_commitlog(false);
+
+    return do_with_cql_env([this] (cql_test_env& cql_env) -> future<> {
+        return test_env::do_with_async([this, &cql_env] (test_env& env) {
+            cell_locker_stats cl_stats;
+
+            auto& db = cql_env.local_db();
+            auto& compaction_manager = db.get_compaction_manager();
+
+            auto schema = schema_builder("ks", get_name())
+                    .with_column("pk", utf8_type, column_kind::partition_key)
+                    .with_column("ck", int32_type, column_kind::clustering_key)
+                    .with_column("s", int32_type, column_kind::static_column)
+                    .with_column("v", int32_type).build();
+            auto permit = tests::make_permit();
+
+            auto tmp = tmpdir();
+            auto sst_gen = [&env, schema, &tmp, gen = make_lw_shared<unsigned>(1)] () mutable {
+                return env.make_sstable(schema, tmp.path().string(), (*gen)++);
+            };
+
+            auto scrubbed_mt = make_lw_shared<memtable>(schema);
+            auto sst = sst_gen();
+
+            testlog.info("Writing sstable {}", sst->get_filename());
+
+            const auto corrupt_fragments = write_corrupt_sstable(env, *sst, permit, [&, mut = std::optional<mutation>()] (mutation_fragment&& mf, bool) mutable {
+                if (mf.is_partition_start()) {
+                    mut.emplace(schema, mf.as_partition_start().key());
+                } else if (mf.is_end_of_partition()) {
+                    scrubbed_mt->apply(std::move(*mut));
+                    mut.reset();
+                } else {
+                    mut->apply(std::move(mf));
+                }
+            });
+
+            sst->load().get();
+
+            testlog.info("Loaded sstable {}", sst->get_filename());
+
+            auto cfg = column_family_test_config(env.manager());
+            cfg.datadir = tmp.path().string();
+            auto table = make_lw_shared<column_family>(schema, cfg, column_family::no_commitlog(),
+                db.get_compaction_manager(), cl_stats, db.row_cache_tracker());
+            auto stop_table = defer([table] {
+                table->stop().get();
+            });
+            table->mark_ready_for_writes();
+            table->start();
+
+            table->add_sstable_and_update_cache(sst).get();
+
+            BOOST_REQUIRE(table->in_strategy_sstables().size() == 1);
+            BOOST_REQUIRE(table->in_strategy_sstables().front() == sst);
+
+            auto verify_fragments = [&] (sstables::shared_sstable sst, const std::vector<mutation_fragment>& mfs) {
+                auto r = assert_that(sst->as_mutation_source().make_reader(schema, tests::make_permit()));
+                for (const auto& mf : mfs) {
+                   testlog.trace("Expecting {}", mutation_fragment::printer(*schema, mf));
+                   r.produces(*schema, mf);
+                }
+                r.produces_end_of_stream();
+            };
+
+            testlog.info("Verifying written data...");
+
+            // Make sure we wrote what we though we wrote.
+            verify_fragments(sst, corrupt_fragments);
+
+            testlog.info("Validate");
+
+            // No way to really test validation besides observing the log messages.
+            compaction_manager.perform_sstable_validation(table.get()).get();
+
+            BOOST_REQUIRE(table->in_strategy_sstables().size() == 1);
+            BOOST_REQUIRE(table->in_strategy_sstables().front() == sst);
+            verify_fragments(sst, corrupt_fragments);
+        });
+    }, test_cfg);
+}
+
 SEASTAR_TEST_CASE(sstable_scrub_skip_mode_test) {
     cql_test_config test_cfg;
 
