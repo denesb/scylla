@@ -24,6 +24,7 @@
 #include <boost/intrusive/list.hpp>
 #include <seastar/core/future.hh>
 #include <seastar/core/gate.hh>
+#include <seastar/core/condition-variable.hh>
 #include "reader_permit.hh"
 #include "flat_mutation_reader.hh"
 
@@ -74,6 +75,8 @@ public:
         uint64_t permit_based_evictions = 0;
         // The number of inactive reads evicted due to expiring.
         uint64_t time_based_evictions = 0;
+        // The number of reads currently waiting for admission.
+        uint64_t waiting_reads = 0;
         // The number of inactive reads currently registered.
         uint64_t inactive_reads = 0;
         // Total number of successful reads executed through this semaphore.
@@ -101,63 +104,28 @@ public:
             bi::base_hook<bi::list_base_hook<bi::link_mode<bi::auto_unlink>>>,
             bi::constant_time_size<false>>;
 
-    class inactive_read_handle;
-
     using read_func = noncopyable_function<future<>(reader_permit)>;
-
-private:
-    struct entry {
-        promise<> pr;
-        reader_permit permit;
-        read_func func;
-        entry(promise<>&& pr, reader_permit permit, read_func func)
-            : pr(std::move(pr)), permit(std::move(permit)), func(std::move(func)) {}
-    };
-
-    class expiry_handler {
-        reader_concurrency_semaphore& _semaphore;
-    public:
-        explicit expiry_handler(reader_concurrency_semaphore& semaphore)
-            : _semaphore(semaphore) {}
-        void operator()(entry& e) noexcept;
-    };
-
-    struct inactive_read : public bi::list_base_hook<bi::link_mode<bi::auto_unlink>> {
-        flat_mutation_reader reader;
-        eviction_notify_handler notify_handler;
-        timer<lowres_clock> ttl_timer;
-        inactive_read_handle* handle = nullptr;
-
-        explicit inactive_read(flat_mutation_reader reader_) noexcept
-            : reader(std::move(reader_))
-        { }
-        ~inactive_read();
-        void detach() noexcept;
-    };
-
-    using inactive_reads_type = bi::list<inactive_read, bi::constant_time_size<false>>;
 
 public:
     class inactive_read_handle {
-        reader_concurrency_semaphore* _sem = nullptr;
-        inactive_read* _irp = nullptr;
+        reader_permit::impl* _permit = nullptr;
 
         friend class reader_concurrency_semaphore;
 
     private:
+        void update_handle() noexcept;
         void abandon() noexcept;
 
-        explicit inactive_read_handle(reader_concurrency_semaphore& sem, inactive_read& ir) noexcept
-            : _sem(&sem), _irp(&ir) {
-            _irp->handle = this;
+        explicit inactive_read_handle(reader_permit::impl& permit) noexcept
+            : _permit(&permit) {
+            update_handle();
         }
     public:
         inactive_read_handle() = default;
         inactive_read_handle(inactive_read_handle&& o) noexcept
-            : _sem(std::exchange(o._sem, nullptr))
-            , _irp(std::exchange(o._irp, nullptr)) {
-            if (_irp) {
-                _irp->handle = this;
+            : _permit(std::exchange(o._permit, nullptr)) {
+            if (_permit) {
+                update_handle();
             }
         }
         inactive_read_handle& operator=(inactive_read_handle&& o) noexcept {
@@ -165,10 +133,9 @@ public:
                 return *this;
             }
             abandon();
-            _sem = std::exchange(o._sem, nullptr);
-            _irp = std::exchange(o._irp, nullptr);
-            if (_irp) {
-                _irp->handle = this;
+            _permit = std::exchange(o._permit, nullptr);
+            if (_permit) {
+                update_handle();
             }
             return *this;
         }
@@ -176,7 +143,7 @@ public:
             abandon();
         }
         explicit operator bool() const noexcept {
-            return bool(_irp);
+            return bool(_permit);
         }
     };
 
@@ -184,22 +151,24 @@ private:
     const resources _initial_resources;
     resources _resources;
 
-    expiring_fifo<entry, expiry_handler, db::timeout_clock> _wait_list;
-    queue<entry> _ready_list;
+    permit_list_type _wait_list;
+    permit_list_type _ready_list;
+    permit_list_type _inactive_reads;
+    permit_list_type _other_list;
+
+    condition_variable _ready_permits;
 
     sstring _name;
     size_t _max_queue_length = std::numeric_limits<size_t>::max();
-    inactive_reads_type _inactive_reads;
     stats _stats;
-    permit_list_type _permit_list;
     bool _stopped = false;
     gate _close_readers_gate;
     gate _permit_gate;
     std::optional<future<>> _execution_loop_future;
 
 private:
-    [[nodiscard]] flat_mutation_reader detach_inactive_reader(inactive_read&, evict_reason reason) noexcept;
-    void evict(inactive_read&, evict_reason reason) noexcept;
+    [[nodiscard]] flat_mutation_reader detach_inactive_reader(reader_permit::impl&, evict_reason reason) noexcept;
+    void evict(reader_permit::impl&, evict_reason reason) noexcept;
 
     bool has_available_units(const resources& r) const;
 
@@ -209,9 +178,9 @@ private:
 
     // Add the permit to the wait queue and return the future which resolves when
     // the permit is admitted (popped from the queue).
-    future<> enqueue_waiter(reader_permit permit, db::timeout_clock::time_point timeout, read_func func);
+    future<> enqueue_waiter(reader_permit permit, read_func func);
     void evict_readers_in_background();
-    future<> do_wait_admission(reader_permit permit, db::timeout_clock::time_point timeout, read_func func = {});
+    future<> do_wait_admission(reader_permit permit, read_func func = {});
     void maybe_admit_waiters() noexcept;
 
     void on_permit_created(reader_permit::impl&);
@@ -229,6 +198,8 @@ private:
     void close_reader(flat_mutation_reader reader);
 
     future<> execution_loop() noexcept;
+
+    void on_permit_timed_out(reader_permit::impl&) noexcept;
 
 public:
     struct no_limits { };
@@ -396,7 +367,7 @@ public:
     void signal(const resources& r) noexcept;
 
     size_t waiters() const {
-        return _wait_list.size();
+        return _stats.waiting_reads;
     }
 
     void broken(std::exception_ptr ex = {});
