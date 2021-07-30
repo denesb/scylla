@@ -320,6 +320,14 @@ const column_mapping& schema::get_column_mapping() const {
     return _column_mapping;
 }
 
+static void reverse_clustering_order(std::vector<column_definition>& columns) {
+    for (auto& col : columns) {
+        if (col.kind == column_kind::clustering_key) {
+            col.type = reversed(col.type);
+        }
+    }
+}
+
 schema::raw_schema::raw_schema(utils::UUID id)
     : _id(id)
     , _partitioner(::get_partitioner(default_partitioner_name))
@@ -1159,6 +1167,11 @@ schema_builder& schema_builder::without_index(const sstring& name) {
 
 schema_builder& schema_builder::without_indexes() {
     _raw._indices_by_name.clear();
+    return *this;
+}
+
+schema_builder& schema_builder::with_clustering_order_reversed() {
+    reverse_clustering_order(_raw._columns);
     return *this;
 }
 
