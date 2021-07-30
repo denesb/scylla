@@ -1162,6 +1162,20 @@ schema_builder& schema_builder::without_indexes() {
     return *this;
 }
 
+schema_builder& schema_builder::with_clustering_order_reversed() {
+    for (auto& col : _raw._columns) {
+        if (col.kind != column_kind::clustering_key) {
+            continue;
+        }
+        if (col.type->is_reversed()) {
+            col.type = col.type->underlying_type();
+        } else {
+            col.type = reversed_type_impl::get_instance(col.type);
+        }
+    }
+    return *this;
+}
+
 schema_ptr schema_builder::build() {
     schema::raw_schema new_raw = _raw; // Copy so that build() remains idempotent.
 

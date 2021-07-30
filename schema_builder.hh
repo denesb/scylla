@@ -287,6 +287,8 @@ public:
         return default_names(_raw);
     }
 
+    schema_builder& with_clustering_order_reversed();
+
     // Equivalent to with(cp).build()
     schema_ptr build(compact_storage cp);
 
