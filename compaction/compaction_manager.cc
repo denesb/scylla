@@ -774,8 +774,14 @@ future<> compaction_manager::perform_sstable_validation(column_family* cf) {
 
             try {
                 co_await with_scheduling_group(_maintenance_sg.cpu, [&] () {
-                    auto desc = sstables::compaction_descriptor({ sst }, {}, _maintenance_sg.io, sst->get_sstable_level(),
-                            sstables::compaction_descriptor::default_max_sstable_bytes, sst->run_identifier(), sstables::compaction_options::make_validation());
+                    auto desc = sstables::compaction_descriptor(
+                            { sst },
+                            {},
+                            _maintenance_sg.io,
+                            sst->get_sstable_level(),
+                            sstables::compaction_descriptor::default_max_sstable_bytes,
+                            sst->run_identifier(),
+                            sstables::compaction_options::make_scrub(sstables::compaction_options::scrub::mode::validate));
                     return compact_sstables(std::move(desc), cf);
                 });
             } catch (sstables::compaction_stop_exception&) {
