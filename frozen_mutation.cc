@@ -172,6 +172,10 @@ stop_iteration streamed_mutation_freezer::consume(clustering_row&& cr) {
 }
 
 stop_iteration streamed_mutation_freezer::consume(range_tombstone&& rt) {
+    if (_reversed) {
+        // undo reversing done for the native reversed format, coordinator still uses old reversing format
+        rt.reverse();
+    }
     _rts.apply(_schema, std::move(rt));
     return stop_iteration::no;
 }

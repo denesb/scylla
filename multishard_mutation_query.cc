@@ -670,6 +670,9 @@ future<typename ResultBuilder::result_type> do_query(
         tracing::trace_state_ptr trace_state,
         db::timeout_clock::time_point timeout,
         ResultBuilder&& result_builder) {
+    if (cmd.slice.options.contains(query::partition_slice::option::reversed)) {
+        s = s->make_reversed();
+    }
     auto ctx = seastar::make_shared<read_context>(db, s, cmd, ranges, trace_state);
 
     co_await ctx->lookup_readers();
