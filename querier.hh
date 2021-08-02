@@ -146,7 +146,7 @@ public:
         , _permit(std::move(permit))
         , _range(std::make_unique<const dht::partition_range>(std::move(range)))
         , _slice(std::make_unique<const query::partition_slice>(std::move(slice)))
-        , _reader(ms.make_reader(_schema, _permit, *_range, *_slice, pc, std::move(trace_ptr), streamed_mutation::forwarding::no, mutation_reader::forwarding::no))
+        , _reader(ms.make_reader(_schema->underlying_schema(), _permit, *_range, *_slice, pc, std::move(trace_ptr), streamed_mutation::forwarding::no, mutation_reader::forwarding::no))
         , _query_ranges(*_range)
     { }
 
