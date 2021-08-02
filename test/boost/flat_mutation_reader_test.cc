@@ -41,6 +41,7 @@
 #include "test/lib/flat_mutation_reader_assertions.hh"
 #include "test/lib/log.hh"
 #include "test/lib/reader_concurrency_semaphore.hh"
+#include "test/lib/data_model.hh"
 
 #include <boost/range/adaptor/map.hpp>
 
@@ -837,4 +838,66 @@ SEASTAR_THREAD_TEST_CASE(test_reverse_reader_memory_limit) {
 
     test_with_partition(true);
     test_with_partition(false);
+}
+
+SEASTAR_THREAD_TEST_CASE(test_reverse_reader) {
+    using namespace tests::data_model;
+
+    tests::reader_concurrency_semaphore_wrapper semaphore;
+    auto permit = semaphore.make_permit();
+
+    auto forward_schema = schema_builder("ks", "cf")
+            .with_column("pk", int32_type, column_kind::partition_key)
+            .with_column("ck", int32_type, column_kind::clustering_key)
+            .with_column("s", utf8_type, column_kind::static_column)
+            .with_column("v", utf8_type)
+            .build();
+    auto reverse_schema = schema_builder(forward_schema).with_clustering_order_reversed().build();
+
+    auto forward_mt = make_lw_shared<memtable>(forward_schema);
+    auto reverse_mt = make_lw_shared<memtable>(reverse_schema);
+
+    const auto tomb1 = tombstone(previously_removed_column_timestamp + 1, gc_clock::time_point());
+    const auto tomb2 = tombstone(previously_removed_column_timestamp + 2, gc_clock::time_point());
+    const auto tomb3 = tombstone(previously_removed_column_timestamp + 3, gc_clock::time_point());
+
+    auto pkey = mutation_description::key{int32_type->decompose(0)};
+    {
+        mutation_description mut(pkey);
+
+        {
+            auto static_val = mutation_description::atomic_value(utf8_type->decompose("static val"));
+            mut.add_static_cell("s", static_val);
+        }
+
+        for (int32_t ck = 0; ck != 8; ++ck) {
+            auto ckey = mutation_description::key{int32_type->decompose(ck)};
+            if (ck % 4 == 0) {
+                auto ckey_1 = mutation_description::key{int32_type->decompose(ck + 1)};
+                auto ckey_2 = mutation_description::key{int32_type->decompose(ck + 2)};
+                auto ckey_3 = mutation_description::key{int32_type->decompose(ck + 3)};
+                mut.add_range_tombstone(ckey, ckey_2, tomb1);
+                mut.add_range_tombstone(ckey, ckey_3, tomb2);
+                mut.add_range_tombstone(ckey_1, ckey_3, tomb3);
+            }
+            auto val = mutation_description::atomic_value(utf8_type->decompose("clustered val"));
+            mut.add_clustered_cell(ckey, "v", val);
+        }
+
+        forward_mt->apply(mut.build(forward_schema));
+        reverse_mt->apply(mut.build(reverse_schema));
+    }
+
+    auto forward_reader = forward_mt->make_flat_reader(forward_schema, permit);
+    auto deferred_forward_close = deferred_close(forward_reader);
+    auto reversed_forward_reader = assert_that(make_reversing_reader(forward_reader, query::max_result_size(1 << 20)));
+
+    auto reverse_reader = reverse_mt->make_flat_reader(reverse_schema, permit);
+    auto deferred_reverse_close = deferred_close(reverse_reader);
+
+    while (auto mf_opt = reverse_reader(db::no_timeout).get()) {
+        auto& mf = *mf_opt;
+        reversed_forward_reader.produces(*forward_schema, mf);
+    }
+    reversed_forward_reader.produces_end_of_stream();
 }
