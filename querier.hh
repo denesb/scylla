@@ -129,6 +129,11 @@ protected:
     std::variant<flat_mutation_reader, reader_concurrency_semaphore::inactive_read_handle> _reader;
     dht::partition_ranges_view _query_ranges;
 
+protected:
+    schema_ptr reader_schema() {
+        return _schema->is_reversed() ? _schema->underlying_schema() : _schema;
+    }
+
 public:
     querier_base(reader_permit permit, std::unique_ptr<const dht::partition_range> range,
             std::unique_ptr<const query::partition_slice> slice, flat_mutation_reader reader, dht::partition_ranges_view query_ranges)
@@ -146,7 +151,7 @@ public:
         , _permit(std::move(permit))
         , _range(std::make_unique<const dht::partition_range>(std::move(range)))
         , _slice(std::make_unique<const query::partition_slice>(std::move(slice)))
-        , _reader(ms.make_reader(_schema, _permit, *_range, *_slice, pc, std::move(trace_ptr), streamed_mutation::forwarding::no, mutation_reader::forwarding::no))
+        , _reader(ms.make_reader(reader_schema(), _permit, *_range, *_slice, pc, std::move(trace_ptr), streamed_mutation::forwarding::no, mutation_reader::forwarding::no))
         , _query_ranges(*_range)
     { }
 

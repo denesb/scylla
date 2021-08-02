@@ -1399,8 +1399,14 @@ compare_atomic_cell_for_merge(atomic_cell_view left, atomic_cell_view right) {
 }
 
 future<std::tuple<lw_shared_ptr<query::result>, cache_temperature>>
-database::query(schema_ptr s, const query::read_command& cmd, query::result_options opts, const dht::partition_range_vector& ranges,
+database::query(schema_ptr original_schema, const query::read_command& cmd, query::result_options opts, const dht::partition_range_vector& ranges,
                 tracing::trace_state_ptr trace_state, db::timeout_clock::time_point timeout) {
+    schema_ptr s;
+    if (cmd.slice.options.contains(query::partition_slice::option::reversed)) {
+        s = original_schema->make_reversed();
+    } else {
+        s = std::move(original_schema);
+    }
     column_family& cf = find_column_family(cmd.cf_id);
     auto& semaphore = get_reader_concurrency_semaphore();
     auto class_config = query::query_class_config{.semaphore = semaphore, .max_memory_for_unlimited_query = *cmd.max_result_size};

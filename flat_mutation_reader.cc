@@ -28,6 +28,7 @@
 #include "seastar/util/reference_wrapper.hh"
 #include "clustering_ranges_walker.hh"
 #include "schema_upgrader.hh"
+#include "schema_builder.hh"
 #include <algorithm>
 #include <stack>
 
@@ -97,6 +98,7 @@ void flat_mutation_reader::impl::clear_buffer_to_next_partition() {
 
 flat_mutation_reader make_reversing_reader(flat_mutation_reader& original, query::max_result_size max_size) {
     class partition_reversing_mutation_reader final : public flat_mutation_reader::impl {
+        schema_ptr _reversed_schema;
         flat_mutation_reader* _source;
         range_tombstone_list _range_tombstones;
         std::stack<mutation_fragment> _mutation_fragments;
@@ -110,10 +112,10 @@ flat_mutation_reader make_reversing_reader(flat_mutation_reader& original, query
                 auto it = std::prev(_range_tombstones.end());
                 push_mutation_fragment(*_schema, _permit, _range_tombstones.pop_as<range_tombstone>(it));
             };
-            position_in_partition::less_compare cmp(*_schema);
+            position_in_partition::tri_compare cmp(*_reversed_schema);
             while (!_mutation_fragments.empty() && !is_buffer_full()) {
                 auto& mf = _mutation_fragments.top();
-                if (!_range_tombstones.empty() && !cmp(_range_tombstones.rbegin()->end_position(), mf.position())) {
+                if (!_range_tombstones.empty() && cmp(_range_tombstones.rbegin()->position(), mf.position()) <= 0) {
                     emit_range_tombstone();
                 } else {
                     _stack_size -= mf.memory_usage();
@@ -148,7 +150,9 @@ flat_mutation_reader make_reversing_reader(flat_mutation_reader& original, query
                         return make_ready_future<stop_iteration>(stop_iteration::yes);
                     }
                 } else if (mf.is_range_tombstone()) {
-                    _range_tombstones.apply(*_schema, std::move(mf.as_range_tombstone()));
+                    auto&& rt = std::move(mf).as_range_tombstone();
+                    rt.reverse();
+                    _range_tombstones.apply(*_schema, std::move(rt));
                 } else {
                     _mutation_fragments.emplace(std::move(mf));
                     _stack_size += _mutation_fragments.top().memory_usage();
@@ -183,6 +187,7 @@ flat_mutation_reader make_reversing_reader(flat_mutation_reader& original, query
     public:
         explicit partition_reversing_mutation_reader(flat_mutation_reader& mr, query::max_result_size max_size)
             : flat_mutation_reader::impl(mr.schema(), mr.permit())
+            , _reversed_schema(schema_builder(_schema).with_clustering_order_reversed().build())
             , _source(&mr)
             , _range_tombstones(*_schema)
             , _max_size(max_size)
