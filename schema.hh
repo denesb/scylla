@@ -66,6 +66,10 @@ enum class ordinal_column_id: column_count_type {};
 
 std::ostream& operator<<(std::ostream& os, ordinal_column_id id);
 
+class schema;
+
+using schema_ptr = seastar::lw_shared_ptr<const schema>;
+
 // Maintains a set of columns used in a query. The columns are
 // identified by ordinal_id.
 //
@@ -671,6 +675,7 @@ private:
     column_count_type _clustering_key_size;
     column_count_type _regular_column_count;
     column_count_type _static_column_count;
+    const schema* _underlying_schema = nullptr;
 
     extensions_map& extensions() {
         return _raw._extensions;
@@ -966,6 +971,26 @@ public:
     const v3_columns& v3() const {
         return _v3_columns;
     }
+
+    // See \ref make_reversed().
+    bool is_reversed() const {
+        return bool(_underlying_schema);
+    }
+
+    // Retrieve the underlying schema, which was reversed.
+    //
+    // Engaged only when is_reversed() == true;
+    // The underlying schema is identical to *this, the only difference being the
+    // order of the clustering key components, which is reversed.
+    // See \ref make_reversed().
+    schema_ptr underlying_schema() const;
+
+    // Make a copy of this schema with clustering order reversed.
+    // The created schema is ephemeral -- it is not registered in the registry
+    // and it is not saved in schema tables -- and it also has a back-reference
+    // to this original schema accessible via the \ref underlying_schema().
+    // The new schema will return `true` from \ref is_reversed().
+    schema_ptr make_reversed() const;
 };
 
 lw_shared_ptr<const schema> make_shared_schema(std::optional<utils::UUID> id, std::string_view ks_name, std::string_view cf_name,

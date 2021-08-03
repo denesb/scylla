@@ -1176,6 +1176,11 @@ schema_builder& schema_builder::with_clustering_order_reversed() {
     return *this;
 }
 
+schema_builder& schema_builder::with_underlying_schema(const schema& s) {
+    _underlying_schema = &s;
+    return *this;
+}
+
 schema_ptr schema_builder::build() {
     schema::raw_schema new_raw = _raw; // Copy so that build() remains idempotent.
 
@@ -1220,7 +1225,11 @@ schema_ptr schema_builder::build() {
             dynamic_pointer_cast<db::paxos_grace_seconds_extension>(it->second)->get_paxos_grace_seconds();
     }
 
-    return make_lw_shared<schema>(schema(new_raw, _view_info));
+    auto new_schema = make_lw_shared<schema>(schema(new_raw, _view_info));
+
+    new_schema->_underlying_schema = _underlying_schema;
+
+    return new_schema;
 }
 
 const cdc::options& schema::cdc_options() const {
@@ -1582,6 +1591,17 @@ bool schema::is_synced() const {
 
 bool schema::equal_columns(const schema& other) const {
     return boost::equal(all_columns(), other.all_columns());
+}
+
+schema_ptr schema::underlying_schema() const {
+    return _underlying_schema->shared_from_this();
+}
+
+schema_ptr schema::make_reversed() const {
+    return schema_builder(*this)
+            .with_clustering_order_reversed()
+            .with_underlying_schema(*this)
+            .build();
 }
 
 raw_view_info::raw_view_info(utils::UUID base_id, sstring base_name, bool include_all_columns, sstring where_clause)

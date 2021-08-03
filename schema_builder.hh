@@ -34,6 +34,7 @@ private:
     std::optional<compact_storage> _compact_storage;
     std::optional<table_schema_version> _version;
     std::optional<raw_view_info> _view_info;
+    const schema* _underlying_schema = nullptr;
     schema_builder(const schema::raw_schema&);
 public:
     schema_builder(std::string_view ks_name, std::string_view cf_name,
@@ -288,6 +289,9 @@ public:
     }
 
     schema_builder& with_clustering_order_reversed();
+
+    // \ref schema::underlying_schema().
+    schema_builder& with_underlying_schema(const schema&);
 
     // Equivalent to with(cp).build()
     schema_ptr build(compact_storage cp);
