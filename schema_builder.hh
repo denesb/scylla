@@ -39,6 +39,7 @@ public:
     schema_builder(std::string_view ks_name, std::string_view cf_name,
             std::optional<utils::UUID> = { },
             data_type regular_column_name_type = utf8_type);
+    schema_builder(const schema&);
     schema_builder(const schema_ptr);
 
     schema_builder& set_uuid(const utils::UUID& id) {

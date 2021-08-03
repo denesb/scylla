@@ -929,13 +929,15 @@ schema_builder::schema_builder(std::string_view ks_name, std::string_view cf_nam
     _raw._regular_column_name_type = rct;
 }
 
-schema_builder::schema_builder(const schema_ptr s)
-    : schema_builder(s->_raw)
+schema_builder::schema_builder(const schema& s)
+    : schema_builder(s._raw)
 {
-    if (s->is_view()) {
-        _view_info = s->view_info()->raw();
+    if (s.is_view()) {
+        _view_info = s.view_info()->raw();
     }
 }
+
+schema_builder::schema_builder(const schema_ptr s) : schema_builder(*s) { }
 
 schema_builder::schema_builder(const schema::raw_schema& raw)
     : _raw(raw)
