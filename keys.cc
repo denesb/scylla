@@ -130,6 +130,16 @@ bound_kind invert_kind(bound_kind k) {
     abort();
 }
 
+bound_kind reverse_kind(bound_kind k) {
+    switch (k) {
+    case bound_kind::excl_start: return bound_kind::excl_end;
+    case bound_kind::incl_start: return bound_kind::incl_end;
+    case bound_kind::excl_end:   return bound_kind::excl_start;
+    case bound_kind::incl_end:   return bound_kind::incl_start;
+    }
+    abort();
+}
+
 int32_t weight(bound_kind k) {
     switch (k) {
     case bound_kind::excl_end:
