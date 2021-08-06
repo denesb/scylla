@@ -1860,9 +1860,11 @@ with open(buildfile_tmp, 'w') as f:
                     f.write('build $builddir/{}/{}_g: {}.{} {} | {} {}\n'.format(mode, binary, regular_link_rule, mode, str.join(' ', objs), seastar_dep, seastar_testing_dep))
                     f.write('   libs = {}\n'.format(local_libs))
                 else:
-                    f.write('build $builddir/{}/{}: {}.{} {} | {}\n'.format(mode, binary, regular_link_rule, mode, str.join(' ', objs), seastar_dep))
-                    if has_thrift:
-                        f.write('   libs =  {} {} $seastar_libs_{} $libs\n'.format(thrift_libs, maybe_static(args.staticboost, '-lboost_system'), mode))
+                    f.write('build $builddir/{}/{}: {}.{} {} | {} {}\n'.format(mode, binary, regular_link_rule, mode, str.join(' ', objs), seastar_dep, scylla_core_so_dep))
+                    f.write('   libs =  {} {} $seastar_libs_{} $libs\n'.format(
+                            thrift_libs if has_thrift else '',
+                            maybe_static(args.staticboost, '-lboost_system'),
+                            mode))
             for src in srcs:
                 if src.endswith('.cc'):
                     obj = '$builddir/' + mode + '/' + src.replace('.cc', '.o')
