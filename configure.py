@@ -319,6 +319,7 @@ modes = {
         'can_have_debug_info': True,
         'default': True,
         'description': 'a mode with no optimizations, with sanitizers, and with additional debug checks enabled, used for testing',
+        'scylla_as_shared_library': True,
     },
     'release': {
         'cxxflags': '-ffunction-sections -fdata-sections ',
@@ -330,6 +331,7 @@ modes = {
         'can_have_debug_info': True,
         'default': True,
         'description': 'a mode with optimizations and no debug checks, used for production builds',
+        'scylla_as_shared_library': True,
     },
     'dev': {
         'cxxflags': '-DDEVEL -DSEASTAR_ENABLE_ALLOC_FAILURE_INJECTION -DSCYLLA_ENABLE_ERROR_INJECTION',
@@ -341,6 +343,7 @@ modes = {
         'can_have_debug_info': False,
         'default': True,
         'description': 'a mode with no optimizations and no debug checks, optimized for fast build times, used for development',
+        'scylla_as_shared_library': True,
     },
     'sanitize': {
         'cxxflags': '-DDEBUG -DSANITIZE -DDEBUG_LSA_SANITIZER -DSCYLLA_ENABLE_ERROR_INJECTION',
@@ -352,6 +355,7 @@ modes = {
         'can_have_debug_info': True,
         'default': False,
         'description': 'a mode with optimizations and sanitizers enabled, used for finding memory errors',
+        'scylla_as_shared_library': False,
     },
     'coverage': {
         'cxxflags': '-fprofile-instr-generate -fcoverage-mapping -g -gz',
@@ -363,6 +367,7 @@ modes = {
         'can_have_debug_info': True,
         'default': False,
         'description': 'a mode exclusively used for generating test coverage reports',
+        'scylla_as_shared_library': False,
     },
 }
 
@@ -1105,6 +1110,9 @@ idls = ['idl/gossip_digest.idl.hh',
 
 headers = find_headers('.', excluded_dirs=['idl', 'build', 'seastar', '.git'])
 
+scylla_core_so = 'libscylla-core.so'
+scylla_core_placeholder = [scylla_core_so]
+
 scylla_tests_generic_dependencies = [
     'test/lib/cql_test_env.cc',
     'test/lib/test_services.cc',
@@ -1114,7 +1122,7 @@ scylla_tests_generic_dependencies = [
     'test/lib/sstable_run_based_compaction_strategy_for_tests.cc',
 ]
 
-scylla_tests_dependencies = scylla_core + idls + scylla_tests_generic_dependencies + [
+scylla_tests_dependencies = scylla_core_placeholder + idls + scylla_tests_generic_dependencies + [
     'test/lib/cql_assertions.cc',
     'test/lib/result_set_assertions.cc',
     'test/lib/mutation_source_test.cc',
@@ -1127,11 +1135,11 @@ scylla_tests_dependencies = scylla_core + idls + scylla_tests_generic_dependenci
 scylla_raft_dependencies = scylla_raft_core + ['utils/uuid.cc']
 
 deps = {
-    'scylla': idls + ['main.cc', 'release.cc', 'utils/build_id.cc'] + scylla_core + api + alternator + redis,
-    'test/tools/cql_repl': idls + ['test/tools/cql_repl.cc'] + scylla_core + scylla_tests_generic_dependencies,
+    'scylla': ['main.cc', 'release.cc', 'utils/build_id.cc'] + idls + scylla_core_placeholder + api + alternator + redis,
+    'test/tools/cql_repl': ['test/tools/cql_repl.cc'] + idls + scylla_core_placeholder + scylla_tests_generic_dependencies,
     #FIXME: we don't need all of scylla_core here, only the types module, need to modularize scylla_core.
-    'tools/scylla-types': idls + ['tools/scylla-types.cc'] + scylla_core,
-    'tools/scylla-sstable-index': idls + ['tools/scylla-sstable-index.cc'] + scylla_core,
+    'tools/scylla-types': ['tools/scylla-types.cc'] + idls + scylla_core_placeholder,
+    'tools/scylla-sstable-index': ['tools/scylla-sstable-index.cc'] + idls + scylla_core_placeholder,
 }
 
 pure_boost_tests = set([
@@ -1205,7 +1213,7 @@ for t in scylla_tests:
     if t not in tests_not_using_seastar_test_framework:
         deps[t] += scylla_tests_dependencies
     else:
-        deps[t] += scylla_core + idls + scylla_tests_generic_dependencies
+        deps[t] += scylla_core_placeholder + idls + scylla_tests_generic_dependencies
 
 perf_tests_seastar_deps = [
     'seastar/tests/perf/perf_tests.cc'
@@ -1260,8 +1268,8 @@ deps['test/raft/randomized_nemesis_test'] = ['test/raft/randomized_nemesis_test.
 deps['test/raft/fsm_test'] =  ['test/raft/fsm_test.cc', 'test/lib/log.cc'] + scylla_raft_dependencies
 deps['test/raft/etcd_test'] =  ['test/raft/etcd_test.cc', 'test/lib/log.cc'] + scylla_raft_dependencies
 deps['test/raft/raft_sys_table_storage_test'] = ['test/raft/raft_sys_table_storage_test.cc'] + \
-    scylla_core + scylla_tests_generic_dependencies
-deps['test/raft/raft_address_map_test'] = ['test/raft/raft_address_map_test.cc'] + scylla_core
+    scylla_core_placeholder + scylla_tests_generic_dependencies
+deps['test/raft/raft_address_map_test'] = ['test/raft/raft_address_map_test.cc'] + scylla_core_placeholder
 
 deps['utils/gz/gen_crc_combine_table'] = ['utils/gz/gen_crc_combine_table.cc']
 
@@ -1531,13 +1539,14 @@ def real_relpath(path, start):
 
 def configure_seastar(build_dir, mode, mode_config):
     seastar_build_dir = os.path.join(build_dir, mode, 'seastar')
+    fpic_flag = ';-fpic' if mode_config['scylla_as_shared_library'] else ''
 
     seastar_cmake_args = [
         '-DCMAKE_BUILD_TYPE={}'.format(mode_config['cmake_build_type']),
         '-DCMAKE_C_COMPILER={}'.format(args.cc),
         '-DCMAKE_CXX_COMPILER={}'.format(args.cxx),
         '-DCMAKE_EXPORT_NO_PACKAGE_REGISTRY=ON',
-        '-DSeastar_CXX_FLAGS={}'.format((seastar_cflags).replace(' ', ';')),
+        '-DSeastar_CXX_FLAGS={}{}'.format((seastar_cflags).replace(' ', ';'), fpic_flag),
         '-DSeastar_LD_FLAGS={}'.format(semicolon_separated(seastar_ldflags, modes[mode]['cxx_ld_flags'])),
         '-DSeastar_CXX_DIALECT=gnu++20',
         '-DSeastar_API_LEVEL=6',
@@ -1664,8 +1673,8 @@ for pkg in pkgs:
     args.user_cflags += ' ' + pkg_config(pkg, '--cflags')
     libs += ' ' + pkg_config(pkg, '--libs')
 args.user_cflags += ' -Iabseil'
-user_cflags = args.user_cflags + ' -fvisibility=hidden'
-user_ldflags = args.user_ldflags + ' -fvisibility=hidden'
+user_cflags = args.user_cflags# + ' -fvisibility=hidden'
+user_ldflags = args.user_ldflags# + ' -fvisibility=hidden'
 if args.staticcxx:
     user_ldflags += " -static-libstdc++"
 if args.staticthrift:
@@ -1744,9 +1753,9 @@ with open(buildfile_tmp, 'w') as f:
         ''').format(**globals()))
     for mode in build_modes:
         modeval = modes[mode]
-        fmt_lib = 'fmt'
+        scylla_core_so_dep = f'$builddir/{mode}/{scylla_core_so}' if modeval['scylla_as_shared_library'] else ''
         f.write(textwrap.dedent('''\
-            cxx_ld_flags_{mode} = {cxx_ld_flags}
+            cxx_ld_flags_{mode} = {fpic_flag} {cxx_ld_flags}
             ld_flags_{mode} = $cxx_ld_flags_{mode}
             cxxflags_{mode} = $cxx_ld_flags_{mode} {cxxflags} -iquote. -iquote $builddir/{mode}/gen
             libs_{mode} = -l{fmt_lib}
@@ -1756,11 +1765,11 @@ with open(buildfile_tmp, 'w') as f:
               description = CXX $out
               depfile = $out.d
             rule link.{mode}
-              command = $cxx  $ld_flags_{mode} $ldflags -o $out $in $libs $libs_{mode}
+              command = $cxx  $ld_flags_{mode} $ldflags -o $out $in {scylla_core_so_dep} $libs $libs_{mode}
               description = LINK $out
               pool = link_pool
             rule link_stripped.{mode}
-              command = $cxx  $ld_flags_{mode} -s $ldflags -o $out $in $libs $libs_{mode}
+              command = $cxx  $ld_flags_{mode} -s $ldflags -o $out $in {scylla_core_so_dep} $libs $libs_{mode}
               description = LINK (stripped) $out
               pool = link_pool
             rule link_build.{mode}
@@ -1770,6 +1779,9 @@ with open(buildfile_tmp, 'w') as f:
             rule ar.{mode}
               command = rm -f $out; ar cr $out $in; ranlib $out
               description = AR $out
+            rule so.{mode}
+              command = $cxx $ld_flags_{mode} $ldflags_build -shared -o $out $in $libs $libs_{mode}
+              description = SO $out
             rule thrift.{mode}
                 command = thrift -gen cpp:cob_style -out $builddir/{mode}/gen $in
                 description = THRIFT $in
@@ -1799,11 +1811,23 @@ with open(buildfile_tmp, 'w') as f:
               command = ./test.py --mode={mode} --repeat={test_repeat} --timeout={test_timeout}
               pool = console
               description = TEST {mode}
-            ''').format(mode=mode, antlr3_exec=antlr3_exec, fmt_lib=fmt_lib, test_repeat=test_repeat, test_timeout=test_timeout, **modeval))
+            ''').format(
+                    mode=mode,
+                    antlr3_exec=antlr3_exec,
+                    fmt_lib='fmt',
+                    fpic_flag='-fpic' if modeval['scylla_as_shared_library'] else '',
+                    scylla_core_so_dep=scylla_core_so_dep,
+                    test_repeat=test_repeat,
+                    test_timeout=test_timeout,
+                    **modeval))
+        mode_build_artifacts = build_artifacts
+        if modeval['scylla_as_shared_library']:
+            mode_build_artifacts.add(scylla_core_so)
+            deps[scylla_core_so] = scylla_core
         f.write(
             'build {mode}-build: phony {artifacts}\n'.format(
                 mode=mode,
-                artifacts=str.join(' ', ('$builddir/' + mode + '/' + x for x in build_artifacts))
+                artifacts=str.join(' ', ('$builddir/' + mode + '/' + x for x in mode_build_artifacts))
             )
         )
         include_dist_target = f'dist-{mode}' if args.enable_dist is None or args.enable_dist else ''
@@ -1816,10 +1840,12 @@ with open(buildfile_tmp, 'w') as f:
         antlr3_grammars = set()
         seastar_dep = '$builddir/{}/seastar/libseastar.a'.format(mode)
         seastar_testing_dep = '$builddir/{}/seastar/libseastar_testing.a'.format(mode)
-        for binary in build_artifacts:
+        for binary in mode_build_artifacts:
             if binary in other:
                 continue
             srcs = deps[binary]
+            if not modeval['scylla_as_shared_library'] and scylla_core_so in srcs:
+                del srcs[srcs.index(scylla_core_so)]
             objs = ['$builddir/' + mode + '/' + src.replace('.cc', '.o')
                     for src in srcs
                     if src.endswith('.cc')]
@@ -1834,6 +1860,11 @@ with open(buildfile_tmp, 'w') as f:
                     objs += dep.objects('$builddir/' + mode + '/gen')
             if binary.endswith('.a'):
                 f.write('build $builddir/{}/{}: ar.{} {}\n'.format(mode, binary, mode, str.join(' ', objs)))
+            elif binary.endswith('.so'):
+                f.write('build $builddir/{}/{}: so.{} {}\n'.format(mode, binary, mode, str.join(' ', objs)))
+                f.write('   libs =  {} $seastar_libs_{} $libs\n'.format(
+                        thrift_libs if has_thrift else '',
+                        mode))
             else:
                 objs.extend(['$builddir/' + mode + '/' + artifact for artifact in [
                     'libdeflate/libdeflate.a',
@@ -1855,9 +1886,9 @@ with open(buildfile_tmp, 'w') as f:
                     # So we strip the tests by default; The user can very
                     # quickly re-link the test unstripped by adding a "_g"
                     # to the test name, e.g., "ninja build/release/testname_g"
-                    f.write('build $builddir/{}/{}: {}.{} {} | {} {}\n'.format(mode, binary, tests_link_rule, mode, str.join(' ', objs), seastar_dep, seastar_testing_dep))
+                    f.write('build $builddir/{}/{}: {}.{} {} | {} {} {}\n'.format(mode, binary, tests_link_rule, mode, str.join(' ', objs), seastar_dep, seastar_testing_dep, scylla_core_so_dep))
                     f.write('   libs = {}\n'.format(local_libs))
-                    f.write('build $builddir/{}/{}_g: {}.{} {} | {} {}\n'.format(mode, binary, regular_link_rule, mode, str.join(' ', objs), seastar_dep, seastar_testing_dep))
+                    f.write('build $builddir/{}/{}_g: {}.{} {} | {} {} {}\n'.format(mode, binary, regular_link_rule, mode, str.join(' ', objs), seastar_dep, seastar_testing_dep, scylla_core_so_dep))
                     f.write('   libs = {}\n'.format(local_libs))
                 else:
                     f.write('build $builddir/{}/{}: {}.{} {} | {} {}\n'.format(mode, binary, regular_link_rule, mode, str.join(' ', objs), seastar_dep, scylla_core_so_dep))
@@ -1883,6 +1914,8 @@ with open(buildfile_tmp, 'w') as f:
                     antlr3_grammars.add(src)
                 elif src.endswith('.S'):
                     pass # just add as-is
+                elif src == scylla_core_so:
+                    pass # this is a placeholder for core, will be added to the link line
                 else:
                     raise Exception('No rule for ' + src)
         compiles['$builddir/' + mode + '/gen/utils/gz/crc_combine_table.o'] = '$builddir/' + mode + '/gen/utils/gz/crc_combine_table.cc'
@@ -2127,7 +2160,7 @@ with open(buildfile_tmp, 'w') as f:
         build mode_list: mode_list
         default {modes_list}
         ''').format(modes_list=' '.join(default_modes), **globals()))
-    unit_test_list = set(test for test in build_artifacts if test in set(tests))
+    unit_test_list = set(test for test in mode_build_artifacts if test in set(tests))
     f.write(textwrap.dedent('''\
         rule unit_test_list
             command = /usr/bin/env echo -e '{unit_test_list}'
