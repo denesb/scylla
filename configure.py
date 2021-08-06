@@ -1849,7 +1849,7 @@ with open(buildfile_tmp, 'w') as f:
                         pc_path = pc[mode].replace('seastar.pc', 'seastar-testing.pc')
                         local_libs += ' ' + pkg_config(pc_path, '--libs', '--static')
                     if has_thrift:
-                        local_libs += ' ' + thrift_libs + ' ' + maybe_static(args.staticboost, '-lboost_system')
+                        local_libs += ' ' + thrift_libs
                     # Our code's debugging information is huge, and multiplied
                     # by many tests yields ridiculous amounts of disk space.
                     # So we strip the tests by default; The user can very
@@ -1861,8 +1861,7 @@ with open(buildfile_tmp, 'w') as f:
                     f.write('   libs = {}\n'.format(local_libs))
                 else:
                     f.write('build $builddir/{}/{}: {}.{} {} | {}\n'.format(mode, binary, regular_link_rule, mode, str.join(' ', objs), seastar_dep))
-                    if has_thrift:
-                        f.write('   libs =  {} {} $seastar_libs_{} $libs\n'.format(thrift_libs, maybe_static(args.staticboost, '-lboost_system'), mode))
+                    f.write('   libs =  {} $seastar_libs_{} $libs\n'.format(thrift_libs if has_thrift else '', mode))
             for src in srcs:
                 if src.endswith('.cc'):
                     obj = '$builddir/' + mode + '/' + src.replace('.cc', '.o')
