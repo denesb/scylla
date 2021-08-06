@@ -980,6 +980,7 @@ scylla_core = (['database.cc',
                 'duration.cc',
                 'vint-serialization.cc',
                 'utils/arch/powerpc/crc32-vpmsum/crc32_wrapper.cc',
+                'utils/arch/powerpc/crc32-vpmsum/crc32.S',
                 'querier.cc',
                 'mutation_writer/multishard_writer.cc',
                 'multishard_mutation_query.cc',
@@ -1822,7 +1823,6 @@ with open(buildfile_tmp, 'w') as f:
             objs = ['$builddir/' + mode + '/' + src.replace('.cc', '.o')
                     for src in srcs
                     if src.endswith('.cc')]
-            objs.append('$builddir/../utils/arch/powerpc/crc32-vpmsum/crc32.S')
             has_thrift = False
             for dep in deps[binary]:
                 if isinstance(dep, Thrift):
@@ -1879,6 +1879,8 @@ with open(buildfile_tmp, 'w') as f:
                     thrifts.add(src)
                 elif src.endswith('.g'):
                     antlr3_grammars.add(src)
+                elif src.endswith('.S'):
+                    pass # just add as-is
                 else:
                     raise Exception('No rule for ' + src)
         compiles['$builddir/' + mode + '/gen/utils/gz/crc_combine_table.o'] = '$builddir/' + mode + '/gen/utils/gz/crc_combine_table.cc'
