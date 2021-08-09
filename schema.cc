@@ -334,6 +334,15 @@ schema::raw_schema::raw_schema(utils::UUID id)
     , _sharder(::get_sharder(smp::count, default_partitioner_ignore_msb))
 { }
 
+void schema::init_view_info_from_other(const schema& o) {
+    if (o.is_view()) {
+        _view_info = std::make_unique<::view_info>(*this, o.view_info()->raw());
+        if (o.view_info()->base_info()) {
+            _view_info->set_base_info(o.view_info()->base_info());
+        }
+    }
+}
+
 schema::schema(const raw_schema& raw, std::optional<raw_view_info> raw_view_info)
     : _raw(raw)
     , _offsets([this] {
@@ -428,12 +437,7 @@ schema::schema(const schema& o)
     , _offsets(o._offsets)
 {
     rebuild();
-    if (o.is_view()) {
-        _view_info = std::make_unique<::view_info>(*this, o.view_info()->raw());
-        if (o.view_info()->base_info()) {
-            _view_info->set_base_info(o.view_info()->base_info());
-        }
-    }
+    init_view_info_from_other(o);
 }
 
 lw_shared_ptr<const schema> make_shared_schema(std::optional<utils::UUID> id, std::string_view ks_name,

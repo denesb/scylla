@@ -698,6 +698,8 @@ private:
     lw_shared_ptr<cql3::column_specification> make_column_specification(const column_definition& def);
     void rebuild();
 
+    void init_view_info_from_other(const schema& o);
+
     // Helper to allow directly constructing schema_ptr via private constructors
     template <typename... Arg>
     static schema_ptr make(Arg&&... arg) {
