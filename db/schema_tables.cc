@@ -306,6 +306,7 @@ schema_ptr tables() {
          {"min_index_interval", int32_type},
          {"read_repair_chance", double_type},
          {"speculative_retry", utf8_type},
+         {"transformation", byte_type},
         },
         // static columns
         {},
@@ -514,6 +515,7 @@ schema_ptr views() {
          {"min_index_interval", int32_type},
          {"read_repair_chance", double_type},
          {"speculative_retry", utf8_type},
+         {"transformation", byte_type},
         },
         // static columns
         {},
@@ -1882,7 +1884,8 @@ std::vector<mutation> make_create_table_mutations(lw_shared_ptr<keyspace_metadat
     return mutations;
 }
 
-static void add_table_params_to_mutations(mutation& m, const clustering_key& ckey, schema_ptr table, api::timestamp_type timestamp) {
+static void add_table_params_to_mutations(mutation& m, const clustering_key& ckey, schema_ptr table, schema_transformation_type transformation,
+        api::timestamp_type timestamp) {
     m.set_clustered_cell(ckey, "bloom_filter_fp_chance", table->bloom_filter_fp_chance(), timestamp);
     m.set_clustered_cell(ckey, "comment", table->comment(), timestamp);
     m.set_clustered_cell(ckey, "dclocal_read_repair_chance", table->dc_local_read_repair_chance(), timestamp);
@@ -1894,6 +1897,7 @@ static void add_table_params_to_mutations(mutation& m, const clustering_key& cke
     m.set_clustered_cell(ckey, "read_repair_chance", table->read_repair_chance(), timestamp);
     m.set_clustered_cell(ckey, "speculative_retry", table->speculative_retry().to_sstring(), timestamp);
     m.set_clustered_cell(ckey, "crc_check_chance", table->crc_check_chance(), timestamp);
+    m.set_clustered_cell(ckey, "transformation", static_cast<int8_t>(transformation), timestamp);
 
     store_map(m, ckey, "caching", timestamp, table->caching_options().to_map());
 
@@ -2011,6 +2015,9 @@ mutation make_scylla_tables_mutation(schema_ptr table, api::timestamp_type times
 
 static schema_mutations make_table_mutations(schema_ptr table, api::timestamp_type timestamp, bool with_columns_and_triggers)
 {
+    const auto transformation = table->current_transformation();
+    table = table->underlying_schema();
+
     // When adding new schema properties, don't set cells for default values so that
     // both old and new nodes will see the same version during rolling upgrades.
 
@@ -2040,7 +2047,7 @@ static schema_mutations make_table_mutations(schema_ptr table, api::timestamp_ty
 
     m.set_clustered_cell(ckey, "flags", make_list_value(s->get_column_definition("flags")->type, flags), timestamp);
 
-    add_table_params_to_mutations(m, ckey, table, timestamp);
+    add_table_params_to_mutations(m, ckey, table, transformation, timestamp);
 
     mutation columns_mutation(columns(), pkey);
     mutation computed_columns_mutation(computed_columns(), pkey);
@@ -2549,6 +2556,10 @@ schema_ptr create_table_from_mutations(const schema_ctxt& ctxt, schema_mutations
         builder.set_wait_for_sync_to_commitlog(true);
     }
 
+    if (auto val = table_row.get<int8_t>("transformation")) {
+        builder.with_transformation(static_cast<schema_transformation_type>(*val));
+    }
+
     return builder.build();
 }
 
@@ -2769,6 +2780,11 @@ view_ptr create_view_from_mutations(const schema_ctxt& ctxt, schema_mutations sm
     auto where_clause = row.get_nonnull<sstring>("where_clause");
 
     builder.with_view_info(std::move(base_id), std::move(base_name), include_all_columns, std::move(where_clause));
+
+    if (auto val = row.get<int8_t>("transformation")) {
+        builder.with_transformation(static_cast<schema_transformation_type>(*val));
+    }
+
     return view_ptr(builder.build());
 }
 
@@ -2798,6 +2814,9 @@ future<std::vector<view_ptr>> create_views_from_schema_partition(distributed<ser
 
 static schema_mutations make_view_mutations(view_ptr view, api::timestamp_type timestamp, bool with_columns)
 {
+    const auto transformation = view->current_transformation();
+    view = view_ptr(view->underlying_schema());
+
     // When adding new schema properties, don't set cells for default values so that
     // both old and new nodes will see the same version during rolling upgrades.
 
@@ -2815,7 +2834,7 @@ static schema_mutations make_view_mutations(view_ptr view, api::timestamp_type t
     m.set_clustered_cell(ckey, "include_all_columns", view->view_info()->include_all_columns(), timestamp);
     m.set_clustered_cell(ckey, "id", view->id(), timestamp);
 
-    add_table_params_to_mutations(m, ckey, view, timestamp);
+    add_table_params_to_mutations(m, ckey, view, transformation, timestamp);
 
     mutation columns_mutation(columns(), pkey);
     mutation view_virtual_columns_mutation(view_virtual_columns(), pkey);
