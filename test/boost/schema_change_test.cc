@@ -807,3 +807,27 @@ SEASTAR_TEST_CASE(test_schema_tables_use_null_sharder) {
         }).get();
     });
 }
+
+SEASTAR_TEST_CASE(test_schema_make_reversed) {
+    auto schema = schema_builder("tests", get_name())
+            .with_column("pk", bytes_type, column_kind::partition_key)
+            .with_column("ck", bytes_type, column_kind::clustering_key)
+            .with_column("v1", bytes_type)
+            .build();
+    testlog.info("            schema->version(): {}", schema->version());
+
+    auto reversed_schema = schema->make_reversed();
+    testlog.info("   reversed_schema->version(): {}", reversed_schema->version());
+
+    BOOST_REQUIRE(schema->version() != reversed_schema->version());
+    BOOST_REQUIRE(schema->version().version() == reversed_schema->version().version());
+    BOOST_REQUIRE(schema->version().get_least_significant_bits() == reversed_schema->version().get_least_significant_bits());
+
+    auto re_reversed_schema = reversed_schema->make_reversed();
+    testlog.info("re_reversed_schema->version(): {}", re_reversed_schema->version());
+
+    BOOST_REQUIRE(schema->version() == re_reversed_schema->version());
+    BOOST_REQUIRE(reversed_schema->version() != re_reversed_schema->version());
+
+    return make_ready_future<>();
+}
