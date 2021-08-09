@@ -584,6 +584,10 @@ public:
     }
 };
 
+class schema;
+
+using schema_ptr = lw_shared_ptr<const schema>;
+
 /*
  * Effectively immutable.
  * Not safe to access across cores because of shared_ptr's.
@@ -695,6 +699,8 @@ public:
         data_type type;
     };
 private:
+    struct reversed_tag { };
+
     lw_shared_ptr<cql3::column_specification> make_column_specification(const column_definition& def);
     void rebuild();
 
@@ -703,6 +709,7 @@ private:
     schema(const raw_schema&, std::optional<raw_view_info>);
 public:
     schema(const schema&);
+    schema(const schema&, reversed_tag);
     ~schema();
     table_schema_version version() const {
         return _raw._version;
@@ -969,6 +976,8 @@ public:
     const v3_columns& v3() const {
         return _v3_columns;
     }
+
+    schema_ptr make_reversed() const;
 };
 
 lw_shared_ptr<const schema> make_shared_schema(std::optional<utils::UUID> id, std::string_view ks_name, std::string_view cf_name,
@@ -976,8 +985,6 @@ lw_shared_ptr<const schema> make_shared_schema(std::optional<utils::UUID> id, st
     std::vector<schema::column> static_columns, data_type regular_column_name_type, sstring comment = "");
 
 bool operator==(const schema&, const schema&);
-
-using schema_ptr = lw_shared_ptr<const schema>;
 
 /**
  * Wrapper for schema_ptr used by functions that expect an engaged view_info field.

@@ -432,6 +432,21 @@ schema::schema(const schema& o)
     init_view_info_from_other(o);
 }
 
+schema::schema(const schema& s, reversed_tag)
+    : _raw(s._raw)
+    , _offsets(s._offsets)
+{
+    _raw._version = utils::UUID(s._raw._version.get_most_significant_bits(), ~s._raw._version.get_least_significant_bits());
+    for (auto& col : _raw._columns) {
+        if (col.kind == column_kind::clustering_key) {
+            col.type = reversed(col.type);
+        }
+    }
+
+    rebuild();
+    init_view_info_from_other(s);
+}
+
 lw_shared_ptr<const schema> make_shared_schema(std::optional<utils::UUID> id, std::string_view ks_name,
     std::string_view cf_name, std::vector<schema::column> partition_key, std::vector<schema::column> clustering_key,
     std::vector<schema::column> regular_columns, std::vector<schema::column> static_columns,
@@ -1570,6 +1585,10 @@ bool schema::is_synced() const {
 
 bool schema::equal_columns(const schema& other) const {
     return boost::equal(all_columns(), other.all_columns());
+}
+
+schema_ptr schema::make_reversed() const {
+    return make_lw_shared<schema>(*this, schema::reversed_tag{});
 }
 
 raw_view_info::raw_view_info(utils::UUID base_id, sstring base_name, bool include_all_columns, sstring where_clause)
