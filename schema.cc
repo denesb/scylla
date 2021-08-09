@@ -267,6 +267,19 @@ const std::vector<column_definition>& v3_columns::all_columns() const {
     return _columns;
 }
 
+
+struct schema::transformation {
+    schema_ptr underlying_schema;
+    schema_transformation_type transformation_type;
+
+    static schema_ptr make_transformed_schema(schema_ptr s, schema_transformation_type t) {
+        if (t == schema_transformation_type::none) {
+            return s;
+        }
+        return schema::make(std::move(s), t);
+    }
+};
+
 void schema::rebuild() {
     _partition_key_type = make_lw_shared<compound_type<>>(get_column_types(partition_key_columns()));
     _clustering_key_type = make_lw_shared<compound_prefix>(get_column_types(clustering_key_columns()));
@@ -430,6 +443,22 @@ schema::schema(const raw_schema& raw, std::optional<raw_view_info> raw_view_info
     if (raw_view_info) {
         _view_info = std::make_unique<::view_info>(*this, *raw_view_info);
     }
+}
+
+schema::schema(schema_ptr s, schema_transformation_type t)
+    : _raw(s->_raw)
+    , _offsets(s->_offsets)
+{
+    _transformation = std::make_unique<schema::transformation>(schema::transformation{s, t});
+
+    switch (t) {
+        case schema_transformation_type::none:
+            throw std::logic_error("schema(): attempted to build transformed schema without a transformation");
+            break;
+    }
+
+    rebuild();
+    init_view_info_from_other(*s);
 }
 
 schema::schema(const schema& o)
@@ -1179,6 +1208,11 @@ schema_builder& schema_builder::with_clustering_order_reversed() {
     return *this;
 }
 
+schema_builder& schema_builder::with_transformation(schema_transformation_type t) {
+    _transformation_type = t;
+    return *this;
+}
+
 schema_ptr schema_builder::build() {
     schema::raw_schema new_raw = _raw; // Copy so that build() remains idempotent.
 
@@ -1223,7 +1257,7 @@ schema_ptr schema_builder::build() {
             dynamic_pointer_cast<db::paxos_grace_seconds_extension>(it->second)->get_paxos_grace_seconds();
     }
 
-    return schema::make(new_raw, _view_info);
+    return schema::transformation::make_transformed_schema(schema::make(new_raw, _view_info), _transformation_type);
 }
 
 const cdc::options& schema::cdc_options() const {
@@ -1585,6 +1619,32 @@ bool schema::is_synced() const {
 
 bool schema::equal_columns(const schema& other) const {
     return boost::equal(all_columns(), other.all_columns());
+}
+
+schema_ptr schema::make_transformed(schema_transformation_type t) const {
+    if (_transformation) {
+        if (_transformation->transformation_type == t) {
+            return shared_from_this();
+        }
+        throw std::logic_error(fmt::format("schema::make_transformed(): cannot apply transformation {} already having a transformation ({})", t,
+                    _transformation->transformation_type));
+    }
+    return schema::transformation::make_transformed_schema(shared_from_this(), t);
+}
+
+schema_ptr schema::underlying_schema() const {
+    if (_transformation) {
+        return _transformation->underlying_schema;
+    } else {
+        return shared_from_this();
+    }
+}
+
+schema_transformation_type schema::current_transformation() const {
+    if (_transformation) {
+        return _transformation->transformation_type;
+    }
+    return schema_transformation_type::none;
 }
 
 raw_view_info::raw_view_info(utils::UUID base_id, sstring base_name, bool include_all_columns, sstring where_clause)

@@ -64,6 +64,10 @@ using column_id = column_count_type;
 // mixing wtih column id.
 enum class ordinal_column_id: column_count_type {};
 
+class schema;
+
+using schema_ptr = lw_shared_ptr<const schema>;
+
 std::ostream& operator<<(std::ostream& os, ordinal_column_id id);
 
 // Maintains a set of columns used in a query. The columns are
@@ -584,6 +588,10 @@ public:
     }
 };
 
+enum class schema_transformation_type : uint8_t {
+    none = 0,
+};
+
 /*
  * Effectively immutable.
  * Not safe to access across cores because of shared_ptr's.
@@ -672,6 +680,9 @@ private:
     column_count_type _regular_column_count;
     column_count_type _static_column_count;
 
+    struct transformation;
+    std::unique_ptr<transformation> _transformation;
+
     extensions_map& extensions() {
         return _raw._extensions;
     }
@@ -710,6 +721,8 @@ private:
     }
 
     schema(const raw_schema&, std::optional<raw_view_info>);
+    // t != schema_transformation_type::none
+    schema(schema_ptr s, schema_transformation_type t);
 public:
     schema(const schema&);
     ~schema();
@@ -978,6 +991,10 @@ public:
     const v3_columns& v3() const {
         return _v3_columns;
     }
+
+    schema_ptr make_transformed(schema_transformation_type) const;
+    schema_transformation_type current_transformation() const;
+    schema_ptr underlying_schema() const;
 };
 
 lw_shared_ptr<const schema> make_shared_schema(std::optional<utils::UUID> id, std::string_view ks_name, std::string_view cf_name,
@@ -985,8 +1002,6 @@ lw_shared_ptr<const schema> make_shared_schema(std::optional<utils::UUID> id, st
     std::vector<schema::column> static_columns, data_type regular_column_name_type, sstring comment = "");
 
 bool operator==(const schema&, const schema&);
-
-using schema_ptr = lw_shared_ptr<const schema>;
 
 /**
  * Wrapper for schema_ptr used by functions that expect an engaged view_info field.
