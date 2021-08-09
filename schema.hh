@@ -590,6 +590,7 @@ public:
 
 enum class schema_transformation_type : uint8_t {
     none = 0,
+    reversed,
 };
 
 /*
@@ -995,6 +996,10 @@ public:
     schema_ptr make_transformed(schema_transformation_type) const;
     schema_transformation_type current_transformation() const;
     schema_ptr underlying_schema() const;
+
+    schema_ptr make_reversed() const {
+        return make_transformed(schema_transformation_type::reversed);
+    }
 };
 
 lw_shared_ptr<const schema> make_shared_schema(std::optional<utils::UUID> id, std::string_view ks_name, std::string_view cf_name,

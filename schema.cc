@@ -455,6 +455,9 @@ schema::schema(schema_ptr s, schema_transformation_type t)
         case schema_transformation_type::none:
             throw std::logic_error("schema(): attempted to build transformed schema without a transformation");
             break;
+        case schema_transformation_type::reversed:
+            reverse_clustering_order(_raw._columns);
+            break;
     }
 
     rebuild();
