@@ -697,6 +697,9 @@ public:
 private:
     lw_shared_ptr<cql3::column_specification> make_column_specification(const column_definition& def);
     void rebuild();
+
+    void init_view_info_from_other(const schema& o);
+
     schema(const raw_schema&, std::optional<raw_view_info>);
 public:
     schema(const schema&);
