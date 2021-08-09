@@ -1219,7 +1219,7 @@ schema_ptr schema_builder::build() {
             dynamic_pointer_cast<db::paxos_grace_seconds_extension>(it->second)->get_paxos_grace_seconds();
     }
 
-    return make_lw_shared<schema>(schema(new_raw, _view_info));
+    return schema::make(new_raw, _view_info);
 }
 
 const cdc::options& schema::cdc_options() const {
