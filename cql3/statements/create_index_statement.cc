@@ -295,6 +295,13 @@ create_index_statement::announce_migration(service::storage_proxy& proxy, bool i
                     format("Index {} is a duplicate of existing index {}", index.name(), existing_index.value().name()));
         }
     }
+    auto index_table_name = secondary_index::index_table_name(accepted_name);
+    if (db.has_schema(keyspace(), index_table_name)) {
+        return make_exception_future<::shared_ptr<cql_transport::event::schema_change>>(
+            exceptions::invalid_request_exception(format("Index {} cannot be created, because table {} already exists",
+                accepted_name, index_table_name))
+        );
+    }
     ++_cql_stats->secondary_index_creates;
     schema_builder builder{schema};
     builder.with_index(index);
