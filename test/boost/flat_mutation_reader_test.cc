@@ -564,7 +564,8 @@ void test_flat_stream(schema_ptr s, std::vector<mutation> muts, reversed_partiti
             return fmr.consume_in_thread(std::move(fsc), db::no_timeout);
         } else {
             if (reversed) {
-                return with_closeable(make_reversing_reader(fmr, query::max_result_size(size_t(1) << 20)), [fsc = std::move(fsc)] (flat_mutation_reader& reverse_reader) mutable {
+                return with_closeable(make_reversing_reader(make_flat_mutation_reader<delegating_reader>(fmr), query::max_result_size(size_t(1) << 20)),
+                        [fsc = std::move(fsc)] (flat_mutation_reader& reverse_reader) mutable {
                     return reverse_reader.consume(std::move(fsc), db::no_timeout);
                 }).get0();
             }
@@ -813,11 +814,8 @@ SEASTAR_THREAD_TEST_CASE(test_reverse_reader_memory_limit) {
         }
 
         const uint64_t hard_limit = size_t(1) << 18;
-        auto reader = flat_mutation_reader_from_mutations(semaphore.make_permit(), {mut});
-        // need to close both readers since the reverse_reader
-        // doesn't own the reader passed to it by ref.
-        auto close_reader = deferred_close(reader);
-        auto reverse_reader = make_reversing_reader(reader, query::max_result_size(size_t(1) << 10, hard_limit));
+        auto reverse_reader = make_reversing_reader(flat_mutation_reader_from_mutations(semaphore.make_permit(), {mut}),
+                query::max_result_size(size_t(1) << 10, hard_limit));
         auto close_reverse_reader = deferred_close(reverse_reader);
 
         try {
@@ -888,9 +886,7 @@ SEASTAR_THREAD_TEST_CASE(test_reverse_reader_reads_in_native_reverse_order) {
         reverse_mt->apply(mut.build(reverse_schema));
     }
 
-    auto forward_reader = forward_mt->make_flat_reader(forward_schema, permit);
-    auto deferred_forward_close = deferred_close(forward_reader);
-    auto reversed_forward_reader = assert_that(make_reversing_reader(forward_reader, query::max_result_size(1 << 20)));
+    auto reversed_forward_reader = assert_that(make_reversing_reader(forward_mt->make_flat_reader(forward_schema, permit), query::max_result_size(1 << 20)));
 
     auto reverse_reader = reverse_mt->make_flat_reader(reverse_schema, permit);
     auto deferred_reverse_close = deferred_close(reverse_reader);
@@ -902,24 +898,46 @@ SEASTAR_THREAD_TEST_CASE(test_reverse_reader_reads_in_native_reverse_order) {
     reversed_forward_reader.produces_end_of_stream();
 }
 
+query::partition_slice reverse_slice(query::partition_slice slice) {
+    auto reverse_clustering_ranges = [] (query::clustering_row_ranges& ranges) {
+        std::reverse(ranges.begin(), ranges.end());
+        for (auto& range : ranges) {
+            if (!range.is_singular()) {
+                range = query::clustering_range(range.end(), range.start());
+            }
+        }
+    };
+    reverse_clustering_ranges(slice._row_ranges);
+    return slice;
+}
+
 SEASTAR_THREAD_TEST_CASE(test_reverse_reader_is_mutation_source) {
     auto populate = [] (schema_ptr s, const std::vector<mutation> &muts) {
         auto reverse_schema = s->make_reversed();
         auto reverse_mt = make_lw_shared<memtable>(reverse_schema);
         for (const auto& mut : muts) {
-            reverse_mt->apply(reverse(mut));
+            //testlog.info("mut={}", mut);
+            auto reverse_mut = reverse(mut);
+            //testlog.info("reverse_mut={}", reverse_mut);
+            reverse_mt->apply(std::move(reverse_mut));
         }
 
-        return mutation_source([=] (
+        return mutation_source([=, revesed_slice = lw_shared_ptr<query::partition_slice>()] (
                 schema_ptr schema,
                 reader_permit permit,
                 const dht::partition_range& range,
                 const query::partition_slice& slice,
-                const io_priority_class&,
-                tracing::trace_state_ptr,
+                const io_priority_class& pc,
+                tracing::trace_state_ptr trace_ptr,
                 streamed_mutation::forwarding fwd_sm,
-                mutation_reader::forwarding) mutable {
-            return flat_mutation_reader_from_mutations(std::move(permit), squash_mutations(muts), range, slice, fwd_sm);
+                mutation_reader::forwarding fwd_mr) mutable {
+            revesed_slice = make_lw_shared<query::partition_slice>(reverse_slice(slice));
+            auto rd = make_reversing_reader(reverse_mt->make_flat_reader(schema->make_reversed(), std::move(permit), range, *revesed_slice, pc,
+                        std::move(trace_ptr), streamed_mutation::forwarding::no, mutation_reader::forwarding::no), query::max_result_size(1 << 20));
+            if (fwd_sm) {
+                return make_forwardable(std::move(rd));
+            }
+            return rd;
         });
     };
     run_mutation_source_tests(populate);
