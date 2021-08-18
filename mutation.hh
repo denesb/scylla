@@ -318,3 +318,6 @@ class flat_mutation_reader;
 
 // Reads a single partition from a reader. Returns empty optional if there are no more partitions to be read.
 future<mutation_opt> read_mutation_from_flat_mutation_reader(flat_mutation_reader& reader);
+
+// Reverses the mutation as if it was created for a schema with reverse clustering order
+mutation reverse(mutation mut);
