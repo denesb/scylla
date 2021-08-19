@@ -911,7 +911,7 @@ make_generating_reader(schema_ptr s, reader_permit permit, std::function<future<
 ///
 /// FIXME: reversing should be done in the sstable layer, see #1413.
 flat_mutation_reader
-make_reversing_reader(flat_mutation_reader& original, query::max_result_size max_size);
+make_reversing_reader(flat_mutation_reader original, query::max_result_size max_size);
 
 /// A cosumer function that is passed a flat_mutation_reader to be consumed from
 /// and returns a future<> resolved when the reader is fully consumed, and closed.
