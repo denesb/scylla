@@ -114,6 +114,35 @@ void trim_clustering_row_ranges_to(const schema& s, clustering_row_ranges& range
             reversed ? position_in_partition_view::after_key(full_key) : position_in_partition_view::before_key(full_key), reversed);
 }
 
+static void reverse_clustering_ranges_bounds(clustering_row_ranges& ranges) {
+    for (auto& range : ranges) {
+        if (!range.is_singular()) {
+            range = query::clustering_range(range.end(), range.start());
+        }
+    }
+}
+
+void legacy_reverse_slice_to_native_reverse_slice(partition_slice& slice) {
+    reverse_clustering_ranges_bounds(slice._row_ranges);
+    if (auto& specific_ranges = slice.get_specific_ranges()) {
+        reverse_clustering_ranges_bounds(specific_ranges->ranges());
+    }
+}
+void native_reverse_slice_to_legacy_reverse_slice(partition_slice& slice) {
+    // They are the same, we give them different names to express intent
+    legacy_reverse_slice_to_native_reverse_slice(slice);
+}
+
+void reverse_slice(partition_slice& slice) {
+    std::reverse(slice._row_ranges.begin(), slice._row_ranges.end());
+    reverse_clustering_ranges_bounds(slice._row_ranges);
+
+    if (auto& specific_ranges = slice.get_specific_ranges()) {
+        std::reverse(specific_ranges->ranges().begin(), specific_ranges->ranges().end());
+        reverse_clustering_ranges_bounds(specific_ranges->ranges());
+    }
+}
+
 partition_slice::partition_slice(clustering_row_ranges row_ranges,
     query::column_id_vector static_columns,
     query::column_id_vector regular_columns,
