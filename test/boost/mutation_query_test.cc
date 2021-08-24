@@ -65,7 +65,11 @@ mutation_source make_source(std::vector<mutation> mutations) {
             const io_priority_class& pc, tracing::trace_state_ptr, streamed_mutation::forwarding fwd, mutation_reader::forwarding fwd_mr) {
         assert(range.is_full()); // slicing not implemented yet
         for (auto&& m : mutations) {
-            assert(m.schema() == s);
+            if (slice.options.contains(query::partition_slice::option::reversed)) {
+                assert(m.schema()->make_reversed()->version() == s->version());
+            } else {
+                assert(m.schema() == s);
+            }
         }
         return flat_mutation_reader_from_mutations(std::move(permit), mutations, slice, fwd);
     });
@@ -265,8 +269,8 @@ SEASTAR_TEST_CASE(test_reverse_ordering_is_respected) {
         {
             auto slice = partition_slice_builder(*s)
                 .with_range(query::clustering_range(
-                    {clustering_key_prefix::from_single_value(*s, bytes("C"))},
-                    {clustering_key_prefix::from_single_value(*s, bytes("E"))}))
+                    {clustering_key_prefix::from_single_value(*s, bytes("E"))},
+                    {clustering_key_prefix::from_single_value(*s, bytes("C"))}))
                 .reversed()
                 .build();
 
