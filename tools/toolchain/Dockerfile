@@ -6,7 +6,7 @@ RUN dnf -y install 'dnf-command(copr)' \
     && dnf -y install ccache \
     && dnf -y install gdb \
     && dnf -y install devscripts debhelper fakeroot file rpm-build \
-    && /bin/bash -x ./install-dependencies.sh && dnf -y update && dnf clean all \
+    && /bin/bash -x ./install-dependencies.sh && dnf -y update && dnf -y --releasever 34 update gnutls gnutls-devel && dnf clean all \
     && echo 'ALL ALL=(ALL:ALL) NOPASSWD: ALL' >> /etc/sudoers \
     && cp system-auth /etc/pam.d \
     && echo 'Defaults !requiretty' >> /etc/sudoers
