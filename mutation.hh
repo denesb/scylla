@@ -191,7 +191,9 @@ stop_iteration consume_clustering_fragments(const schema& s, mutation_partition&
             stop = consumer.consume(std::move(rts_it->tombstone()));
             ++rts_it;
         } else {
-            stop = consumer.consume(clustering_row(std::move(*crs_it)));
+            if (!crs_it->dummy()) {
+                stop = consumer.consume(clustering_row(std::move(*crs_it)));
+            }
             ++crs_it;
         }
     }
