@@ -128,6 +128,22 @@ protected:
     std::variant<flat_mutation_reader, reader_concurrency_semaphore::inactive_read_handle> _reader;
     dht::partition_ranges_view _query_ranges;
 
+protected:
+    schema_ptr underlying_schema() const {
+        if (is_reversed()) {
+            return _schema->make_reversed();
+        }
+        return _schema;
+    }
+    static std::unique_ptr<const query::partition_slice> make_slice(query::partition_slice slice) {
+        if (slice.options.contains(query::partition_slice::option::reversed)) {
+            // We have to convert the slice back to the legacy reversed form,
+            // until the lower layers support reversing natively
+            return std::make_unique<query::partition_slice>(query::native_reverse_slice_to_legacy_reverse_slice(std::move(slice)));
+        }
+        return std::make_unique<query::partition_slice>(std::move(slice));
+    }
+
 public:
     querier_base(reader_permit permit, std::unique_ptr<const dht::partition_range> range,
             std::unique_ptr<const query::partition_slice> slice, flat_mutation_reader reader, dht::partition_ranges_view query_ranges)
@@ -144,8 +160,8 @@ public:
         : _schema(std::move(schema))
         , _permit(std::move(permit))
         , _range(std::make_unique<const dht::partition_range>(std::move(range)))
-        , _slice(std::make_unique<const query::partition_slice>(std::move(slice)))
-        , _reader(ms.make_reader(_schema, _permit, *_range, *_slice, pc, std::move(trace_ptr), streamed_mutation::forwarding::no, mutation_reader::forwarding::no))
+        , _slice(make_slice(std::move(slice)))
+        , _reader(ms.make_reader(underlying_schema(), _permit, *_range, *_slice, pc, std::move(trace_ptr), streamed_mutation::forwarding::no, mutation_reader::forwarding::no))
         , _query_ranges(*_range)
     { }
 

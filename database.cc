@@ -1380,8 +1380,17 @@ compare_atomic_cell_for_merge(atomic_cell_view left, atomic_cell_view right) {
 }
 
 future<std::tuple<lw_shared_ptr<query::result>, cache_temperature>>
-database::query(schema_ptr s, const query::read_command& cmd, query::result_options opts, const dht::partition_range_vector& ranges,
+database::query(schema_ptr s, const query::read_command& original_cmd, query::result_options opts, const dht::partition_range_vector& ranges,
                 tracing::trace_state_ptr trace_state, db::timeout_clock::time_point timeout) {
+    std::optional<query::read_command> reverse_cmd;
+    const auto reversed = original_cmd.slice.options.contains(query::partition_slice::option::reversed);
+    if (reversed) {
+        s = s->make_reversed();
+        reverse_cmd.emplace(original_cmd);
+        reverse_cmd->slice = query::legacy_reverse_slice_to_native_reverse_slice(std::move(reverse_cmd->slice));
+    }
+    const auto& cmd = reversed ? *reverse_cmd : original_cmd;
+
     column_family& cf = find_column_family(cmd.cf_id);
     auto& semaphore = get_reader_concurrency_semaphore();
     auto class_config = query::query_class_config{.semaphore = semaphore, .max_memory_for_unlimited_query = *cmd.max_result_size};
@@ -1433,8 +1442,17 @@ database::query(schema_ptr s, const query::read_command& cmd, query::result_opti
 }
 
 future<std::tuple<reconcilable_result, cache_temperature>>
-database::query_mutations(schema_ptr s, const query::read_command& cmd, const dht::partition_range& range,
+database::query_mutations(schema_ptr s, const query::read_command& original_cmd, const dht::partition_range& range,
                           tracing::trace_state_ptr trace_state, db::timeout_clock::time_point timeout) {
+    std::optional<query::read_command> reverse_cmd;
+    const auto reversed = original_cmd.slice.options.contains(query::partition_slice::option::reversed);
+    if (reversed) {
+        s = s->make_reversed();
+        reverse_cmd.emplace(original_cmd);
+        reverse_cmd->slice = query::legacy_reverse_slice_to_native_reverse_slice(std::move(reverse_cmd->slice));
+    }
+    const auto& cmd = reversed ? *reverse_cmd : original_cmd;
+
     const auto short_read_allwoed = query::short_read(cmd.slice.options.contains<query::partition_slice::option::allow_short_read>());
     auto accounter = co_await get_result_memory_limiter().new_mutation_read(*cmd.max_result_size, short_read_allwoed);
     column_family& cf = find_column_family(cmd.cf_id);
