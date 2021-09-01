@@ -264,6 +264,20 @@ flat_mutation_reader make_restricted_range_sstable_reader(schema_ptr s,
     return make_restricted_flat_reader(std::move(ms), std::move(s), std::move(permit), pr, slice, pc, std::move(trace_state), fwd, fwd_mr);
 }
 
+flat_mutation_reader make_crawling_reader(
+        schema_ptr schema,
+        reader_permit permit,
+        lw_shared_ptr<sstables::sstable_set> sstables,
+        const io_priority_class& pc,
+        tracing::trace_state_ptr trace_ptr,
+        sstables::read_monitor_generator& monitor_generator) {
+    std::vector<flat_mutation_reader> readers;
+    for (auto ssts = sstables->all(); auto& sst : *ssts) {
+        readers.emplace_back(sst->make_crawling_reader(schema, permit, pc, trace_ptr, monitor_generator(sst)));
+    }
+    return make_combined_reader(schema, std::move(permit), std::move(readers), streamed_mutation::forwarding::no, mutation_reader::forwarding::no);
+}
+
 flat_mutation_reader
 table::make_sstable_reader(schema_ptr s,
                                    reader_permit permit,

@@ -516,4 +516,61 @@ sstable::read_range_rows_flat(schema_ptr schema,
         shared_from_this(), std::move(schema), std::move(permit), range, slice, pc, std::move(trace_state), fwd, fwd_mr, mon);
 }
 
+template <typename DataConsumeRowsContext = data_consume_rows_context, typename Consumer = mp_row_consumer_k_l>
+requires RowConsumer<Consumer>
+class crawling_sstable_mutation_reader : public mp_row_consumer_reader {
+    Consumer _consumer;
+    data_consume_context_opt<DataConsumeRowsContext> _context;
+    read_monitor& _monitor;
+public:
+    crawling_sstable_mutation_reader(shared_sstable sst, schema_ptr schema,
+             reader_permit permit,
+             const io_priority_class &pc,
+             tracing::trace_state_ptr trace_state,
+             read_monitor& mon)
+        : mp_row_consumer_reader(std::move(schema), permit, std::move(sst))
+        , _consumer(this, _schema, std::move(permit), _schema->full_slice(), pc, std::move(trace_state), streamed_mutation::forwarding::no, _sst)
+        , _context(data_consume_rows<DataConsumeRowsContext>(*_schema, _sst, _consumer))
+        , _monitor(mon) {
+        _monitor.on_read_started(_context->reader_position());
+    }
+public:
+    void on_out_of_clustering_range() override {
+        push_mutation_fragment(mutation_fragment(*_schema, _permit, partition_end()));
+    }
+    virtual future<> fast_forward_to(const dht::partition_range& pr, db::timeout_clock::time_point) override {
+        on_internal_error(sstlog, "crawling_sstable_mutation_reader: doesn't support fast_forward_to(const dht::partition_range&)");
+    }
+    virtual future<> fast_forward_to(position_range cr, db::timeout_clock::time_point) override {
+        on_internal_error(sstlog, "crawling_sstable_mutation_reader: doesn't support fast_forward_to(position_range)");
+    }
+    virtual void next_partition() override {
+        on_internal_error(sstlog, "crawling_sstable_mutation_reader: doesn't support next_partition()");
+    }
+    virtual future<> fill_buffer(db::timeout_clock::time_point) override {
+        if (_end_of_stream) {
+            return make_ready_future<>();
+        }
+        if (_context->eof()) {
+            _end_of_stream = true;
+            return make_ready_future<>();
+        }
+        return _context->read();
+    }
+};
+
+flat_mutation_reader sstable::make_crawling_reader(
+        schema_ptr schema,
+        reader_permit permit,
+        const io_priority_class& pc,
+        tracing::trace_state_ptr trace_state,
+        read_monitor& monitor) {
+    if (_version >= version_types::mc) {
+        return make_flat_mutation_reader<crawling_sstable_mutation_reader<data_consume_rows_context_m, mp_row_consumer_m>>(shared_from_this(),
+                std::move(schema), std::move(permit), pc, std::move(trace_state), monitor);
+    }
+    return make_flat_mutation_reader<crawling_sstable_mutation_reader<>>(shared_from_this(), std::move(schema), std::move(permit), pc,
+            std::move(trace_state), monitor);
+}
+
 }

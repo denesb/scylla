@@ -244,6 +244,15 @@ public:
                               const io_priority_class& pc = default_priority_class(),
                               streamed_mutation::forwarding fwd = streamed_mutation::forwarding::no);
 
+    // A reader which doesn't use the index at all. It reads everything from the
+    // sstable and it doesn't support skipping.
+    flat_mutation_reader make_crawling_reader(
+            schema_ptr schema,
+            reader_permit permit,
+            const io_priority_class& pc = default_priority_class(),
+            tracing::trace_state_ptr trace_state = {},
+            read_monitor& monitor = default_read_monitor());
+
     // Returns mutation_source containing all writes contained in this sstable.
     // The mutation_source shares ownership of this sstable.
     mutation_source as_mutation_source();

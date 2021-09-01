@@ -1395,7 +1395,8 @@ public:
     }
 
     flat_mutation_reader make_sstable_reader() const override {
-        return make_flat_mutation_reader<reader>(regular_compaction::make_sstable_reader(), _options.operation_mode);
+        auto crawling_reader = make_crawling_reader(_schema, _permit, _compacting, _io_priority, nullptr);
+        return make_flat_mutation_reader<reader>(std::move(crawling_reader), _options.operation_mode);
     }
 
     reader_consumer make_interposer_consumer(reader_consumer end_consumer) override {

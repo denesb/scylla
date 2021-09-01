@@ -1063,6 +1063,14 @@ flat_mutation_reader make_restricted_range_sstable_reader(schema_ptr s,
         mutation_reader::forwarding fwd_mr,
         sstables::read_monitor_generator& monitor_generator = sstables::default_read_monitor_generator());
 
+flat_mutation_reader make_crawling_reader(
+        schema_ptr,
+        reader_permit,
+        lw_shared_ptr<sstables::sstable_set>,
+        const io_priority_class&,
+        tracing::trace_state_ptr,
+        sstables::read_monitor_generator& monitor_generator = sstables::default_read_monitor_generator());
+
 class user_types_metadata;
 
 class keyspace_metadata final {
