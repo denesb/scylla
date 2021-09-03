@@ -205,6 +205,9 @@ public:
     const std::unique_ptr<specific_ranges>& get_specific_ranges() const {
         return _specific_ranges;
     }
+    std::unique_ptr<specific_ranges>& get_specific_ranges() {
+        return _specific_ranges;
+    }
     const cql_serialization_format& cql_format() const {
         return _cql_format;
     }
