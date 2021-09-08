@@ -1290,6 +1290,48 @@ void set_snapshot(http_context& ctx, routes& r, sharded<db::snapshot_ctl>& snap_
             return make_ready_future<json::json_return_type>(0);
         });
     }));
+
+    ss::sstablescrub.set(r, [&ctx, &snap_ctl] (std::unique_ptr<request> req) {
+        auto keyspace = validate_keyspace(ctx, req->param);
+        auto& table = [&] () -> class table& {
+            try {
+                return ctx.db.local().find_column_family(keyspace, req->param["table"]);
+            } catch (no_such_column_family&) {
+                throw bad_param_exception("Table " + req->param["table"] + " does not exist");
+            }
+        }();
+        auto sstables = split(req_param<sstring>(*req, "sstables", ""), ",");
+
+        auto scrub_mode = sstables::compaction_options::scrub::mode::abort;
+
+        const sstring scrub_mode_str = req_param<sstring>(*req, "scrub_mode", "ABORT");
+        if (scrub_mode_str == "ABORT") {
+            scrub_mode = sstables::compaction_options::scrub::mode::abort;
+        } else if (scrub_mode_str == "SKIP") {
+            scrub_mode = sstables::compaction_options::scrub::mode::skip;
+        } else if (scrub_mode_str == "SEGREGATE") {
+            scrub_mode = sstables::compaction_options::scrub::mode::segregate;
+        } else if (scrub_mode_str == "VALIDATE") {
+            scrub_mode = sstables::compaction_options::scrub::mode::validate;
+        } else {
+            throw std::invalid_argument(fmt::format("Unknown argument for 'scrub_mode' parameter: {}", scrub_mode_str));
+        }
+
+        auto f = make_ready_future<>();
+        if (!req_param<bool>(*req, "disable_snapshot", false)) {
+            auto tag = format("pre-scrub-{:d}", db_clock::now().time_since_epoch().count());
+            f = snap_ctl.local().take_column_family_snapshot(keyspace, table.schema()->cf_name(), tag, skip_flush::yes);
+        }
+
+        return f.then([&ctx, keyspace, &table, scrub_mode, sstables = std::move(sstables)] () mutable {
+            return ctx.db.invoke_on_all([=, &table, sstables = std::move(sstables)] (database& db) {
+                auto& cm = db.get_compaction_manager();
+                return cm.perform_sstable_scrub(&table, scrub_mode, sstables);
+            });
+        }).then([]{
+            return make_ready_future<json::json_return_type>(0);
+        });
+    });
 }
 
 void unset_snapshot(http_context& ctx, routes& r) {

@@ -893,12 +893,27 @@ future<> compaction_manager::perform_sstable_upgrade(database& db, column_family
 }
 
 // Submit a column family to be scrubbed and wait for its termination.
-future<> compaction_manager::perform_sstable_scrub(column_family* cf, sstables::compaction_options::scrub::mode scrub_mode) {
+future<> compaction_manager::perform_sstable_scrub(column_family* cf, sstables::compaction_options::scrub::mode scrub_mode, std::vector<sstring> sstables) {
     if (scrub_mode == sstables::compaction_options::scrub::mode::validate) {
         return perform_sstable_scrub_validate_mode(cf);
     }
-    return rewrite_sstables(cf, sstables::compaction_options::make_scrub(scrub_mode), [this] (const table& cf) {
-        return get_candidates(cf);
+    return rewrite_sstables(cf, sstables::compaction_options::make_scrub(scrub_mode), [this, sstables = std::move(sstables)] (const table& cf) {
+        auto candidates = get_candidates(cf);
+        if (sstables.empty()) {
+            return candidates;
+        }
+        std::vector<sstables::shared_sstable> selected_candidates;
+        selected_candidates.reserve(sstables.size());
+        for (auto& candidate : candidates) {
+            const auto candidate_filename = candidate->get_filename();
+            const auto candidate_selected = std::any_of(sstables.begin(), sstables.end(), [&] (const sstring& sst_name) {
+                return candidate_filename.find(sst_name) == (candidate_filename.size() - sst_name.size());
+            });
+            if (candidate_selected) {
+                selected_candidates.push_back(std::move(candidate));
+            }
+        }
+        return selected_candidates;
     }, can_purge_tombstones::no);
 }
 
