@@ -8,7 +8,7 @@ License:        Proprietary
 URL:            http://www.scylladb.com/
 Provides:       scylla %{product}
 Source0:        %{reloc_pkg}
-Requires:       %{product}-server = %{version} %{product}-conf = %{version} %{product}-kernel-conf = %{version} %{product}-jmx = %{version} %{product}-tools = %{version} %{product}-tools-core = %{version}
+Requires:       %{product}-server = %{version} %{product}-conf = %{version} %{product}-python3 = %{version} %{product}-kernel-conf = %{version} %{product}-jmx = %{version} %{product}-tools = %{version} %{product}-tools-core = %{version}
 Obsoletes:	scylla-server < 1.1
 
 %global _debugsource_template %{nil}
@@ -52,7 +52,7 @@ Group:          Applications/Databases
 Summary:        The Scylla database server
 License:        Proprietary
 URL:            http://www.scylladb.com/
-Requires:       %{product}-conf %{product}-python3
+Requires:       %{product}-conf  = %{version} %{product}-python3 = %{version}
 Conflicts:      abrt
 AutoReqProv:    no
 
