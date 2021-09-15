@@ -22,9 +22,11 @@
 #include <boost/algorithm/string/join.hpp>
 #include <boost/range/adaptor/transformed.hpp>
 #include <boost/program_options.hpp>
+#include <seastar/core/app-template.hh>
 #include <string>
 #include <vector>
 #include <fmt/format.h>
+#include "seastarx.hh"
 
 namespace tools::utils {
 
@@ -53,5 +55,7 @@ const Op& get_selected_operation(boost::program_options::variables_map& app_conf
     }
     throw std::invalid_argument(fmt::format("error: need exactly one {}, cannot specify more then one of {}", alias, all_operation_names));
 }
+
+void configure_tool_mode(app_template::seastar_options& opts, const sstring& logger_name = {});
 
 } // namespace tools::utils
