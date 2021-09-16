@@ -8,6 +8,7 @@
 
 #include <boost/algorithm/string/join.hpp>
 #include <filesystem>
+#include <fmt/chrono.h>
 #include <seastar/core/app-template.hh>
 #include <seastar/core/coroutine.hh>
 #include <seastar/util/closeable.hh>
@@ -24,6 +25,7 @@
 #include "types/map.hh"
 #include "tools/schema_loader.hh"
 #include "tools/utils.hh"
+#include "utils/rjson.hh"
 
 using namespace seastar;
 
@@ -188,6 +190,24 @@ public:
     }
 };
 
+enum class output_format {
+    text, json
+};
+
+output_format get_output_format_from_options(const bpo::variables_map& opts, output_format default_format) {
+    if (auto it = opts.find("output-format"); it != opts.end()) {
+        const auto& value = it->second.as<std::string>();
+        if (value == "text") {
+            return output_format::text;
+        } else if (value == "json") {
+            return output_format::json;
+        } else {
+            throw std::invalid_argument(fmt::format("error: invalid value for dump option output-format: {}", value));
+        }
+    }
+    return default_format;
+}
+
 class dumping_consumer : public sstable_consumer {
     class printer {
     public:
@@ -233,14 +253,211 @@ class dumping_consumer : public sstable_consumer {
             fmt::print("{{stream_end}}\n");
         }
     };
+    class json_printer : public printer {
+        const schema& _schema;
+        bool _first_sstable = true;
+        bool _first_partition = true;
+        bool _first_clustering_element = true;
+    private:
+        void maybe_add_comma(bool& is_first) {
+            if (is_first) {
+                is_first = false;
+            } else {
+                fmt::print(",\n");
+            }
+        }
+        sstring to_string(gc_clock::time_point tp) {
+            return fmt::format("{:%F %T}", fmt::gmtime(gc_clock::to_time_t(tp)));
+        }
+        void add_expiry(rjson::value& jobj, gc_clock::duration ttl, gc_clock::time_point expiry) {
+            rjson::add(jobj, "ttl", rjson::from_string(fmt::format("{}", ttl)));
+            rjson::add(jobj, "expiry", rjson::from_string(to_string(expiry)));
+        }
+        rjson::value to_json(tombstone t) {
+            auto jobj = rjson::empty_object();
+            if (!t) {
+                return jobj;
+            }
+            rjson::add(jobj, "timestamp", rjson::value(t.timestamp));
+            rjson::add(jobj, "deletion_time", rjson::from_string(to_string(t.deletion_time)));
+            return jobj;
+        }
+        std::optional<rjson::value> to_json(row_marker m) {
+            if (m.is_missing()) {
+                return {};
+            }
+            auto jobj = rjson::empty_object();
+            rjson::add(jobj, "timestamp", rjson::value(m.timestamp()));
+            if (m.is_live() && m.is_expiring()) {
+                add_expiry(jobj, m.ttl(), m.expiry());
+            }
+            return jobj;
+        }
+        rjson::value to_json(counter_cell_view cv) {
+            auto jarray = rjson::empty_array();
+            for (const auto& shard : cv.shards()) {
+                auto jshard = rjson::empty_object();
+                rjson::add(jshard, "id", rjson::from_string(fmt::format("{}", shard.id())));
+                rjson::add(jshard, "value", rjson::value(shard.value()));
+                rjson::add(jshard, "clock", rjson::value(shard.logical_clock()));
+                rjson::push_back(jarray, std::move(jshard));
+            }
+            return jarray;
+        }
+        rjson::value to_json(const atomic_cell_view& cell, data_type type) {
+            auto jobj = rjson::empty_object();
+            rjson::add(jobj, "is_live", rjson::value(cell.is_live()));
+            rjson::add(jobj, "timestamp", rjson::value(cell.timestamp()));
+            if (type->is_counter()) {
+                if (cell.is_counter_update()) {
+                    rjson::add(jobj, "value", rjson::value(cell.counter_update_value()));
+                } else {
+                    rjson::add(jobj, "shards", to_json(counter_cell_view(cell)));
+                }
+            } else {
+                if (cell.is_live_and_has_ttl()) {
+                    add_expiry(jobj, cell.ttl(), cell.expiry());
+                }
+                if (cell.is_live()) {
+                    rjson::add(jobj, "value", rjson::from_string(type->to_string(cell.value().linearize())));
+                }
+            }
+            return jobj;
+        }
+        rjson::value to_json(const collection_mutation_view_description& mv, data_type type) {
+            auto jobj = rjson::empty_object();
+            rjson::add(jobj, "tombstone", to_json(mv.tomb));
+            auto jcells = rjson::empty_object();
+
+            std::function<sstring(size_t, bytes_view)> format_key;
+            std::function<rjson::value(size_t, atomic_cell_view)> format_value;
+            if (auto t = dynamic_cast<const collection_type_impl*>(type.get())) {
+                format_key = [t] (size_t, bytes_view k) { return t->name_comparator()->to_string(k); };
+                format_value = [this, t] (size_t, atomic_cell_view v) { return to_json(v, t->value_comparator()); };
+            } else if (auto t = dynamic_cast<const tuple_type_impl*>(type.get())) {
+                format_key = [] (size_t i, bytes_view) { return fmt::format("{}", i); };
+                format_value = [this, t] (size_t i, atomic_cell_view v) { return to_json(v, t->type(i)); };
+            } else {
+                rjson::add(jobj, "cells", rjson::value("<unknown>"));
+                return jobj;
+            }
+
+            for (size_t i = 0; i < mv.cells.size(); ++i) {
+                rjson::add_with_string_name(jcells, format_key(i, mv.cells[i].first), format_value(i, mv.cells[i].second));
+            }
+            rjson::add(jobj, "cells", std::move(jcells));
+            return jobj;
+        }
+        rjson::value to_json(const atomic_cell_or_collection& cell, const column_definition& cdef) {
+            if (cdef.is_atomic()) {
+                return to_json(cell.as_atomic_cell(cdef), cdef.type);
+            } else if (cdef.type->is_collection() || cdef.type->is_user_type()) {
+                return cell.as_collection_mutation().with_deserialized(*cdef.type, [&, this] (collection_mutation_view_description mv) {
+                    return to_json(mv, cdef.type);
+                });
+            }
+            return rjson::from_string("<unknown>");
+        }
+        rjson::value to_json(const row& r, column_kind kind) {
+            auto jobj = rjson::empty_object();
+            r.for_each_cell([this, &jobj, kind] (column_id id, const atomic_cell_or_collection& cell) {
+                auto cdef = _schema.column_at(kind, id);
+                rjson::add_with_string_name(jobj, cdef.name_as_text(), to_json(cell, cdef));
+            });
+            return jobj;
+        }
+        rjson::value to_json(const clustering_row& cr) {
+            auto jobj = rjson::empty_object();
+            rjson::add(jobj, "type", "clustering-row");
+            rjson::add(jobj, "key_raw", rjson::from_string(to_hex(cr.key().representation())));
+            rjson::add(jobj, "key", rjson::from_string(fmt::format("{}", cr.key().with_schema(_schema))));
+            rjson::add(jobj, "tombstone", to_json(cr.tomb().regular()));
+            rjson::add(jobj, "shadowable_tombstone", to_json(cr.tomb().shadowable().tomb()));
+            if (auto jm = to_json(cr.marker())) {
+                rjson::add(jobj, "marker", std::move(*jm));
+            }
+            rjson::add(jobj, "columns", to_json(cr.cells(), column_kind::regular_column));
+            return jobj;
+        }
+        rjson::value to_json(const range_tombstone_change& rtc) {
+            auto jobj = rjson::empty_object();
+            rjson::add(jobj, "type", "range-tombstone-change");
+            const auto pos = rtc.position();
+            if (pos.has_key()) {
+                const auto ckey = pos.key();
+                rjson::add(jobj, "key_raw", rjson::from_string(to_hex(ckey.representation())));
+                rjson::add(jobj, "key", rjson::from_string(fmt::format("{}", ckey.with_schema(_schema))));
+            }
+            rjson::add(jobj, "weight", rjson::from_string(fmt::format("{}", pos.get_bound_weight())));
+            rjson::add(jobj, "tombstone", to_json(rtc.tombstone()));
+            return jobj;
+        }
+    public:
+        explicit json_printer(const schema& s) : _schema(s) {}
+        virtual void on_start_of_stream() override {
+            fmt::print("{{\"sstables\": {{\n");
+        }
+        virtual void on_new_sstable(const sstables::sstable* const sst) override {
+            maybe_add_comma(_first_sstable);
+            _first_partition = true;
+            fmt::print("\"{}\": [\n", sst ? sst->get_filename() : "anonymous");
+        }
+        virtual void consume(const partition_start& ps) override {
+            maybe_add_comma(_first_partition);
+            _first_clustering_element = true;
+            const auto& dk = ps.key();
+            fmt::print("{{\"token\": \"{}\", \"key_raw\": \"{}\", \"key\": \"{}\", \"tombstone\": \"{}\"",
+                    dk.token(),
+                    to_hex(dk.key().representation()),
+                    dk.key().with_schema(_schema),
+                    rjson::print(to_json(ps.partition_tombstone())));
+        }
+        virtual void consume(const static_row& sr) override {
+            fmt::print(",\n\"static_row\": {}", rjson::print(to_json(sr.cells(), column_kind::static_column)));
+        }
+        virtual void consume(const clustering_row& cr) override {
+            if (_first_clustering_element) {
+                fmt::print(",\n\"clustering_fragments\": [\n");
+            }
+            maybe_add_comma(_first_clustering_element);
+            fmt::print("{}", rjson::print(to_json(cr)));
+        }
+        virtual void consume(const range_tombstone_change& rtc) override {
+            if (_first_clustering_element) {
+                fmt::print(",\n\"clustering_fragments\": [\n");
+            }
+            maybe_add_comma(_first_clustering_element);
+            fmt::print("{}", rjson::print(to_json(rtc)));
+        }
+        virtual void consume(const partition_end& pe) override {
+            if (!_first_clustering_element) {
+                fmt::print("\n]");
+            }
+            fmt::print("\n}}");
+        }
+        virtual void on_end_of_sstable() override {
+            fmt::print("\n]");
+        }
+        virtual void on_end_of_stream() override {
+            fmt::print("\n}}}}");
+        }
+    };
 
 private:
     schema_ptr _schema;
     std::unique_ptr<printer> _printer;
 
 public:
-    explicit dumping_consumer(schema_ptr s, reader_permit, const bpo::variables_map&) : _schema(std::move(s)) {
+    explicit dumping_consumer(schema_ptr s, reader_permit, const bpo::variables_map& opts) : _schema(std::move(s)) {
         _printer = std::make_unique<text_printer>(*_schema);
+        switch (get_output_format_from_options(opts, output_format::text)) {
+            case output_format::text:
+                _printer = std::make_unique<text_printer>(*_schema);
+                break;
+            case output_format::json:
+                _printer = std::make_unique<json_printer>(*_schema);
+                break;
+        }
     }
     virtual future<> on_start_of_stream() override {
         _printer->on_start_of_stream();
@@ -1115,6 +1332,7 @@ const std::vector<option> all_options {
     typed_option<>("merge", "merge all sstables into a single mutation fragment stream (use a combining reader over all sstable readers)"),
     typed_option<>("no-skips", "don't use skips to skip to next partition when the partition filter rejects one, this is slower but works with corrupt index"),
     typed_option<std::string>("bucket", "months", "the unit of time to use as bucket, one of (years, months, weeks, days, hours)"),
+    typed_option<std::string>("output-format", "text", "the output-format, one of (text, json)"),
 };
 
 const std::vector<operation> operations{
@@ -1132,7 +1350,7 @@ It is possible to filter the data to print via the --partitions or
 --partitions-file options. Both expect partition key values in the hexdump
 format.
 )",
-            {"partition", "partitions-file", "merge", "no-skips"},
+            {"partition", "partitions-file", "merge", "no-skips", "output-format"},
             sstable_consumer_operation<dumping_consumer>},
 /* dump-index */
     {"dump-index",
