@@ -189,49 +189,97 @@ public:
 };
 
 class dumping_consumer : public sstable_consumer {
+    class printer {
+    public:
+        virtual void on_start_of_stream() = 0;
+        virtual void on_new_sstable(const sstables::sstable* const sst) = 0;
+        virtual void consume(const partition_start& ps) = 0;
+        virtual void consume(const static_row& sr) = 0;
+        virtual void consume(const clustering_row& cr) = 0;
+        virtual void consume(const range_tombstone_change& rtc) = 0;
+        virtual void consume(const partition_end& pe) = 0;
+        virtual void on_end_of_sstable() = 0;
+        virtual void on_end_of_stream() = 0;
+    };
+    class text_printer : public printer {
+        const schema& _schema;
+    public:
+        explicit text_printer(const schema& s) : _schema(s) { }
+        virtual void on_start_of_stream() override {
+            std::cout << "{stream_start}" << std::endl;
+        }
+        virtual void on_new_sstable(const sstables::sstable* const sst) override {
+            std::cout << "{sstable_start";
+            if (sst) {
+                std::cout << ": filename " << sst->get_filename();
+            }
+            std::cout << "}" << std::endl;
+        }
+        virtual void consume(const partition_start& ps) override {
+            std::cout << ps << std::endl;
+        }
+        virtual void consume(const static_row& sr) override {
+            std::cout << static_row::printer(_schema, sr) << std::endl;
+        }
+        virtual void consume(const clustering_row& cr) override {
+            std::cout << clustering_row::printer(_schema, cr) << std::endl;
+        }
+        virtual void consume(const range_tombstone_change& rtc) override {
+            std::cout << rtc << std::endl;
+        }
+        virtual void consume(const partition_end& pe) override {
+            std::cout << "{partition_end}" << std::endl;
+        }
+        virtual void on_end_of_sstable() override {
+            std::cout << "{sstable_end}" << std::endl;
+        }
+        virtual void on_end_of_stream() override {
+            std::cout << "{stream_end}" << std::endl;
+        }
+    };
+
+private:
     schema_ptr _schema;
+    std::unique_ptr<printer> _printer;
 
 public:
     explicit dumping_consumer(schema_ptr s, reader_permit, const bpo::variables_map&) : _schema(std::move(s)) {
+        _printer = std::make_unique<text_printer>(*_schema);
     }
     virtual future<> on_start_of_stream() override {
-        std::cout << "{stream_start}" << std::endl;
+        _printer->on_start_of_stream();
         return make_ready_future<>();
     }
     virtual future<stop_iteration> on_new_sstable(const sstables::sstable* const sst) override {
-        std::cout << "{sstable_start";
-        if (sst) {
-            std::cout << ": filename " << sst->get_filename();
-        }
-        std::cout << "}" << std::endl;
+        _printer->on_new_sstable(sst);
         return make_ready_future<stop_iteration>(stop_iteration::no);
     }
     virtual future<stop_iteration> consume(partition_start&& ps) override {
-        std::cout << ps << std::endl;
+        _printer->consume(ps);
         return make_ready_future<stop_iteration>(stop_iteration::no);
     }
     virtual future<stop_iteration> consume(static_row&& sr) override {
-        std::cout << static_row::printer(*_schema, sr) << std::endl;
+        _printer->consume(sr);
         return make_ready_future<stop_iteration>(stop_iteration::no);
     }
     virtual future<stop_iteration> consume(clustering_row&& cr) override {
-        std::cout << clustering_row::printer(*_schema, cr) << std::endl;
+        _printer->consume(cr);
         return make_ready_future<stop_iteration>(stop_iteration::no);
     }
     virtual future<stop_iteration> consume(range_tombstone_change&& rtc) override {
-        std::cout << rtc << std::endl;
+        _printer->consume(rtc);
         return make_ready_future<stop_iteration>(stop_iteration::no);
     }
     virtual future<stop_iteration> consume(partition_end&& pe) override {
-        std::cout << "{partition_end}" << std::endl;
+        _printer->consume(pe);
         return make_ready_future<stop_iteration>(stop_iteration::no);
     }
     virtual future<stop_iteration> on_end_of_sstable() override {
-        std::cout << "{sstable_end}" << std::endl;
+        _printer->on_end_of_sstable();
         return make_ready_future<stop_iteration>(stop_iteration::no);
     }
     virtual future<> on_end_of_stream() override {
-        std::cout << "{stream_end}" << std::endl;
+        _printer->on_end_of_stream();
         return make_ready_future<>();
     }
 };
