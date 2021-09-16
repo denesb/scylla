@@ -37,6 +37,7 @@
 #include "types/map.hh"
 #include "tools/schema_loader.hh"
 #include "tools/utils.hh"
+#include "utils/rjson.hh"
 
 using namespace seastar;
 
@@ -252,14 +253,127 @@ class dumping_consumer : public sstable_consumer {
             std::cout << "{stream_end}" << std::endl;
         }
     };
+    class json_printer : public printer {
+        const schema& _schema;
+        bool _first_sstable = true;
+        bool _first_partition = true;
+        bool _first_clustering_element = true;
+    private:
+        void maybe_add_comma(bool& is_first) {
+            if (is_first) {
+                is_first = false;
+            } else {
+                std::cout << ",\n";
+            }
+        }
+        rjson::value to_json(tombstone t) {
+            auto jobj = rjson::empty_object();
+            rjson::set(jobj, "timestamp", rjson::from_string(fmt::format("{}", t.timestamp)));
+            rjson::set(jobj, "deletion_time", rjson::from_string(fmt::format("{}", t.deletion_time)));
+            return jobj;
+        }
+        rjson::value to_json(row_marker m) {
+            auto jobj = rjson::empty_object();
+            rjson::set(jobj, "timestamp", rjson::from_string(fmt::format("{}", m.timestamp())));
+            return jobj;
+        }
+        rjson::value to_json(const static_row& sr) {
+            auto jobj = rjson::empty_object();
+            return jobj;
+        }
+        rjson::value to_json(const clustering_row& cr) {
+            auto jobj = rjson::empty_object();
+            rjson::set(jobj, "type", "clustering-row");
+            rjson::set(jobj, "key_raw", rjson::from_string(to_hex(cr.key().representation())));
+            rjson::set(jobj, "tombstone", to_json(cr.tomb().tomb()));
+            if (!cr.marker().is_missing()) {
+                rjson::set(jobj, "marker", to_json(cr.marker()));
+            }
+            return jobj;
+        }
+        rjson::value to_json(const range_tombstone& cr) {
+            auto jobj = rjson::empty_object();
+            rjson::set(jobj, "type", "range-tombstone");
+            return jobj;
+        }
+    public:
+        explicit json_printer(const schema& s) : _schema(s) {}
+        virtual void on_start_of_stream() override {
+            std::cout << "{\"sstables\": {\n";
+        }
+        virtual void on_new_sstable(const sstables::sstable* const sst) override {
+            maybe_add_comma(_first_sstable);
+            _first_partition = true;
+
+            std::cout << "\"";
+            if (sst) {
+                std::cout << sst->get_filename();
+            } else {
+                std::cout << "anonymous";
+            }
+            std::cout << "\": [\n";
+        }
+        virtual void consume(const partition_start& ps) override {
+            maybe_add_comma(_first_partition);
+            _first_clustering_element = true;
+
+            const auto& dk = ps.key();
+
+            std::cout << "{";
+            std::cout << "\"token\": " << dk.token() << ",";
+            std::cout << "\"key_raw\": \"" << to_hex(dk.key().representation()) << "\",";
+            std::cout << "\"key\": \"" << dk.key().with_schema(_schema) << "\",";
+            std::cout << "\"tombstone\":" << rjson::print(to_json(ps.partition_tombstone()));
+        }
+        virtual void consume(const static_row& sr) override {
+            std::cout << ",\n\"static_row\": " << rjson::print(to_json(sr)) << "}";
+        }
+        virtual void consume(const clustering_row& cr) override {
+            if (_first_clustering_element) {
+                std::cout << ",\n\"clustering_fragments\": [\n";
+            }
+            maybe_add_comma(_first_clustering_element);
+            std::cout << rjson::print(to_json(cr));
+        }
+        virtual void consume(const range_tombstone& rt) override {
+            if (_first_clustering_element) {
+                std::cout << ",\n\"clustering_fragments\": [\n";
+            }
+            maybe_add_comma(_first_clustering_element);
+            std::cout << rjson::print(to_json(rt));
+        }
+        virtual void consume(const partition_end& pe) override {
+            if (!_first_clustering_element) {
+                std::cout << "\n]";
+            }
+            std::cout << "\n}";
+        }
+        virtual void on_end_of_sstable() override {
+            std::cout << "\n]";
+        }
+        virtual void on_end_of_stream() override {
+            std::cout << "\n}}";
+        }
+    };
 
 private:
     schema_ptr _schema;
     std::unique_ptr<printer> _printer;
 
 public:
-    explicit dumping_consumer(schema_ptr s, reader_permit, const operation_specific_options&) : _schema(std::move(s)) {
-        _printer = std::make_unique<scylla_printer>(*_schema);
+    explicit dumping_consumer(schema_ptr s, reader_permit, const operation_specific_options& op_opts) : _schema(std::move(s)) {
+        for (const auto& [key, value] : op_opts) {
+            if (value == "scylla") {
+                _printer = std::make_unique<scylla_printer>(*_schema);
+            } else if (value == "json") {
+                _printer = std::make_unique<json_printer>(*_schema);
+            } else {
+                throw std::invalid_argument(fmt::format("error: invalid value for dump option output-format: {}", value));
+            }
+        }
+        if (!_printer) {
+            _printer = std::make_unique<scylla_printer>(*_schema);
+        }
     }
     virtual future<> on_start_of_stream() override {
         _printer->on_start_of_stream();
@@ -704,7 +818,8 @@ void sstable_consumer_operation(schema_ptr schema, reader_permit permit, const s
 }
 
 const std::vector<operation> operations{
-    {"dump", "Dump content of sstable(s).", sstable_consumer_operation<dumping_consumer>},
+    {"dump", "Dump content of sstable(s).", {{"output-format", "one of (scylla, json), default: scylla"}},
+            sstable_consumer_operation<dumping_consumer>},
     {"dump-index", "Dump content of sstable index(es).", dump_index_operation},
     {"writetime-histogram",
             "Generate a histogram (bucket=month) of all the timestamps (writetime), written to histogram.json.",
