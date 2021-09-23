@@ -671,7 +671,7 @@ partition_snapshot_ptr memtable_entry::snapshot(memtable& mtbl) {
 }
 
 flat_mutation_reader
-memtable::make_flat_reader(schema_ptr s,
+memtable::do_make_flat_reader(schema_ptr s,
                       reader_permit permit,
                       const dht::partition_range& range,
                       const query::partition_slice& slice,
@@ -702,13 +702,29 @@ memtable::make_flat_reader(schema_ptr s,
         rd.upgrade_schema(s);
         return rd;
     } else {
-        auto res = make_flat_mutation_reader<scanning_reader>(std::move(s), shared_from_this(), std::move(permit), range, slice, pc, fwd_mr);
-        if (fwd == streamed_mutation::forwarding::yes) {
-            return make_forwardable(std::move(res));
-        } else {
-            return res;
-        }
+        return make_flat_mutation_reader<scanning_reader>(std::move(s), shared_from_this(), std::move(permit), range, slice, pc, fwd_mr);
     }
+}
+
+flat_mutation_reader
+memtable::make_flat_reader(schema_ptr s, reader_permit permit, const dht::partition_range& range, const query::partition_slice& slice,
+        const io_priority_class& pc, tracing::trace_state_ptr trace_state_ptr, streamed_mutation::forwarding fwd, mutation_reader::forwarding fwd_mr) {
+    const auto reversed = slice.options.contains(query::partition_slice::option::reversed);
+    auto fwd_sm = fwd;
+    if (reversed) {
+        fwd_sm = streamed_mutation::forwarding::no;
+        s = s->make_reversed();
+    }
+
+    auto rd = do_make_flat_reader(std::move(s), permit, range, slice, pc, std::move(trace_state_ptr), fwd_sm, fwd_mr);
+
+    if (reversed) {
+        rd = make_reversing_reader(std::move(rd), permit.max_result_size());
+    }
+    if (fwd && (reversed || !query::is_single_partition(range) || fwd_mr)) {
+        rd = make_forwardable(std::move(rd));
+    }
+    return rd;
 }
 
 flat_mutation_reader
