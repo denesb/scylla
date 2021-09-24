@@ -1067,8 +1067,9 @@ void evictable_reader::update_next_position(flat_mutation_reader& reader) {
 }
 
 void evictable_reader::adjust_partition_slice() {
+    const auto reversed = _ps.options.contains(query::partition_slice::option::reversed);
     if (!_slice_override) {
-        _slice_override = _ps;
+        _slice_override = reversed ? query::legacy_reverse_slice_to_native_reverse_slice(*_schema, _ps) : _ps;
     }
 
     auto ranges = _slice_override->default_row_ranges();
@@ -1076,6 +1077,10 @@ void evictable_reader::adjust_partition_slice() {
 
     _slice_override->clear_ranges();
     _slice_override->set_range(*_schema, _last_pkey->key(), std::move(ranges));
+
+    if (reversed) {
+        _slice_override = query::native_reverse_slice_to_legacy_reverse_slice(*_schema, std::move(*_slice_override));
+    }
 }
 
 flat_mutation_reader evictable_reader::recreate_reader() {
@@ -1218,7 +1223,14 @@ void evictable_reader::validate_position_in_partition(position_in_partition_view
             pos);
 
     if (_slice_override && pos.region() == partition_region::clustered) {
-        const auto ranges = _slice_override->row_ranges(*_schema, _last_pkey->key());
+        const auto reversed = _ps.options.contains(query::partition_slice::option::reversed);
+        std::optional<query::partition_slice> native_slice;
+        if (reversed) {
+            native_slice = query::legacy_reverse_slice_to_native_reverse_slice(*_schema, *_slice_override);
+        }
+        auto& slice = reversed ? *native_slice : *_slice_override;
+
+        const auto ranges = slice.row_ranges(*_schema, _last_pkey->key());
         const bool any_contains = std::any_of(ranges.begin(), ranges.end(), [this, &pos] (const query::clustering_range& cr) {
             // TODO: somehow avoid this copy
             auto range = position_range(cr);
@@ -1228,7 +1240,7 @@ void evictable_reader::validate_position_in_partition(position_in_partition_view
                 any_contains,
                 "{}(): validation failed, expected clustering fragment that is included in the slice {}, but got {}",
                 __FUNCTION__,
-                *_slice_override,
+                slice,
                 pos);
     }
 }
