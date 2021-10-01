@@ -27,32 +27,53 @@ class partition_based_splitting_mutation_writer {
     struct bucket {
         bucket_writer writer;
         dht::decorated_key last_key;
+        size_t data_size = 0;
     };
 
 private:
     schema_ptr _schema;
     reader_permit _permit;
     reader_consumer _consumer;
+    unsigned _max_buckets;
     std::vector<bucket> _buckets;
     bucket* _current_bucket = nullptr;
 
     future<> write_to_bucket(mutation_fragment&& mf) {
+        _current_bucket->data_size += mf.memory_usage();
         return _current_bucket->writer.consume(std::move(mf));
     }
 
-    bucket* create_bucket_for(const dht::decorated_key& key) {
-        return &_buckets.emplace_back(bucket{bucket_writer(_schema, _permit, _consumer), key});
+    future<bucket*> create_bucket_for(const dht::decorated_key& key) {
+        if (_buckets.size() < _max_buckets) {
+            return make_ready_future<bucket*>(&_buckets.emplace_back(bucket{bucket_writer(_schema, _permit, _consumer), key}));
+        }
+        auto it = std::max_element(_buckets.begin(), _buckets.end(), [] (const bucket& a, const bucket& b) {
+            return a.data_size < b.data_size;
+        });
+        it->writer.consume_end_of_stream();
+        auto close_writer = it->writer.close();
+        return close_writer.then([this, it, &key] () mutable {
+            *it = bucket{bucket_writer(_schema, _permit, _consumer), key};
+            return &*it;
+        });
     }
 public:
-    partition_based_splitting_mutation_writer(schema_ptr schema, reader_permit permit, reader_consumer consumer)
+    partition_based_splitting_mutation_writer(schema_ptr schema, reader_permit permit, reader_consumer consumer, unsigned max_buckets)
         : _schema(std::move(schema))
         , _permit(std::move(permit))
         , _consumer(std::move(consumer))
+        , _max_buckets(max_buckets)
     {}
 
-    future<> consume(partition_start&& ps) {
+    future<> consume(partition_start ps) {
+        auto fut = make_ready_future<>();
+        auto set_current_bucket_to_ps = [this, &ps] {
+            return create_bucket_for(ps.key()).then([this] (bucket *bp) {
+                _current_bucket = bp;
+            });
+        };
         if (_buckets.empty()) {
-            _current_bucket = create_bucket_for(ps.key());
+            fut = set_current_bucket_to_ps();
         } else if (dht::ring_position_tri_compare(*_schema, _current_bucket->last_key, ps.key()) < 0) {
             // No need to change bucket, just update the last key.
             _current_bucket->last_key = ps.key();
@@ -63,13 +84,15 @@ public:
                 return dht::ring_position_tri_compare(*_schema, b.last_key, ps.key()) < 0;
             });
             if (it == _buckets.end()) {
-                _current_bucket = create_bucket_for(ps.key());
+                fut = set_current_bucket_to_ps();
             } else {
                 _current_bucket = &*it;
                 _current_bucket->last_key = ps.key();
             }
         }
-        return write_to_bucket(mutation_fragment(*_schema, _permit, std::move(ps)));
+        return fut.then([this, ps = std::move(ps)] () mutable {
+            return write_to_bucket(mutation_fragment(*_schema, _permit, std::move(ps)));
+        });
     }
 
     future<> consume(static_row&& sr) {
@@ -105,11 +128,11 @@ public:
     }
 };
 
-future<> segregate_by_partition(flat_mutation_reader producer, reader_consumer consumer) {
+future<> segregate_by_partition(flat_mutation_reader producer, unsigned max_buckets, reader_consumer consumer) {
     auto schema = producer.schema();
     auto permit = producer.permit();
     return feed_writer(std::move(producer),
-            partition_based_splitting_mutation_writer(std::move(schema), std::move(permit), std::move(consumer)));
+            partition_based_splitting_mutation_writer(std::move(schema), std::move(permit), std::move(consumer), max_buckets));
 }
 
 } // namespace mutation_writer
