@@ -53,7 +53,12 @@ private:
         it->writer.consume_end_of_stream();
         auto close_writer = it->writer.close();
         return close_writer.then([this, it, &key] () mutable {
-            *it = bucket{bucket_writer(_schema, _permit, _consumer), key};
+            try {
+                *it = bucket{bucket_writer(_schema, _permit, _consumer), key};
+            } catch (...) {
+                _buckets.erase(it);
+                throw;
+            }
             return &*it;
         });
     }
