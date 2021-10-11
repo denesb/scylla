@@ -518,7 +518,7 @@ protected:
         _cf.get_compaction_manager().register_compaction(_info);
     }
 
-    uint64_t partitions_per_sstable() const {
+    virtual uint64_t partitions_per_sstable() const {
         // some tests use _max_sstable_size == 0 for force many one partition per sstable
         auto max_sstable_size = std::max<uint64_t>(_max_sstable_size, 1);
         uint64_t estimated_sstables = std::max(1UL, uint64_t(ceil(double(_info->start_size) / max_sstable_size)));
@@ -1377,6 +1377,7 @@ private:
     compaction_options::scrub _options;
     std::string _scrub_start_description;
     std::string _scrub_finish_description;
+    uint64_t _bucket_count = 0;
 
 public:
     scrub_compaction(column_family& cf, compaction_descriptor descriptor, compaction_options::scrub options)
@@ -1399,9 +1400,22 @@ public:
         return make_flat_mutation_reader<reader>(std::move(crawling_reader), _options.operation_mode);
     }
 
+    uint64_t partitions_per_sstable() const override {
+        const auto original_estimate = compaction::partitions_per_sstable();
+        if (_bucket_count <= 1) {
+            return original_estimate;
+        } else {
+            const auto shift = std::min(uint64_t(63), _bucket_count - 1);
+            return std::max(uint64_t(1), original_estimate >> shift);
+        }
+    }
+
     reader_consumer make_interposer_consumer(reader_consumer end_consumer) override {
         return [this, end_consumer = std::move(end_consumer)] (flat_mutation_reader reader) mutable -> future<> {
-            return mutation_writer::segregate_by_partition(std::move(reader), 100, std::move(end_consumer));
+            return mutation_writer::segregate_by_partition(std::move(reader), 100, [consumer = std::move(end_consumer), this] (flat_mutation_reader rd) {
+                ++_bucket_count;
+                return consumer(std::move(rd));
+            });
         };
     }
 
