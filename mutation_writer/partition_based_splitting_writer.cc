@@ -62,6 +62,28 @@ private:
             return &*it;
         });
     }
+
+    std::vector<bucket>::iterator find_bucket_with_smallest_gap(const dht::decorated_key& key) {
+        // Find the  with the largest key, where this partition doesn't cause
+        // monotonicity violations, maximising the chance that a next partition
+        // will find an existing bucket to fit into.
+        auto min_it = _buckets.end();
+        uint64_t min_diff = std::numeric_limits<uint64_t>::max();
+        for (auto it = _buckets.begin(); it != _buckets.end(); ++it) {
+            const auto& bucket = *it;
+            if (dht::ring_position_tri_compare(*_schema, bucket.last_key, key) >= 0) {
+                continue;
+            }
+            // We convert tokens to uint64_t to avoid overflowing int64_t with the diff
+            // We know the subtraction is safe because we just checked that key > bucket.last_key.
+            const auto diff = static_cast<uint64_t>(key.token().raw()) - static_cast<uint64_t>(bucket.last_key.token().raw());
+            if (diff < min_diff) {
+                min_diff = diff;
+                min_it = it;
+            }
+        }
+        return min_it;
+    }
 public:
     partition_based_splitting_mutation_writer(schema_ptr schema, reader_permit permit, reader_consumer consumer, unsigned max_buckets)
         : _schema(std::move(schema))
@@ -83,11 +105,7 @@ public:
             // No need to change bucket, just update the last key.
             _current_bucket->last_key = ps.key();
         } else {
-            // Find the first bucket where this partition doesn't cause
-            // monotonicity violations. Prefer the buckets towards the head of the list.
-            auto it = std::find_if(_buckets.begin(), _buckets.end(), [this, &ps] (const bucket& b) {
-                return dht::ring_position_tri_compare(*_schema, b.last_key, ps.key()) < 0;
-            });
+            auto it = find_bucket_with_smallest_gap(ps.key());
             if (it == _buckets.end()) {
                 fut = set_current_bucket_to_ps();
             } else {
