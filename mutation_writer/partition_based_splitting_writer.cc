@@ -92,29 +92,30 @@ public:
         , _max_buckets(max_buckets)
     {}
 
-    future<> consume(partition_start ps) {
+    future<> consume(partition_start ps_orig) {
+        auto ps = std::make_unique<partition_start>(std::move(ps_orig));
         auto fut = make_ready_future<>();
-        auto set_current_bucket_to_ps = [this, &ps] {
+        auto set_current_bucket_to_ps = [this, &ps = *ps] {
             return create_bucket_for(ps.key()).then([this] (bucket *bp) {
                 _current_bucket = bp;
             });
         };
         if (_buckets.empty()) {
             fut = set_current_bucket_to_ps();
-        } else if (dht::ring_position_tri_compare(*_schema, _current_bucket->last_key, ps.key()) < 0) {
+        } else if (dht::ring_position_tri_compare(*_schema, _current_bucket->last_key, ps->key()) < 0) {
             // No need to change bucket, just update the last key.
-            _current_bucket->last_key = ps.key();
+            _current_bucket->last_key = ps->key();
         } else {
-            auto it = find_bucket_with_smallest_gap(ps.key());
+            auto it = find_bucket_with_smallest_gap(ps->key());
             if (it == _buckets.end()) {
                 fut = set_current_bucket_to_ps();
             } else {
                 _current_bucket = &*it;
-                _current_bucket->last_key = ps.key();
+                _current_bucket->last_key = ps->key();
             }
         }
         return fut.then([this, ps = std::move(ps)] () mutable {
-            return write_to_bucket(mutation_fragment(*_schema, _permit, std::move(ps)));
+            return write_to_bucket(mutation_fragment(*_schema, _permit, std::move(*ps)));
         });
     }
 
