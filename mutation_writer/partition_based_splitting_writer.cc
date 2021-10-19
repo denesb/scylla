@@ -47,8 +47,8 @@ private:
         if (_buckets.size() < _max_buckets) {
             return make_ready_future<bucket*>(&_buckets.emplace_back(bucket{bucket_writer(_schema, _permit, _consumer), key}));
         }
-        auto it = std::max_element(_buckets.begin(), _buckets.end(), [] (const bucket& a, const bucket& b) {
-            return a.data_size < b.data_size;
+        auto it = std::max_element(_buckets.begin(), _buckets.end(), [this] (const bucket& a, const bucket& b) {
+            return dht::ring_position_tri_compare(*_schema, a.last_key, b.last_key) < 0;
         });
         it->writer.consume_end_of_stream();
         auto close_writer = it->writer.close();
