@@ -1666,12 +1666,13 @@ static future<compaction_info> validate_sstables(sstables::compaction_descriptor
     clogger.info("Validating {}", sstables_list_msg);
 
     auto permit = cf.compaction_concurrency_semaphore().make_permit(schema.get(), "Validation");
-    auto reader = ::make_local_shard_sstable_reader(schema, permit, sstables, query::full_partition_range, schema->full_slice(), descriptor.io_priority,
+    auto io_priority_ptr = std::make_unique<::io_priority_class>(descriptor.io_priority);
+    auto reader = ::make_local_shard_sstable_reader(schema, permit, sstables, query::full_partition_range, schema->full_slice(), *io_priority_ptr,
             tracing::trace_state_ptr(), ::streamed_mutation::forwarding::no, ::mutation_reader::forwarding::no, default_read_monitor_generator());
 
     return validate_compaction_validate_reader(std::move(reader), *info).then([sstables_list_msg = std::move(sstables_list_msg)] (bool valid) {
         clogger.info("Validated {} - sstable(s) are {}", sstables_list_msg, valid ? "valid" : "invalid");
-    }).then([info = std::move(info)] {
+    }).then([info = std::move(info), io_priority_ptr = std::move(io_priority_ptr)] {
         return *info;
     });
 }
