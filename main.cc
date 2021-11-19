@@ -96,6 +96,7 @@
 #include "service/storage_proxy.hh"
 #include "alternator/controller.hh"
 #include "alternator/ttl.hh"
+#include "tools/entry_point.hh"
 
 #include "service/raft/raft_group_registry.hh"
 
@@ -1463,6 +1464,10 @@ int main(int ac, char** av) {
 
         if (exec_name == "scylla") {
             main_func = scylla_main;
+        } else if (exec_name == "scylla-types") {
+            main_func = tools::scylla_types_main;
+        } else if (exec_name == "scylla-sstable") {
+            main_func = tools::scylla_sstable_main;
         } else {
             std::cout << "Unrecognized executable name " << exec_name << ", assuming scylla" << std::endl;
             main_func = scylla_main;
