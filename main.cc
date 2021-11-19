@@ -1423,5 +1423,22 @@ int main(int ac, char** av) {
     }
     std::setvbuf(stdout, nullptr, _IOLBF, 1000);
 
-    return scylla_main(ac, av);
+    std::function<int(int, char**)> main_func;
+
+    if (!ac) {
+        std::cout << "No argv[0], assuming scylla" << std::endl;
+        main_func = scylla_main;
+    } else {
+        auto exec_path = std::filesystem::path(av[0]);
+        auto exec_name = exec_path.filename().native();
+
+        if (exec_name == "scylla") {
+            main_func = scylla_main;
+        } else {
+            std::cout << "Unrecognized executable name " << exec_name << ", assuming scylla" << std::endl;
+            main_func = scylla_main;
+        }
+    }
+
+    return main_func(ac, av);
 }
