@@ -398,23 +398,8 @@ sharded<database>* the_database;
 sharded<streaming::stream_manager> *the_stream_manager;
 }
 
-int main(int ac, char** av) {
-    // Allow core dumps. The would be disabled by default if
-    // CAP_SYS_NICE was added to the binary, as is suggested by the
-    // epoll backend.
-    int r = prctl(PR_SET_DUMPABLE, 1, 0, 0, 0);
-    if (r) {
-        std::cerr << "Could not make scylla dumpable\n";
-        exit(1);
-    }
-
-  try {
-    // early check to avoid triggering
-    if (!cpu_sanity()) {
-        _exit(71);
-    }
+static int scylla_main(int ac, char** av) {
     runtime::init_uptime();
-    std::setvbuf(stdout, nullptr, _IOLBF, 1000);
     app_template::config app_cfg;
     app_cfg.name = "Scylla";
     app_cfg.default_task_quota = 500us;
@@ -1421,9 +1406,22 @@ int main(int ac, char** av) {
           return 0;
         });
     });
-  } catch (...) {
-      // reactor may not have been initialized, so can't use logger
-      fmt::print(std::cerr, "FATAL: Exception during startup, aborting: {}\n", std::current_exception());
-      return 7; // 1 has a special meaning for upstart
-  }
+}
+
+int main(int ac, char** av) {
+    // Allow core dumps. The would be disabled by default if
+    // CAP_SYS_NICE was added to the binary, as is suggested by the
+    // epoll backend.
+    int r = prctl(PR_SET_DUMPABLE, 1, 0, 0, 0);
+    if (r) {
+        std::cerr << "Could not make scylla dumpable\n";
+        exit(1);
+    }
+    // early check to avoid triggering
+    if (!cpu_sanity()) {
+        _exit(71);
+    }
+    std::setvbuf(stdout, nullptr, _IOLBF, 1000);
+
+    return scylla_main(ac, av);
 }
