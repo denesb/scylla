@@ -96,6 +96,7 @@
 #include "service/storage_proxy.hh"
 #include "alternator/controller.hh"
 #include "alternator/ttl.hh"
+#include "tools/entry_point.hh"
 
 #include "service/raft/raft_group_registry.hh"
 
@@ -438,7 +439,7 @@ static int scylla_main(int ac, char** av) {
     app.get_options_description().add(deprecated);
 
     app.get_options_description().add_options()
-        ("tool", bpo::value<sstring>(), "Run a built-in tool instead of scylla; run with --tool={{tool}} --help for more information on individual tools");
+        ("tool", bpo::value<sstring>(), "Run a built-in tool instead of scylla, one of (tools, sstable); run with --tool={{tool}} --help for more information on individual tools");
 
     // TODO : default, always read?
     init("options-file", bpo::value<sstring>(), "configuration file (i.e. <SCYLLA_HOME>/conf/scylla.yaml)");
@@ -1512,6 +1513,10 @@ int main(int ac, char** av) {
 
     if (exec_name.empty() || exec_name == "scylla") {
         main_func = scylla_main;
+    } else if (exec_name == "types") {
+        main_func = tools::scylla_types_main;
+    } else if (exec_name == "sstable") {
+        main_func = tools::scylla_sstable_main;
     } else {
         fmt::print("Unrecognized tool name {}, assuming scylla\n", exec_name);
         main_func = scylla_main;
