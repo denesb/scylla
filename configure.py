@@ -579,7 +579,10 @@ other = set([
     'iotune',
 ])
 
-all_artifacts = apps | tests | other
+tools = set([
+])
+
+all_artifacts = apps | tests | other | tools
 
 arg_parser = argparse.ArgumentParser('Configure scylla')
 arg_parser.add_argument('--static', dest='static', action='store_const', default='',
@@ -1865,6 +1868,10 @@ with open(buildfile_tmp, 'w') as f:
         seastar_testing_dep = '$builddir/{}/seastar/libseastar_testing.a'.format(mode)
         for binary in build_artifacts:
             if binary in other:
+                continue
+            if binary in tools:
+                f.write("build $builddir/{mode}/{binary}: copy tools/launcher.sh | $builddir/{mode}/scylla\n".format(mode=mode, binary=binary))
+                f.write("     out = $builddir/{mode}/{binary}\n") # declare output here to avoid circular dependency
                 continue
             srcs = deps[binary]
             objs = ['$builddir/' + mode + '/' + src.replace('.cc', '.o')
