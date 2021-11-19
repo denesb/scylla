@@ -437,6 +437,9 @@ static int scylla_main(int ac, char** av) {
         ("auto-adjust-flush-quota", bpo::value<bool>());
     app.get_options_description().add(deprecated);
 
+    app.get_options_description().add_options()
+        ("tool", bpo::value<sstring>(), "Run a built-in tool instead of scylla; run with --tool={{tool}} --help for more information on individual tools");
+
     // TODO : default, always read?
     init("options-file", bpo::value<sstring>(), "configuration file (i.e. <SCYLLA_HOME>/conf/scylla.yaml)");
 
@@ -1460,5 +1463,59 @@ int main(int ac, char** av) {
         _exit(71);
     }
 
-    return scylla_main(ac, av);
+    std::function<int(int, char**)> main_func;
+
+    const char tool_switch[] = "--tool";
+    const auto tool_switch_len = strlen(tool_switch);
+    std::string exec_name;
+
+    auto shift_args = [&ac, &av] (int i, int n) {
+        for (auto r = 0; r < n; ++r) {
+            --ac;
+            for (int j = i; j < ac; ++j) {
+                std::swap(av[j], av[j + 1]);
+            }
+        }
+    };
+
+    // Manually parse and validate the --tool option.
+    // We accept both the `--tool $mytool` and `--tool=$mytool` syntax.
+    // The parsed option and value is then edited out from `av`, by
+    // moving it to the end and decrementing `ac`.
+    for (int i = 0; i < ac;) {
+        auto a = av[i];
+        const auto a_len = strlen(a);
+        if (strncmp(a, tool_switch, tool_switch_len) == 0 && (a_len == tool_switch_len || a[tool_switch_len] == '=')) {
+            if (!exec_name.empty()) {
+                fmt::print(std::cerr, "error: option '{}' cannot be specified more than once\n\nTry --help\n", tool_switch);
+                return 2;
+            }
+            if (a_len > tool_switch_len) {
+                // We checked above that there is a = just after the switch, if that is all we have we error out.
+                if (a_len == tool_switch_len + 1) {
+                    fmt::print(std::cerr, "error: the argument for option '{}' should follow immediately after the equal sign\n\nTry --help\n", tool_switch);
+                }
+                exec_name = &a[tool_switch_len + 1];
+                shift_args(i, 1);
+            } else {
+                if (i + 1 == ac) {
+                    fmt::print(std::cerr, "error: the required argument for option '{}' is missing\n\nTry --help\n", tool_switch);
+                    return 2;
+                }
+                exec_name = av[i + 1];
+                shift_args(i, 2);
+            }
+        } else {
+            ++i;
+        }
+    }
+
+    if (exec_name.empty() || exec_name == "scylla") {
+        main_func = scylla_main;
+    } else {
+        fmt::print("Unrecognized tool name {}, assuming scylla\n", exec_name);
+        main_func = scylla_main;
+    }
+
+    return main_func(ac, av);
 }
