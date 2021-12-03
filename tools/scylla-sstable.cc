@@ -206,35 +206,31 @@ class dumping_consumer : public sstable_consumer {
     public:
         explicit text_printer(const schema& s) : _schema(s) { }
         virtual void on_start_of_stream() override {
-            std::cout << "{stream_start}" << std::endl;
+            fmt::print("{{stream_start}}\n");
         }
         virtual void on_new_sstable(const sstables::sstable* const sst) override {
-            std::cout << "{sstable_start";
-            if (sst) {
-                std::cout << ": filename " << sst->get_filename();
-            }
-            std::cout << "}" << std::endl;
+            fmt::print("{{sstable_start{}}}\n", sst ? fmt::format(": filename {}", sst->get_filename()) : "");
         }
         virtual void consume(const partition_start& ps) override {
-            std::cout << ps << std::endl;
+            fmt::print("{}\n", ps);
         }
         virtual void consume(const static_row& sr) override {
-            std::cout << static_row::printer(_schema, sr) << std::endl;
+            fmt::print("{}\n", static_row::printer(_schema, sr));
         }
         virtual void consume(const clustering_row& cr) override {
-            std::cout << clustering_row::printer(_schema, cr) << std::endl;
+            fmt::print("{}\n", clustering_row::printer(_schema, cr));
         }
         virtual void consume(const range_tombstone_change& rtc) override {
-            std::cout << rtc << std::endl;
+            fmt::print("{}\n", rtc);
         }
         virtual void consume(const partition_end& pe) override {
-            std::cout << "{partition_end}" << std::endl;
+            fmt::print("{{partition_end}}\n");
         }
         virtual void on_end_of_sstable() override {
-            std::cout << "{sstable_end}" << std::endl;
+            fmt::print("{{sstable_end}}\n");
         }
         virtual void on_end_of_stream() override {
-            std::cout << "{stream_end}" << std::endl;
+            fmt::print("{{stream_end}}\n");
         }
     };
 
