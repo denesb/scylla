@@ -822,25 +822,54 @@ void validate_operation(schema_ptr schema, reader_permit permit, const std::vect
     });
 }
 
-void dump_index_operation(schema_ptr schema, reader_permit permit, const std::vector<sstables::shared_sstable>& sstables, const bpo::variables_map&) {
-    fmt::print("{{stream_start}}\n");
+void dump_index_operation(schema_ptr schema, reader_permit permit, const std::vector<sstables::shared_sstable>& sstables, const bpo::variables_map& opts) {
+    const auto is_json = get_output_format_from_options(opts, output_format::text) == output_format::json;
+
+    if (is_json) {
+        fmt::print("{{\"sstables\": {{\n");
+    } else {
+        fmt::print("{{stream_start}}\n");
+    }
+    bool first_sstable = true;
     for (auto& sst : sstables) {
         sstables::index_reader idx_reader(sst, permit, default_priority_class(), {}, sstables::use_caching::yes);
         auto close_idx_reader = deferred_close(idx_reader);
 
-        fmt::print("{{sstable_index_start: {}}}\n", sst->get_filename());
+        if (is_json) {
+            fmt::print("{}\"{}\": [\n", first_sstable ? "" : ",\n", sst->get_filename());
+        } else {
+            fmt::print("{{sstable_index_start: {}}}\n", sst->get_filename());
+        }
+        bool first_partition = true;
         while (!idx_reader.eof()) {
             idx_reader.read_partition_data().get();
             auto pos = idx_reader.get_data_file_position();
 
             auto pkey = idx_reader.get_partition_key();
-            fmt::print("{}: {} ({})\n", pos, pkey.with_schema(*schema), pkey);
+            if (is_json) {
+                fmt::print("{}{{\"key_raw\": \"{}\", \"key\": \"{}\"}}", first_partition ? "" : ",\n", pkey.with_schema(*schema), to_hex(pkey.representation()));
+            } else {
+                fmt::print("{}: {} ({})\n", pos, pkey.with_schema(*schema), pkey);
+            }
 
             idx_reader.advance_to_next_partition().get();
+
+            if (first_partition) {
+                first_partition = false;
+            }
         }
-        fmt::print("{{sstable_index_end}}\n");
+        if (is_json) {
+            fmt::print("]");
+        } else {
+            fmt::print("{{sstable_index_end}}\n");
+        }
+        first_sstable = false;
     }
-    fmt::print("{{stream_end}}\n");
+    if (is_json) {
+        fmt::print("}}}}\n");
+    } else {
+        fmt::print("{{stream_end}}\n");
+    }
 }
 
 template <typename Integer>
@@ -1365,6 +1394,7 @@ data.
 For more information about the sstable components and the format itself, visit
 https://docs.scylladb.com/architecture/sstable/.
 )",
+            {"output-format"},
             dump_index_operation},
 /* dump-compression-info */
     {"dump-compression-info",
