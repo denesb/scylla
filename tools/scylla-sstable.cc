@@ -823,12 +823,12 @@ void validate_operation(schema_ptr schema, reader_permit permit, const std::vect
 }
 
 void dump_index_operation(schema_ptr schema, reader_permit permit, const std::vector<sstables::shared_sstable>& sstables, const bpo::variables_map&) {
-    std::cout << "{stream_start}" << std::endl;
+    fmt::print("{{stream_start}}\n");
     for (auto& sst : sstables) {
         sstables::index_reader idx_reader(sst, permit, default_priority_class(), {}, sstables::use_caching::yes);
         auto close_idx_reader = deferred_close(idx_reader);
 
-        std::cout << "{sstable_index_start: " << sst->get_filename() << "}\n";
+        fmt::print("{{sstable_index_start: {}}}\n", sst->get_filename());
         while (!idx_reader.eof()) {
             idx_reader.read_partition_data().get();
             auto pos = idx_reader.get_data_file_position();
@@ -838,9 +838,9 @@ void dump_index_operation(schema_ptr schema, reader_permit permit, const std::ve
 
             idx_reader.advance_to_next_partition().get();
         }
-        std::cout << "{sstable_index_end}" << std::endl;
+        fmt::print("{{sstable_index_end}}\n");
     }
-    std::cout << "{stream_end}" << std::endl;
+    fmt::print("{{stream_end}}\n");
 }
 
 template <typename Integer>
