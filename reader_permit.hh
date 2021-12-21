@@ -45,6 +45,19 @@ struct reader_resources {
         , memory(memory) {
     }
 
+    reader_resources(const reader_resources&) = default;
+    reader_resources(reader_resources&& o) noexcept
+        : count(std::exchange(o.count, 0))
+        , memory(std::exchange(o.memory, 0))
+    { }
+
+    reader_resources& operator=(const reader_resources&) = default;
+    reader_resources& operator=(reader_resources&& o) noexcept {
+        count = std::exchange(o.count, 0);
+        memory = std::exchange(o.memory, 0);
+        return *this;
+    }
+
     bool operator>=(const reader_resources& other) const {
         return count >= other.count && memory >= other.memory;
     }
