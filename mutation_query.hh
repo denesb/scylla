@@ -145,10 +145,13 @@ class reconcilable_result_builder {
     query::result_memory_accounter _memory_accounter;
     stop_iteration _stop;
     std::optional<streamed_mutation_freezer> _mutation_consumer;
+    std::optional<range_tombstone_change> _current_tombstone;
 
     uint64_t _live_rows{};
     // make this the last member so it is destroyed first. #7240
     utils::chunked_vector<partition> _result;
+
+    void flush_tombstone(position_in_partition_view pos);
 public:
     // Expects table schema (non-reversed) and half-reversed (legacy) slice when building results for reverse query.
     reconcilable_result_builder(const schema& s, const query::partition_slice& slice,
@@ -162,6 +165,7 @@ public:
     stop_iteration consume(static_row&& sr, tombstone, bool is_alive);
     stop_iteration consume(clustering_row&& cr, row_tombstone, bool is_alive);
     stop_iteration consume(range_tombstone&& rt);
+    stop_iteration consume(range_tombstone_change&& rtc);
     stop_iteration consume_end_of_partition();
     reconcilable_result consume_end_of_stream();
 };

@@ -1984,6 +1984,14 @@ stop_iteration query::result_memory_accounter::check_local_limit() const {
     return stop_iteration::no;
 }
 
+void reconcilable_result_builder::flush_tombstone(position_in_partition_view pos) {
+    if (!_current_tombstone) {
+        return;
+    }
+    consume(range_tombstone(_current_tombstone->position(), pos), _current_tombstone->tombstone());
+    _current_tombstone = range_tombstone_change(pos, _current_tombstone->tombstone());
+}
+
 void reconcilable_result_builder::consume_new_partition(const dht::decorated_key& dk) {
     _return_static_content_on_partition_with_no_rows =
         _slice.options.contains(query::partition_slice::option::always_return_static_content) ||
@@ -2004,6 +2012,7 @@ stop_iteration reconcilable_result_builder::consume(static_row&& sr, tombstone, 
 }
 
 stop_iteration reconcilable_result_builder::consume(clustering_row&& cr, row_tombstone, bool is_alive) {
+    flush_tombstone(position_in_partition_view::after_row(cr.position()));
     _live_rows += is_alive;
     auto stop = _memory_accounter.update_and_check(cr.memory_usage(_schema));
     if (is_alive) {
@@ -2024,6 +2033,12 @@ stop_iteration reconcilable_result_builder::consume(range_tombstone&& rt) {
         rt.reverse();
     }
     return _mutation_consumer->consume(std::move(rt));
+}
+
+stop_iteration reconcilable_result_builder::consume(range_tombstone_change&& rtc) {
+    flush_tombstone(rtc.position());
+    _current_tombstone = std::move(rtc);
+    return stop_iteration::no;
 }
 
 stop_iteration reconcilable_result_builder::consume_end_of_partition() {
