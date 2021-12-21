@@ -1947,6 +1947,11 @@ stop_iteration query_result_builder::consume(range_tombstone&& rt) {
     return _stop;
 }
 
+stop_iteration query_result_builder::consume(range_tombstone_change&& rtc) {
+    _stop = _mutation_consumer->consume(std::move(rtc));
+    return _stop;
+}
+
 stop_iteration query_result_builder::consume_end_of_partition() {
     auto live_rows_in_partition = _mutation_consumer->consume_end_of_stream();
     if (live_rows_in_partition > 0 && !_stop) {
