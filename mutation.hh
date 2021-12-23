@@ -33,6 +33,36 @@
 
 #include <seastar/util/optimized_optional.hh>
 
+template <typename Iterator>
+class clustering_element_cursor {
+    Iterator _begin;
+    Iterator _end;
+    bool _reverse;
+
+private:
+    Iterator get() const {
+        if (_reverse) {
+            auto i = _end;
+            return --i;
+        }
+        return _begin;
+    }
+
+public:
+    clustering_element_cursor(Iterator begin, Iterator end, bool reverse) : _begin(begin), _end(end), _reverse(reverse) { }
+    Iterator begin() const { return _begin; }
+    Iterator end() const { return _end; }
+    operator bool() const { return _begin != _end; }
+    typename Iterator::reference operator*() { return *get(); }
+    typename Iterator::pointer operator->() { return &*get(); }
+    void advance() {
+        if (_reverse) {
+            --_end;
+        } else {
+            ++_begin;
+        }
+    }
+};
 
 template<typename Result>
 struct mutation_consume_result {
@@ -166,11 +196,6 @@ namespace {
 
 template<consume_in_reverse reverse, FlattenedConsumer Consumer>
 stop_iteration consume_clustering_fragments(schema_ptr s, mutation_partition& partition, Consumer& consumer) {
-    using crs_type = mutation_partition::rows_type;
-    using crs_iterator_type = std::conditional_t<reverse == consume_in_reverse::legacy_half_reverse || reverse == consume_in_reverse::yes, crs_type::reverse_iterator, crs_type::iterator>;
-    using rts_type = range_tombstone_list;
-    using rts_iterator_type = std::conditional_t<reverse == consume_in_reverse::legacy_half_reverse, rts_type::reverse_iterator, rts_type::iterator>;
-
     if constexpr (reverse == consume_in_reverse::yes) {
         s = s->make_reversed();
     }
@@ -178,57 +203,50 @@ stop_iteration consume_clustering_fragments(schema_ptr s, mutation_partition& pa
     // only used when reverse == consume_in_reverse::yes
     range_tombstone_list reversed_range_tombstones(*s);
 
-    crs_iterator_type crs_it, crs_end;
-    rts_iterator_type rts_it, rts_end;
-    if constexpr (reverse == consume_in_reverse::legacy_half_reverse) {
-        crs_it = partition.clustered_rows().rbegin();
-        crs_end = partition.clustered_rows().rend();
-        rts_it = partition.row_tombstones().rbegin();
-        rts_end = partition.row_tombstones().rend();
-    } else if constexpr (reverse == consume_in_reverse::yes) {
-        crs_it = partition.clustered_rows().rbegin();
-        crs_end = partition.clustered_rows().rend();
-
+    range_tombstone_list* rt_list = nullptr;
+    if constexpr (reverse == consume_in_reverse::yes) {
         while (!partition.row_tombstones().empty()) {
             auto rt = partition.mutable_row_tombstones().pop_front_and_lock();
             rt.reverse();
             reversed_range_tombstones.apply(*s, std::move(rt));
         }
-        rts_it = reversed_range_tombstones.begin();
-        rts_end = reversed_range_tombstones.end();
+        rt_list = &reversed_range_tombstones;
     } else {
-        crs_it = partition.clustered_rows().begin();
-        crs_end = partition.clustered_rows().end();
-        rts_it = partition.row_tombstones().begin();
-        rts_end = partition.row_tombstones().end();
+        rt_list = &partition.mutable_row_tombstones();
     }
+
+    constexpr auto crs_in_reverse = reverse == consume_in_reverse::legacy_half_reverse || reverse == consume_in_reverse::yes;
+    constexpr auto rts_in_reverse = reverse == consume_in_reverse::legacy_half_reverse;
+
+    auto crs_cursor = clustering_element_cursor<mutation_partition::rows_type::iterator>(partition.clustered_rows().begin(), partition.clustered_rows().end(), crs_in_reverse);
+    auto rts_cursor = clustering_element_cursor<range_tombstone_list::iterator>(rt_list->begin(), rt_list->end(), rts_in_reverse);
 
     stop_iteration stop = stop_iteration::no;
 
     position_in_partition::tri_compare cmp(*s);
 
-    while (!stop && (crs_it != crs_end || rts_it != rts_end)) {
+    while (!stop && (crs_cursor || rts_cursor)) {
         bool emit_rt;
-        if (crs_it != crs_end && rts_it != rts_end) {
-            const auto cmp_res = cmp(rts_it->position(), crs_it->position());
+        if (crs_cursor && rts_cursor) {
+            const auto cmp_res = cmp(rts_cursor->position(), crs_cursor->position());
             if constexpr (reverse == consume_in_reverse::legacy_half_reverse) {
                 emit_rt = cmp_res > 0;
             } else {
                 emit_rt = cmp_res < 0;
             }
         } else {
-            emit_rt = rts_it != rts_end;
+            emit_rt = bool(rts_cursor);
         }
         if (emit_rt) {
-            stop = consumer.consume(std::move(rts_it->tombstone()));
-            ++rts_it;
+            stop = consumer.consume(std::move(rts_cursor->tombstone()));
+            rts_cursor.advance();
         } else {
             // Dummy rows are part of the in-memory representation but should be
             // invisible to reads.
-            if (!crs_it->dummy()) {
-                stop = consumer.consume(clustering_row(std::move(*crs_it)));
+            if (!crs_cursor->dummy()) {
+                stop = consumer.consume(clustering_row(std::move(*crs_cursor)));
             }
-            ++crs_it;
+            crs_cursor.advance();
         }
     }
 
