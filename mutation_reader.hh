@@ -827,7 +827,7 @@ std::pair<flat_mutation_reader_v2, queue_reader_handle_v2> make_queue_reader_v2(
 /// reader supports it
 /// Intra-partition forwarding: `fast_forward_to(position_range)` is *not*
 /// supported.
-flat_mutation_reader make_compacting_reader(flat_mutation_reader source, gc_clock::time_point compaction_time,
+flat_mutation_reader make_compacting_reader(flat_mutation_reader_v2 source, gc_clock::time_point compaction_time,
         std::function<api::timestamp_type(const dht::decorated_key&)> get_max_purgeable);
 
 // A mutation reader together with an upper bound on the set of positions of fragments
