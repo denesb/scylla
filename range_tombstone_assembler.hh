@@ -77,6 +77,7 @@ public:
 
     void on_end_of_stream() {
         if (has_active_tombstone()) {
+            std::abort();
             throw std::logic_error(format("Stream ends with an active range tombstone: {}", *_prev_rt));
         }
     }
