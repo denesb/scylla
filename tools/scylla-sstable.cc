@@ -951,52 +951,50 @@ void dump_compression_info_operation(schema_ptr schema, reader_permit permit, co
     }
 }
 
-void dump_summary_operation(schema_ptr schema, reader_permit permit, const std::vector<sstables::shared_sstable>& sstables, const bpo::variables_map&) {
-    const auto composite_to_hex = [] (bytes_view bv) {
-        auto cv = composite_view(bv, true);
-        auto key = partition_key::from_exploded_view(cv.explode());
-        return to_hex(key.representation());
-    };
+void dump_summary_as_text(schema_ptr schema, const sstables::shared_sstable sst) {
+    auto& summary = sst->get_summary();
 
+    fmt::print("{{sstable_summary_start: {}}}\n", sst->get_filename());
+
+    fmt::print("{{header: min_index_interval: {}, size: {}, memory_size: {}, sampling_level: {}, size_at_full_sampling: {}}}\n",
+            summary.header.min_index_interval,
+            summary.header.size,
+            summary.header.memory_size,
+            summary.header.sampling_level,
+            summary.header.size_at_full_sampling);
+
+    fmt::print("{{positions:\n");
+    for (size_t i = 0; i < summary.positions.size(); ++i) {
+        fmt::print("[{}]: {}\n", i, summary.positions[i]);
+    }
+    fmt::print("}}\n");
+
+    fmt::print("{{entries:\n");
+    for (size_t i = 0; i < summary.entries.size(); ++i) {
+        const auto& e = summary.entries[i];
+        auto pkey = e.get_key().to_partition_key(*schema);
+        fmt::print("[{}]: {{summary_entry: token: {}, key: {} ({}), position: {}}}\n",
+                i,
+                e.token,
+                pkey.with_schema(*schema),
+                pkey,
+                e.position);
+    }
+    fmt::print("}}\n");
+
+    auto first_key = sstables::key_view(summary.first_key.value).to_partition_key(*schema);
+    fmt::print("{{first_key: {} ({})}}\n", first_key.with_schema(*schema), first_key);
+
+    auto last_key = sstables::key_view(summary.last_key.value).to_partition_key(*schema);
+    fmt::print("{{last_key: {} ({})}}\n", last_key.with_schema(*schema), last_key);
+
+    fmt::print("{{sstable_summary_end}}\n");
+}
+
+void dump_summary_operation(schema_ptr schema, reader_permit permit, const std::vector<sstables::shared_sstable>& sstables, const bpo::variables_map&) {
     fmt::print("{{stream_start}}\n");
     for (auto& sst : sstables) {
-        auto& summary = sst->get_summary();
-
-        fmt::print("{{sstable_summary_start: {}}}\n", sst->get_filename());
-
-        fmt::print("{{header: min_index_interval: {}, size: {}, memory_size: {}, sampling_level: {}, size_at_full_sampling: {}}}\n",
-                summary.header.min_index_interval,
-                summary.header.size,
-                summary.header.memory_size,
-                summary.header.sampling_level,
-                summary.header.size_at_full_sampling);
-
-        fmt::print("{{positions:\n");
-        for (size_t i = 0; i < summary.positions.size(); ++i) {
-            fmt::print("[{}]: {}\n", i, summary.positions[i]);
-        }
-        fmt::print("}}\n");
-
-        fmt::print("{{entries:\n");
-        for (size_t i = 0; i < summary.entries.size(); ++i) {
-            const auto& e = summary.entries[i];
-            auto pkey = e.get_key().to_partition_key(*schema);
-            fmt::print("[{}]: {{summary_entry: token: {}, key: {} ({}), position: {}}}\n",
-                    i,
-                    e.token,
-                    pkey.with_schema(*schema),
-                    pkey,
-                    e.position);
-        }
-        fmt::print("}}\n");
-
-        auto first_key = sstables::key_view(summary.first_key.value).to_partition_key(*schema);
-        fmt::print("{{first_key: {} ({})}}\n", first_key.with_schema(*schema), first_key);
-
-        auto last_key = sstables::key_view(summary.last_key.value).to_partition_key(*schema);
-        fmt::print("{{last_key: {} ({})}}\n", last_key.with_schema(*schema), last_key);
-
-        fmt::print("{{sstable_summary_end}}\n");
+        dump_summary_as_text(schema, sst);
     }
     fmt::print("{{stream_end}}\n");
 }
