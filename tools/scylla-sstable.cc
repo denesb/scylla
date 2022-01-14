@@ -991,12 +991,86 @@ void dump_summary_as_text(schema_ptr schema, const sstables::shared_sstable sst)
     fmt::print("{{sstable_summary_end}}\n");
 }
 
-void dump_summary_operation(schema_ptr schema, reader_permit permit, const std::vector<sstables::shared_sstable>& sstables, const bpo::variables_map&) {
-    fmt::print("{{stream_start}}\n");
-    for (auto& sst : sstables) {
-        dump_summary_as_text(schema, sst);
+void dump_summary_as_json(schema_ptr schema, const sstables::shared_sstable sst, bool first_sstable) {
+    auto& summary = sst->get_summary();
+
+    fmt::print("{}\"{}\": {{\n", first_sstable ? "" : ",\n", sst->get_filename());
+    {
+        auto jobj = rjson::empty_object();
+        rjson::add(jobj, "min_index_interval", summary.header.min_index_interval);
+        rjson::add(jobj, "size", summary.header.size);
+        rjson::add(jobj, "memory_size", summary.header.memory_size);
+        rjson::add(jobj, "sampling_level", summary.header.sampling_level);
+        rjson::add(jobj, "size_at_full_sampling", summary.header.size_at_full_sampling);
+        fmt::print("\"header\": {},\n", rjson::print(jobj));
     }
-    fmt::print("{{stream_end}}\n");
+
+    fmt::print("\"positions\": [\n");
+    {
+        auto i = summary.positions.begin();
+        auto end = summary.positions.end();
+        fmt::print("{}", *i);
+        for (++i; i != end; ++i) {
+            fmt::print("\n,{}", *i);
+        }
+    }
+    fmt::print("],\n");
+
+    fmt::print("\"entries\": [\n");
+    {
+        auto to_str = [&] (const auto& e) {
+            auto jobj = rjson::empty_object();
+            auto pkey = e.get_key().to_partition_key(*schema);
+            rjson::add(jobj, "token", rjson::from_string(format("{}", e.token)));
+            rjson::add(jobj, "key", rjson::from_string(format("{}", pkey.with_schema(*schema))));
+            rjson::add(jobj, "key_raw", rjson::from_string(format("{}", pkey)));
+            rjson::add(jobj, "position", e.position);
+            return rjson::print(jobj);
+        };
+        auto i = summary.entries.begin();
+        auto end = summary.entries.end();
+        fmt::print("{}", to_str(*i));
+        for (++i; i != end; ++i) {
+            fmt::print("\n,{}", to_str(*i));
+        }
+    }
+    fmt::print("],\n");
+
+    auto to_str = [&] (const partition_key& pkey) {
+        auto jobj = rjson::empty_object();
+        rjson::add(jobj, "key", rjson::from_string(format("{}", pkey.with_schema(*schema))));
+        rjson::add(jobj, "key_raw", rjson::from_string(format("{}", pkey)));
+        return rjson::print(jobj);
+    };
+
+    fmt::print("\"first_key\": {},\n", to_str(sstables::key_view(summary.first_key.value).to_partition_key(*schema)));
+    fmt::print("\"last_key\": {}\n", to_str(sstables::key_view(summary.last_key.value).to_partition_key(*schema)));
+
+    fmt::print("}}\n");
+}
+
+void dump_summary_operation(schema_ptr schema, reader_permit permit, const std::vector<sstables::shared_sstable>& sstables, const bpo::variables_map& opts) {
+    const auto is_json = get_output_format_from_options(opts, output_format::text) == output_format::json;
+
+    if (is_json) {
+        fmt::print("{{\"sstables\": {{\n");
+    } else {
+        fmt::print("{{stream_start}}\n");
+    }
+    bool first_sstable = true;
+    for (auto& sst : sstables) {
+        if (is_json) {
+            dump_summary_as_json(schema, sst, first_sstable);
+        } else {
+            dump_summary_as_text(schema, sst);
+        }
+        first_sstable = false;
+    }
+    if (is_json) {
+        fmt::print("}}}}\n");
+    } else {
+        fmt::print("{{stream_end}}\n");
+    }
 }
 
 class text_dumper {
@@ -1462,6 +1536,7 @@ sstables.
 For more information about the sstable components and the format itself, visit
 https://docs.scylladb.com/architecture/sstable/.
 )",
+            {"output-format"},
             dump_summary_operation},
 /* dump-statistics */
     {"dump-statistics",
