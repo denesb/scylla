@@ -877,33 +877,37 @@ sstring disk_string_to_string(const sstables::disk_string<Integer>& ds) {
     return sstring(ds.value.begin(), ds.value.end());
 }
 
+void dump_compression_info_as_text(const sstables::shared_sstable sst) {
+    const auto& compression = sst->get_compression();
+
+    fmt::print("{{sstable_compression_info_start: {}}}\n", sst->get_filename());
+    fmt::print("{{name: {}}}\n", disk_string_to_string(compression.name));
+    fmt::print("{{options:");
+    if (!compression.options.elements.empty()) {
+        auto it = compression.options.elements.begin();
+        const auto end = compression.options.elements.end();
+        fmt::print(" {}={}", disk_string_to_string(it->key), disk_string_to_string(it->value));
+        for (++it; it != end; ++it) {
+            fmt::print(", {}={}", disk_string_to_string(it->key), disk_string_to_string(it->value));
+        }
+    }
+    fmt::print("}}\n");
+    fmt::print("{{chunk_len: {}}}\n", compression.chunk_len);
+    fmt::print("{{data_len: {}}}\n", compression.data_len);
+    fmt::print("{{offsets_start}}\n");
+    size_t i = 0;
+    for (const auto& offset : compression.offsets) {
+        fmt::print("[{}]: {}\n", i++, offset);
+    }
+    fmt::print("{{offsets_end}}\n");
+    fmt::print("{{sstable_compression_info_end}}\n");
+}
+
 void dump_compression_info_operation(schema_ptr schema, reader_permit permit, const std::vector<sstables::shared_sstable>& sstables, const bpo::variables_map&) {
     fmt::print("{{stream_start}}\n");
 
     for (auto& sst : sstables) {
-        const auto& compression = sst->get_compression();
-
-        fmt::print("{{sstable_compression_info_start: {}}}\n", sst->get_filename());
-        fmt::print("{{name: {}}}\n", disk_string_to_string(compression.name));
-        fmt::print("{{options:");
-        if (!compression.options.elements.empty()) {
-            auto it = compression.options.elements.begin();
-            const auto end = compression.options.elements.end();
-            fmt::print(" {}={}", disk_string_to_string(it->key), disk_string_to_string(it->value));
-            for (++it; it != end; ++it) {
-                fmt::print(", {}={}", disk_string_to_string(it->key), disk_string_to_string(it->value));
-            }
-        }
-        fmt::print("}}\n");
-        fmt::print("{{chunk_len: {}}}\n", compression.chunk_len);
-        fmt::print("{{data_len: {}}}\n", compression.data_len);
-        fmt::print("{{offsets_start}}\n");
-        size_t i = 0;
-        for (const auto& offset : compression.offsets) {
-            fmt::print("[{}]: {}\n", i++, offset);
-        }
-        fmt::print("{{offsets_end}}\n");
-        fmt::print("{{sstable_compression_info_end}}\n");
+        dump_compression_info_as_text(sst);
     }
     fmt::print("{{stream_end}}\n");
 }
