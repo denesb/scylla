@@ -903,13 +903,52 @@ void dump_compression_info_as_text(const sstables::shared_sstable sst) {
     fmt::print("{{sstable_compression_info_end}}\n");
 }
 
-void dump_compression_info_operation(schema_ptr schema, reader_permit permit, const std::vector<sstables::shared_sstable>& sstables, const bpo::variables_map&) {
-    fmt::print("{{stream_start}}\n");
+void dump_compression_info_as_json(const sstables::shared_sstable sst, bool first_sstable) {
+    const auto& compression = sst->get_compression();
 
-    for (auto& sst : sstables) {
-        dump_compression_info_as_text(sst);
+    fmt::print("{}\"{}\": {{\n", first_sstable ? "" : ",\n", sst->get_filename());
+    fmt::print("\"name\": \"{}\",\n", disk_string_to_string(compression.name));
+    auto jobj = rjson::empty_object();
+    if (!compression.options.elements.empty()) {
+        for (const auto& e : compression.options.elements) {
+            rjson::add_with_string_name(jobj, disk_string_to_string(e.key), rjson::from_string(disk_string_to_string(e.value)));
+        }
     }
-    fmt::print("{{stream_end}}\n");
+    fmt::print("\"options\": {},\n", rjson::print(jobj));
+    fmt::print("\"chunk_len\": {},\n", compression.chunk_len);
+    fmt::print("\"data_len\": {},\n", compression.data_len);
+    fmt::print("\"offsets\": [\n");
+    auto i = compression.offsets.begin();
+    const auto end = compression.offsets.end();
+    fmt::print("{}", *i);
+    for (++i; i != end; ++i) {
+        fmt::print(",\n{}", *i);
+    }
+    fmt::print("]}}\n");
+}
+
+void dump_compression_info_operation(schema_ptr schema, reader_permit permit, const std::vector<sstables::shared_sstable>& sstables, const bpo::variables_map& opts) {
+    const auto is_json = get_output_format_from_options(opts, output_format::text) == output_format::json;
+
+    if (is_json) {
+        fmt::print("{{\"sstables\": {{\n");
+    } else {
+        fmt::print("{{stream_start}}\n");
+    }
+    bool first_sstable = true;
+    for (auto& sst : sstables) {
+        if (is_json) {
+            dump_compression_info_as_json(sst, first_sstable);
+        } else {
+            dump_compression_info_as_text(sst);
+        }
+        first_sstable = false;
+    }
+    if (is_json) {
+        fmt::print("}}}}\n");
+    } else {
+        fmt::print("{{stream_end}}\n");
+    }
 }
 
 void dump_summary_operation(schema_ptr schema, reader_permit permit, const std::vector<sstables::shared_sstable>& sstables, const bpo::variables_map&) {
@@ -1412,6 +1451,7 @@ to be decompressed.
 For more information about the sstable components and the format itself, visit
 https://docs.scylladb.com/architecture/sstable/.
 )",
+            {"output-format"},
             dump_compression_info_operation},
 /* dump-summary */
     {"dump-summary",
