@@ -1319,7 +1319,9 @@ uint32_t mutation_partition::do_compact(const schema& s,
         bool is_live = row.marker().compact_and_expire(tomb.tomb(), query_time, can_gc, gc_before);
         is_live |= row.cells().compact_and_expire(s, column_kind::regular_column, tomb, query_time, can_gc, gc_before, row.marker());
 
-        if (should_purge_row_tombstone(row.deleted_at())) {
+        const auto tombstone_for_row = std::max(_tombstone, _row_tombstones.search_tombstone_covering(s, e.key()));
+
+        if (should_purge_row_tombstone(row.deleted_at()) || row.deleted_at().tomb() <= tombstone_for_row) {
             row.remove_tombstone();
         }
 
