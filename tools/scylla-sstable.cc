@@ -1197,6 +1197,134 @@ public:
     }
 };
 
+class json_dumper {
+    sstables::sstable_version_types _version;
+    std::function<std::string_view(const void* const)> _name_resolver;
+    rjson::value _root_jobj;
+
+private:
+    template <typename Number>
+    requires std::is_arithmetic_v<Number>
+    rjson::value visit(Number& val) {
+        if constexpr (std::is_same_v<std::remove_cv_t<Number>, int8_t>) {
+            return rjson::value(static_cast<signed int>(val));
+        } else if (std::is_same_v<std::remove_cv_t<Number>, uint8_t>) {
+            return rjson::value(static_cast<unsigned int>(val));
+        } else if (std::is_same_v<std::remove_cv_t<Number>, double>) {
+            if (std::isnan(val)) {
+                return rjson::from_string("NaN");
+            } else {
+                return rjson::value(val);
+            }
+        } else {
+            return rjson::value(val);
+        }
+    }
+
+    template <typename Integer>
+    rjson::value visit(const sstables::disk_string<Integer>& val) {
+        return rjson::from_string(disk_string_to_string(val));
+    }
+
+    template <typename Integer, typename T>
+    rjson::value visit(const sstables::disk_array<Integer, T>& val) {
+        auto jarray = rjson::empty_array();
+        for (const auto& elem : val.elements) {
+            rjson::push_back(jarray, visit(elem));
+        }
+        return jarray;
+    }
+
+    rjson::value visit(const sstables::disk_string_vint_size& val) {
+        return rjson::from_string(sstring(val.value.begin(), val.value.end()));
+    }
+
+    template <typename T>
+    rjson::value visit(const sstables::disk_array_vint_size<T>& val) {
+        auto jarray = rjson::empty_array();
+        for (const auto& elem : val.elements) {
+            rjson::push_back(jarray, visit(elem));
+        }
+        return jarray;
+    }
+
+    rjson::value visit(const utils::estimated_histogram& val) {
+        auto jarray = rjson::empty_array();
+        for (size_t i = 0; i < val.buckets.size(); i++) {
+            auto jobj = rjson::empty_object();
+            rjson::add(jobj, "offset", rjson::value(val.bucket_offsets[i == 0 ? 0 : i - 1]));
+            rjson::add(jobj, "value", rjson::value(val.buckets[i]));
+            rjson::push_back(jarray, std::move(jobj));
+        }
+        return jarray;
+    }
+
+    rjson::value visit(const utils::streaming_histogram& val) {
+        auto jobj = rjson::empty_object();
+        for (const auto& [k, v] : val.bin) {
+            rjson::add_with_string_name(jobj, format("{}", k), rjson::value(v));
+        }
+        return jobj;
+    }
+
+    rjson::value visit(const db::replay_position& val) {
+        auto jobj = rjson::empty_object();
+        rjson::add(jobj, "id", rjson::value(val.id));
+        rjson::add(jobj, "pos", rjson::value(val.pos));
+        return jobj;
+    }
+
+    rjson::value visit(const sstables::commitlog_interval& val) {
+        auto jobj = rjson::empty_object();
+        rjson::add(jobj, "start", visit(val.start));
+        rjson::add(jobj, "end", visit(val.end));
+        return jobj;
+    }
+
+    template <typename Integer>
+    rjson::value visit(const sstables::vint<Integer>& val) {
+        return rjson::value(val.value);
+    }
+
+    rjson::value visit(const sstables::serialization_header::column_desc& val) {
+        auto prev_name_resolver = std::exchange(_name_resolver, [&val] (const void* const field) {
+            if (field == &val.name) { return "name"; }
+            else if (field == &val.type_name) { return "type_name"; }
+            else { throw std::invalid_argument("invalid field offset"); }
+        });
+        auto prev_root_jobj = std::exchange(_root_jobj, rjson::empty_object());
+
+        const_cast<sstables::serialization_header::column_desc&>(val).describe_type(_version, std::ref(*this));
+
+        _name_resolver = std::move(prev_name_resolver);
+        return std::exchange(_root_jobj, std::move(prev_root_jobj));
+    }
+
+    json_dumper(sstables::sstable_version_types version, std::function<std::string_view(const void* const)> name_resolver)
+        : _version(version), _name_resolver(std::move(name_resolver)), _root_jobj(rjson::empty_object()) {
+    }
+
+public:
+    template <typename Arg1>
+    void operator()(Arg1& arg1) {
+        rjson::add_with_string_name(_root_jobj, _name_resolver(&arg1), visit(arg1));
+    }
+
+    template <typename Arg1, typename... Arg>
+    void operator()(Arg1& arg1, Arg&... arg) {
+        rjson::add_with_string_name(_root_jobj, _name_resolver(&arg1), visit(arg1));
+        (*this)(arg...);
+    }
+
+    template <typename T>
+    static void dump(sstables::sstable_version_types version, const T& obj, std::string_view name,
+            std::function<std::string_view(const void* const)> name_resolver) {
+        json_dumper dumper(version, std::move(name_resolver));
+        const_cast<T&>(obj).describe_type(version, std::ref(dumper));
+        fmt::print("\"{}\": {}", name, rjson::print(dumper._root_jobj));
+    }
+};
+
 template <typename Dumper>
 void dump_validation_metadata(sstables::sstable_version_types version, const sstables::validation_metadata& metadata) {
     Dumper::dump(version, metadata, "validation", [&metadata] (const void* const field) {
@@ -1304,12 +1432,65 @@ void dump_statistics_as_text(schema_ptr schema, const sstables::shared_sstable s
     fmt::print("{{sstable_statistics_end}}\n");
 }
 
-void dump_statistics_operation(schema_ptr schema, reader_permit permit, const std::vector<sstables::shared_sstable>& sstables, const bpo::variables_map&) {
-    fmt::print("{{stream_start}}\n");
-    for (auto& sst : sstables) {
-        dump_statistics_as_text(schema, sst);
+void dump_statistics_as_json(schema_ptr schema, const sstables::shared_sstable sst, bool first_sstable) {
+    auto& statistics = sst->get_statistics();
+
+    fmt::print("{}\"{}\": {{\n", first_sstable ? "" : ",\n", sst->get_filename());
+
+    {
+        auto jobj = rjson::empty_object();
+        for (const auto& element : statistics.offsets.elements) {
+            rjson::add_with_string_name(jobj, to_string(element.first), rjson::value(element.second));
+        }
+        fmt::print("\"offsets\": {},", rjson::print(jobj));
     }
-    fmt::print("{{stream_end}}\n");
+
+    const auto version = sst->get_version();
+    bool first = true;
+    for (const auto& [type, _] : statistics.offsets.elements) {
+        const auto& metadata_ptr = statistics.contents.at(type);
+        fmt::print("{}", first ? "" : ",\n");
+        switch (type) {
+            case sstables::metadata_type::Validation:
+                dump_validation_metadata<json_dumper>(version, *dynamic_cast<const sstables::validation_metadata*>(metadata_ptr.get()));
+                break;
+            case sstables::metadata_type::Compaction:
+                dump_compaction_metadata<json_dumper>(version, *dynamic_cast<const sstables::compaction_metadata*>(metadata_ptr.get()));
+                break;
+            case sstables::metadata_type::Stats:
+                dump_stats_metadata<json_dumper>(version, *dynamic_cast<const sstables::stats_metadata*>(metadata_ptr.get()));
+                break;
+            case sstables::metadata_type::Serialization:
+                dump_serialization_header<json_dumper>(version, *dynamic_cast<const sstables::serialization_header*>(metadata_ptr.get()));
+                break;
+        }
+        first = false;
+    }
+    fmt::print("}}");
+}
+
+void dump_statistics_operation(schema_ptr schema, reader_permit permit, const std::vector<sstables::shared_sstable>& sstables, const bpo::variables_map& opts) {
+    const auto is_json = get_output_format_from_options(opts, output_format::text) == output_format::json;
+
+    if (is_json) {
+        fmt::print("{{\"sstables\": {{\n");
+    } else {
+        fmt::print("{{stream_start}}\n");
+    }
+    bool first_sstable = true;
+    for (auto& sst : sstables) {
+        if (is_json) {
+            dump_statistics_as_json(schema, sst, first_sstable);
+        } else {
+            dump_statistics_as_text(schema, sst);
+        }
+        first_sstable = false;
+    }
+    if (is_json) {
+        fmt::print("}}}}\n");
+    } else {
+        fmt::print("{{stream_end}}\n");
+    }
 }
 
 const char* to_string(sstables::scylla_metadata_type t) {
@@ -1557,6 +1738,7 @@ the data component.
 For more information about the sstable components and the format itself, visit
 https://docs.scylladb.com/architecture/sstable/.
 )",
+            {"output-format"},
             dump_statistics_operation},
 /* dump-scylla-metadata */
     {"dump-scylla-metadata",
