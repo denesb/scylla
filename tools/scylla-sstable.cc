@@ -1197,24 +1197,27 @@ public:
     }
 };
 
+template <typename Dumper>
 void dump_validation_metadata(sstables::sstable_version_types version, const sstables::validation_metadata& metadata) {
-    text_dumper::dump(version, metadata, "validation", [&metadata] (const void* const field) {
+    Dumper::dump(version, metadata, "validation", [&metadata] (const void* const field) {
         if (field == &metadata.partitioner) { return "partitioner"; }
         else if (field == &metadata.filter_chance) { return "filter_chance"; }
         else { throw std::invalid_argument("invalid field offset"); }
     });
 }
 
+template <typename Dumper>
 void dump_compaction_metadata(sstables::sstable_version_types version, const sstables::compaction_metadata& metadata) {
-    text_dumper::dump(version, metadata, "compaction", [&metadata] (const void* const field) {
+    Dumper::dump(version, metadata, "compaction", [&metadata] (const void* const field) {
         if (field == &metadata.ancestors) { return "ancestors"; }
         else if (field == &metadata.cardinality) { return "cardinality"; }
         else { throw std::invalid_argument("invalid field offset"); }
     });
 }
 
+template <typename Dumper>
 void dump_stats_metadata(sstables::sstable_version_types version, const sstables::stats_metadata& metadata) {
-    text_dumper::dump(version, metadata, "stats", [&metadata] (const void* const field) {
+    Dumper::dump(version, metadata, "stats", [&metadata] (const void* const field) {
         if (field == &metadata.estimated_partition_size) { return "estimated_partition_size"; }
         else if (field == &metadata.estimated_cells_count) { return "estimated_cells_count"; }
         else if (field == &metadata.position) { return "position"; }
@@ -1239,8 +1242,9 @@ void dump_stats_metadata(sstables::sstable_version_types version, const sstables
     });
 }
 
+template <typename Dumper>
 void dump_serialization_header(sstables::sstable_version_types version, const sstables::serialization_header& metadata) {
-    text_dumper::dump(version, metadata, "serialization_header", [&metadata] (const void* const field) {
+    Dumper::dump(version, metadata, "serialization_header", [&metadata] (const void* const field) {
         if (field == &metadata.min_timestamp_base) { return "min_timestamp_base"; }
         else if (field == &metadata.min_local_deletion_time_base) { return "min_local_deletion_time_base"; }
         else if (field == &metadata.min_ttl_base) { return "min_ttl_base"; }
@@ -1252,53 +1256,58 @@ void dump_serialization_header(sstables::sstable_version_types version, const ss
     });
 }
 
-void dump_statistics_operation(schema_ptr schema, reader_permit permit, const std::vector<sstables::shared_sstable>& sstables, const bpo::variables_map&) {
-    auto to_string = [] (sstables::metadata_type t) {
-        switch (t) {
-            case sstables::metadata_type::Validation: return "validation";
-            case sstables::metadata_type::Compaction: return "compaction";
-            case sstables::metadata_type::Stats: return "stats";
-            case sstables::metadata_type::Serialization: return "serialization";
-        }
-        std::abort();
-    };
 
+const char* to_string(sstables::metadata_type t) {
+    switch (t) {
+        case sstables::metadata_type::Validation: return "validation";
+        case sstables::metadata_type::Compaction: return "compaction";
+        case sstables::metadata_type::Stats: return "stats";
+        case sstables::metadata_type::Serialization: return "serialization";
+    }
+    std::abort();
+}
+
+void dump_statistics_as_text(schema_ptr schema, const sstables::shared_sstable sst) {
+    auto& statistics = sst->get_statistics();
+
+    fmt::print("{{sstable_statistics_start: {}}}\n", sst->get_filename());
+    fmt::print("{{offsets: ");
+    if (!statistics.offsets.elements.empty()) {
+        auto it = statistics.offsets.elements.begin();
+        const auto end = statistics.offsets.elements.end();
+        fmt::print("{}={}", to_string(it->first), it->second);
+        for (++it; it != end; ++it) {
+            fmt::print(", {}={}", to_string(it->first), it->second);
+        }
+    }
+    fmt::print("}}\n");
+    fmt::print("{{contents_start}}\n");
+    const auto version = sst->get_version();
+    for (const auto& [type, _] : statistics.offsets.elements) {
+        const auto& metadata_ptr = statistics.contents.at(type);
+        switch (type) {
+            case sstables::metadata_type::Validation:
+                dump_validation_metadata<text_dumper>(version, *dynamic_cast<const sstables::validation_metadata*>(metadata_ptr.get()));
+                break;
+            case sstables::metadata_type::Compaction:
+                dump_compaction_metadata<text_dumper>(version, *dynamic_cast<const sstables::compaction_metadata*>(metadata_ptr.get()));
+                break;
+            case sstables::metadata_type::Stats:
+                dump_stats_metadata<text_dumper>(version, *dynamic_cast<const sstables::stats_metadata*>(metadata_ptr.get()));
+                break;
+            case sstables::metadata_type::Serialization:
+                dump_serialization_header<text_dumper>(version, *dynamic_cast<const sstables::serialization_header*>(metadata_ptr.get()));
+                break;
+        }
+    }
+    fmt::print("{{contents_end}}\n");
+    fmt::print("{{sstable_statistics_end}}\n");
+}
+
+void dump_statistics_operation(schema_ptr schema, reader_permit permit, const std::vector<sstables::shared_sstable>& sstables, const bpo::variables_map&) {
     fmt::print("{{stream_start}}\n");
     for (auto& sst : sstables) {
-        auto& statistics = sst->get_statistics();
-
-        fmt::print("{{sstable_statistics_start: {}}}\n", sst->get_filename());
-        fmt::print("{{offsets: ");
-        if (!statistics.offsets.elements.empty()) {
-            auto it = statistics.offsets.elements.begin();
-            const auto end = statistics.offsets.elements.end();
-            fmt::print("{}={}", to_string(it->first), it->second);
-            for (++it; it != end; ++it) {
-                fmt::print(", {}={}", to_string(it->first), it->second);
-            }
-        }
-        fmt::print("}}\n");
-        fmt::print("{{contents_start}}\n");
-        const auto version = sst->get_version();
-        for (const auto& [type, _] : statistics.offsets.elements) {
-            const auto& metadata_ptr = statistics.contents.at(type);
-            switch (type) {
-                case sstables::metadata_type::Validation:
-                    dump_validation_metadata(version, *dynamic_cast<const sstables::validation_metadata*>(metadata_ptr.get()));
-                    break;
-                case sstables::metadata_type::Compaction:
-                    dump_compaction_metadata(version, *dynamic_cast<const sstables::compaction_metadata*>(metadata_ptr.get()));
-                    break;
-                case sstables::metadata_type::Stats:
-                    dump_stats_metadata(version, *dynamic_cast<const sstables::stats_metadata*>(metadata_ptr.get()));
-                    break;
-                case sstables::metadata_type::Serialization:
-                    dump_serialization_header(version, *dynamic_cast<const sstables::serialization_header*>(metadata_ptr.get()));
-                    break;
-            }
-        }
-        fmt::print("{{contents_end}}\n");
-        fmt::print("{{sstable_statistics_end}}\n");
+        dump_statistics_as_text(schema, sst);
     }
     fmt::print("{{stream_end}}\n");
 }
