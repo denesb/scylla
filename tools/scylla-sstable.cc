@@ -1515,7 +1515,7 @@ const char* to_string(sstables::large_data_type t) {
     std::abort();
 }
 
-struct scylla_metadata_visitor : public boost::static_visitor<> {
+struct scylla_metadata_text_visitor : public boost::static_visitor<> {
     void operator()(const sstables::sharding_metadata& val) const {
         fmt::print("\n");
         for (const auto& e : val.token_ranges.elements) {
@@ -1578,24 +1578,123 @@ struct scylla_metadata_visitor : public boost::static_visitor<> {
         fmt::print("}}\n");
     }
 
-    scylla_metadata_visitor() = default;
+    scylla_metadata_text_visitor() = default;
 };
 
-void dump_scylla_metadata_operation(schema_ptr schema, reader_permit permit, const std::vector<sstables::shared_sstable>& sstables, const bpo::variables_map&) {
-    fmt::print("{{stream_start}}\n");
-    for (auto& sst : sstables) {
-        fmt::print("{{sstable_scylla_metadata_start: {}}}\n", sst->get_filename());
-        auto m = sst->get_scylla_metadata();
-        if (!m) {
-            fmt::print("{{sstable_scylla_metadata_end}}\n");
-            continue;
+struct scylla_metadata_json_visitor : public boost::static_visitor<> {
+    rjson::value operator()(const sstables::sharding_metadata& val) const {
+        auto jarray = rjson::empty_array();
+        for (const auto& e : val.token_ranges.elements) {
+            auto jobj = rjson::empty_object();
+
+            auto left_jobj = rjson::empty_object();
+            rjson::add(left_jobj, "exclusive", rjson::value(e.left.exclusive));
+            rjson::add(left_jobj, "token", rjson::from_string(disk_string_to_string(e.left.token)));
+            rjson::add(jobj, "left", std::move(left_jobj));
+
+            auto right_jobj = rjson::empty_object();
+            rjson::add(right_jobj, "exclusive", rjson::value(e.right.exclusive));
+            rjson::add(right_jobj, "token", rjson::from_string(disk_string_to_string(e.right.token)));
+            rjson::add(jobj, "right", std::move(right_jobj));
+
+            rjson::push_back(jarray, std::move(jobj));
         }
-        for (const auto& [k, v] : m->data.data) {
-            boost::apply_visitor(scylla_metadata_visitor{}, v);
-        }
-        fmt::print("{{sstable_scylla_metadata_end}}\n");
+        return jarray;
     }
-    fmt::print("{{stream_end}}\n");
+    rjson::value operator()(const sstables::sstable_enabled_features& val) const {
+        std::pair<sstables::sstable_feature, const char*> all_features[] = {
+                {sstables::sstable_feature::NonCompoundPIEntries, "NonCompoundPIEntries"},
+                {sstables::sstable_feature::NonCompoundRangeTombstones, "NonCompoundRangeTombstones"},
+                {sstables::sstable_feature::ShadowableTombstones, "ShadowableTombstones"},
+                {sstables::sstable_feature::CorrectStaticCompact, "CorrectStaticCompact"},
+                {sstables::sstable_feature::CorrectEmptyCounters, "CorrectEmptyCounters"},
+                {sstables::sstable_feature::CorrectUDTsInCollections, "CorrectUDTsInCollections"},
+        };
+        auto jobj = rjson::empty_object();
+        rjson::add(jobj, "raw", rjson::value(val.enabled_features));
+        auto jarray = rjson::empty_array();
+        for (const auto& [mask, name] : all_features) {
+            if (mask & val.enabled_features) {
+                rjson::push_back(jarray, rjson::from_string(name));
+            }
+        }
+        rjson::add(jobj, "list", std::move(jarray));
+        return jobj;
+    }
+    rjson::value operator()(const sstables::scylla_metadata::extension_attributes& val) const {
+        auto jobj = rjson::empty_object();
+        for (const auto& [k, v] : val.map) {
+            rjson::add_with_string_name(jobj, disk_string_to_string(k), rjson::from_string(disk_string_to_string(v)));
+        }
+        return jobj;
+    }
+    rjson::value operator()(const sstables::run_identifier& val) const {
+        return rjson::from_string(fmt::format("{}", val.id));
+    }
+    rjson::value operator()(const sstables::scylla_metadata::large_data_stats& val) const {
+        auto jobj = rjson::empty_object();
+        for (const auto& [k, v] : val.map) {
+            auto large_jobj = rjson::empty_object();
+            rjson::add(large_jobj, "max_value", v.max_value);
+            rjson::add(large_jobj, "threshold", v.threshold);
+            rjson::add(large_jobj, "above_threshold", v.above_threshold);
+
+            rjson::add_with_string_name(jobj, to_string(k), std::move(large_jobj));
+        }
+        return jobj;
+    }
+    rjson::value operator()(const sstables::scylla_metadata::sstable_origin& val) const {
+        return rjson::from_string(disk_string_to_string(val));
+    }
+
+    template <sstables::scylla_metadata_type E, typename T>
+    void operator()(const sstables::disk_tagged_union_member<sstables::scylla_metadata_type, E, T>& m) const {
+        auto jval = (*this)(m.value);
+        fmt::print("\"{}\": {}", to_string(E), jval);
+    }
+
+    scylla_metadata_json_visitor() = default;
+};
+
+void dump_scylla_metadata_operation(schema_ptr schema, reader_permit permit, const std::vector<sstables::shared_sstable>& sstables, const bpo::variables_map& opts) {
+    const auto is_json = get_output_format_from_options(opts, output_format::text) == output_format::json;
+
+    if (is_json) {
+        fmt::print("{{\"sstables\": {{\n");
+    } else {
+        fmt::print("{{stream_start}}\n");
+    }
+    bool first_sstable = true;
+    for (auto& sst : sstables) {
+        if (is_json) {
+            fmt::print("{}\"{}\": {{\n", first_sstable ? "" : ",\n", sst->get_filename());
+        } else {
+            fmt::print("{{sstable_scylla_metadata_start: {}}}\n", sst->get_filename());
+        }
+        if (auto m = sst->get_scylla_metadata(); m) {
+            bool first = true;
+            for (const auto& [k, v] : m->data.data) {
+                if (is_json) {
+                    fmt::print("{}", first ? "" : ",\n");
+                    boost::apply_visitor(scylla_metadata_json_visitor{}, v);
+                } else {
+                    boost::apply_visitor(scylla_metadata_text_visitor{}, v);
+                }
+                first = false;
+            }
+        }
+        if (is_json) {
+            fmt::print("}}\n");
+        } else {
+            fmt::print("{{sstable_scylla_metadata_end}}\n");
+        }
+        first_sstable = false;
+    }
+    if (is_json) {
+        fmt::print("}}}}\n");
+    } else {
+        fmt::print("{{stream_end}}\n");
+    }
 }
 
 template <typename SstableConsumer>
@@ -1750,6 +1849,7 @@ produced by Apache Cassandra.
 For more information about the sstable components and the format itself, visit
 https://docs.scylladb.com/architecture/sstable/.
 )",
+            {"output-format"},
             dump_scylla_metadata_operation},
 /* writetime-histogram */
     {"writetime-histogram",
