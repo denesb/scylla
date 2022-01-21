@@ -1590,6 +1590,7 @@ private:
 
     std::optional<dht::decorated_key> _last_pkey;
     position_in_partition _next_position_in_partition = position_in_partition::for_partition_start();
+    bool _last_position_was_range_tombstone_change = false;
     // These are used when the reader has to be recreated (after having been
     // evicted while paused) and the range and/or slice it is recreated with
     // differs from the original ones.
@@ -1694,6 +1695,7 @@ void evictable_reader_v2::update_next_position() {
                 _next_position_in_partition = position_in_partition::for_partition_start();
             } else {
                 _next_position_in_partition = position_in_partition::after_key(last_pos);
+                _last_position_was_range_tombstone_change = buffer().back().is_range_tombstone_change();
             }
             break;
         case partition_region::partition_end:
@@ -1883,6 +1885,10 @@ bool evictable_reader_v2::should_drop_fragment(const mutation_fragment_v2& mf) {
     if (_drop_static_row) {
          _drop_static_row = false;
         return mf.is_static_row();
+    }
+    // Detect a re-emitted range tombstone change that we already emitted.
+    if (mf.is_range_tombstone_change() && _last_position_was_range_tombstone_change && _tri_cmp(mf.position(), _next_position_in_partition) == 0) {
+        return true;
     }
     return false;
 }
