@@ -1609,7 +1609,6 @@ private:
     void maybe_validate_partition_start(const flat_mutation_reader_v2::tracked_buffer& buffer);
     void validate_position_in_partition(position_in_partition_view pos) const;
     bool should_drop_fragment(const mutation_fragment_v2& mf);
-    future<> do_fill_buffer();
 
 public:
     evictable_reader_v2(
@@ -1888,27 +1887,6 @@ bool evictable_reader_v2::should_drop_fragment(const mutation_fragment_v2& mf) {
     return false;
 }
 
-future<> evictable_reader_v2::do_fill_buffer() {
-    if (!_drop_partition_start && !_drop_static_row) {
-        auto fill_buf_fut = _reader->fill_buffer();
-        if (_validate_partition_key) {
-            fill_buf_fut = fill_buf_fut.then([this] {
-                maybe_validate_partition_start(_reader->buffer());
-            });
-        }
-        return fill_buf_fut;
-    }
-    return repeat([this] {
-        return _reader->fill_buffer().then([this] {
-            maybe_validate_partition_start(_reader->buffer());
-            while (!_reader->is_buffer_empty() && should_drop_fragment(_reader->peek_buffer())) {
-                _reader->pop_mutation_fragment();
-            }
-            return stop_iteration(_reader->is_buffer_full() || _reader->is_end_of_stream());
-        });
-    });
-}
-
 evictable_reader_v2::evictable_reader_v2(
         auto_pause ap,
         mutation_source ms,
@@ -1935,7 +1913,13 @@ future<> evictable_reader_v2::fill_buffer() {
         co_return;
     }
     _reader = co_await resume_or_create_reader();
-    co_await do_fill_buffer();
+    while (_reader->is_buffer_empty() && !_reader->is_end_of_stream()) {
+        co_await _reader->fill_buffer();
+        maybe_validate_partition_start(_reader->buffer());
+        while (!_reader->is_buffer_empty() && should_drop_fragment(_reader->peek_buffer())) {
+            _reader->pop_mutation_fragment();
+        }
+    }
     _reader->move_buffer_content_to(*this);
     update_next_position();
     _end_of_stream = _reader->is_end_of_stream() && _reader->is_buffer_empty();
