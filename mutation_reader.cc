@@ -1586,6 +1586,7 @@ private:
     // Validate the partition key of the first emitted partition, set after the
     // reader was recreated.
     bool _validate_partition_key = false;
+    bool _validate_position_in_partition = false;
     position_in_partition::tri_compare _tri_cmp;
 
     std::optional<dht::decorated_key> _last_pkey;
@@ -1608,7 +1609,7 @@ private:
     flat_mutation_reader_v2 recreate_reader();
     future<flat_mutation_reader_v2> resume_or_create_reader();
     void maybe_validate_partition_start(const flat_mutation_reader_v2::tracked_buffer& buffer);
-    void validate_position_in_partition(position_in_partition_view pos) const;
+    void maybe_validate_position_in_partition(const flat_mutation_reader_v2::tracked_buffer& buffer);
     bool should_drop_fragment(const mutation_fragment_v2& mf);
 
 public:
@@ -1742,6 +1743,7 @@ flat_mutation_reader_v2 evictable_reader_v2::recreate_reader() {
         case partition_region::clustered:
             _drop_partition_start = true;
             _drop_static_row = true;
+            _validate_position_in_partition = true;
             adjust_partition_slice();
             slice = &*_slice_override;
             break;
@@ -1818,6 +1820,7 @@ void evictable_reader_v2::maybe_validate_partition_start(const flat_mutation_rea
                 push_mutation_fragment(*_schema, _permit, partition_end{});
                 _drop_partition_start = false;
                 _drop_static_row = false;
+                _validate_position_in_partition = false;
                 _next_position_in_partition = position_in_partition::for_partition_start();
             }
         } else { // should be a larger partition
@@ -1841,7 +1844,20 @@ void evictable_reader_v2::maybe_validate_partition_start(const flat_mutation_rea
     _validate_partition_key = false;
 }
 
-void evictable_reader_v2::validate_position_in_partition(position_in_partition_view pos) const {
+void evictable_reader_v2::maybe_validate_position_in_partition(const flat_mutation_reader_v2::tracked_buffer& buffer) {
+    if (!_validate_position_in_partition || buffer.empty()) {
+        return;
+    }
+
+    auto it = buffer.begin();
+    if (it->is_partition_start()) {
+        ++it;
+    }
+    if (it == buffer.end()) {
+        return;
+    }
+    auto pos = it->position();
+
     require(
             _tri_cmp(_next_position_in_partition, pos) <= 0,
             "{}(): validation failed, expected position in partition that is larger-than-equal than _next_position_in_partition {}, but got {}",
@@ -1870,6 +1886,8 @@ void evictable_reader_v2::validate_position_in_partition(position_in_partition_v
                 slice,
                 pos);
     }
+
+    _validate_position_in_partition = false;
 }
 
 bool evictable_reader_v2::should_drop_fragment(const mutation_fragment_v2& mf) {
@@ -1926,6 +1944,7 @@ future<> evictable_reader_v2::fill_buffer() {
             _reader->pop_mutation_fragment();
         }
     }
+    maybe_validate_position_in_partition(_reader->buffer());
     _reader->move_buffer_content_to(*this);
     update_next_position();
     _end_of_stream = _reader->is_end_of_stream() && _reader->is_buffer_empty();
