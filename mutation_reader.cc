@@ -1604,6 +1604,7 @@ private:
     future<flat_mutation_reader_v2> resume_or_create_reader();
     void validate_partition_start(const partition_start& ps);
     void validate_position_in_partition(position_in_partition_view pos) const;
+    void close_active_tombstone();
     void examine_first_fragments(mutation_fragment_v2_opt& mf1, mutation_fragment_v2_opt& mf2, mutation_fragment_v2_opt& mf3);
 
 public:
@@ -1797,6 +1798,7 @@ void evictable_reader_v2::validate_partition_start(const partition_start& ps) {
             // Reset next pos if we are not continuing from the same partition
             if (cmp_res < 0) {
                 // Close previous partition, we are not going to continue it.
+                close_active_tombstone();
                 push_mutation_fragment(*_schema, _permit, partition_end{});
                 _next_position_in_partition = position_in_partition::for_partition_start();
             }
@@ -1850,8 +1852,21 @@ void evictable_reader_v2::validate_position_in_partition(position_in_partition_v
     }
 }
 
+void evictable_reader_v2::close_active_tombstone() {
+    // We have to end the partition with a null range tombstone. Instead of
+    // trying to keep track whether we have an active one, we just
+    // unconditionally emit a null tombstone, this is always safe to do.
+    // We avoid emitting a tombstone however if the read stopped mid-partition,
+    // or if we didn't read any clustering fragments yet.
+    if (_next_position_in_partition.region() == partition_region::clustered
+            && _tri_cmp(_next_position_in_partition, position_in_partition::before_all_clustered_rows()) > 0) {
+        push_mutation_fragment(*_schema, _permit, range_tombstone_change{position_in_partition_view::before_key(_next_position_in_partition), {}});
+    }
+}
+
 void evictable_reader_v2::examine_first_fragments(mutation_fragment_v2_opt& mf1, mutation_fragment_v2_opt& mf2, mutation_fragment_v2_opt& mf3) {
     if (!mf1) {
+        close_active_tombstone();
         return; // the reader is at EOS
     }
 
