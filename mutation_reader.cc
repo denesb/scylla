@@ -1931,6 +1931,22 @@ future<> evictable_reader_v2::fill_buffer() {
 
     _reader->move_buffer_content_to(*this);
     update_next_position();
+
+    // Range tombstone changes can have non-monotonic positions.
+    // So make sure the next unconsumed fragment in _reader's buffer
+    // has a strictly larger position than the one buffer() ends with.
+    if (!is_buffer_empty() && buffer().back().is_range_tombstone_change()) {
+        const auto last_pos = position_in_partition(buffer().back().position());
+        auto* next_mf = co_await _reader->peek();
+        while (next_mf && _tri_cmp(last_pos, next_mf->position()) == 0) {
+            push_mutation_fragment(_reader->pop_mutation_fragment());
+            next_mf = co_await _reader->peek();
+        }
+        if (next_mf) {
+            _next_position_in_partition = next_mf->position();
+        }
+    }
+
     _end_of_stream = _reader->is_end_of_stream();
     maybe_pause(std::move(*_reader));
 }
