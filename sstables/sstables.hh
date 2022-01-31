@@ -70,6 +70,7 @@ namespace fs = std::filesystem;
 extern logging::logger sstlog;
 class key;
 class sstable_writer;
+class sstable_writer_v2;
 class sstables_manager;
 class metadata_collector;
 
@@ -260,6 +261,20 @@ public:
             const io_priority_class& pc = default_priority_class());
 
     sstable_writer get_writer(const schema& s,
+        uint64_t estimated_partitions,
+        const sstable_writer_config&,
+        encoding_stats enc_stats,
+        const io_priority_class& pc = default_priority_class(),
+        shard_id shard = this_shard_id());
+
+    future<> write_components(flat_mutation_reader_v2 mr,
+            uint64_t estimated_partitions,
+            schema_ptr schema,
+            const sstable_writer_config&,
+            encoding_stats stats,
+            const io_priority_class& pc = default_priority_class());
+
+    sstable_writer_v2 get_writer_v2(const schema& s,
         uint64_t estimated_partitions,
         const sstable_writer_config&,
         encoding_stats enc_stats,
