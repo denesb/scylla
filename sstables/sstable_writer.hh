@@ -13,6 +13,7 @@
 #include <seastar/core/smp.hh>
 #include "schema_fwd.hh"
 #include "mutation_fragment.hh"
+#include "mutation_fragment_v2.hh"
 
 struct encoding_stats;
 
@@ -41,6 +42,30 @@ public:
     stop_iteration consume(static_row&& sr);
     stop_iteration consume(clustering_row&& cr);
     stop_iteration consume(range_tombstone&& rt);
+    stop_iteration consume_end_of_partition();
+    void consume_end_of_stream();
+};
+
+class sstable_writer_v2 {
+public:
+    class writer_impl;
+private:
+    std::unique_ptr<writer_impl> _impl;
+public:
+    sstable_writer_v2(sstable& sst, const schema& s, uint64_t estimated_partitions,
+            const sstable_writer_config&, encoding_stats enc_stats,
+            const io_priority_class& pc, shard_id shard = this_shard_id());
+
+    sstable_writer_v2(sstable_writer_v2&& o);
+    sstable_writer_v2& operator=(sstable_writer_v2&& o);
+
+    ~sstable_writer_v2();
+
+    void consume_new_partition(const dht::decorated_key& dk);
+    void consume(tombstone t);
+    stop_iteration consume(static_row&& sr);
+    stop_iteration consume(clustering_row&& cr);
+    stop_iteration consume(range_tombstone_change&& rtc);
     stop_iteration consume_end_of_partition();
     void consume_end_of_stream();
 };

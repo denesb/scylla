@@ -15,7 +15,7 @@
 namespace sstables {
 namespace mc {
 
-std::unique_ptr<sstable_writer::writer_impl> make_writer(sstable& sst,
+std::unique_ptr<sstable_writer_v2::writer_impl> make_writer(sstable& sst,
     const schema& s,
     uint64_t estimated_partitions,
     const sstable_writer_config& cfg,
