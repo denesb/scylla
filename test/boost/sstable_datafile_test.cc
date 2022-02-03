@@ -2874,7 +2874,7 @@ SEASTAR_TEST_CASE(test_missing_partition_end_fragment) {
             sstable_writer_config cfg = env.manager().configure_writer();
 
             try {
-                auto wr = sst->get_writer_v2(*s, 1, cfg, encoding_stats{}, default_priority_class());
+                auto wr = sst->get_writer(*s, 1, cfg, encoding_stats{}, default_priority_class());
                 mr.consume_in_thread(std::move(wr));
                 BOOST_FAIL("write_components() should have failed");
             } catch (const std::runtime_error&) {

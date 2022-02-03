@@ -252,16 +252,16 @@ struct compaction_writer {
     shared_sstable sst;
     // We use a ptr for pointer stability and so that it can be null
     // when using a noop monitor.
-    sstable_writer_v2 writer;
+    sstable_writer writer;
     // The order in here is important. A monitor must be destroyed before the writer it is monitoring since it has a
     // periodic timer that checks the writer.
     // The writer must be destroyed before the shared_sstable since the it may depend on the sstable
     // (as in the mx::writer over compressed_file_data_sink_impl case that depends on sstables::compression).
     std::unique_ptr<compaction_write_monitor> monitor;
 
-    compaction_writer(std::unique_ptr<compaction_write_monitor> monitor, sstable_writer_v2 writer, shared_sstable sst)
+    compaction_writer(std::unique_ptr<compaction_write_monitor> monitor, sstable_writer writer, shared_sstable sst)
         : sst(std::move(sst)), writer(std::move(writer)), monitor(std::move(monitor)) {}
-    compaction_writer(sstable_writer_v2 writer, shared_sstable sst)
+    compaction_writer(sstable_writer writer, shared_sstable sst)
         : compaction_writer(nullptr, std::move(writer), std::move(sst)) {}
 };
 
@@ -560,7 +560,7 @@ protected:
         sstable_writer_config cfg = _table_s.configure_writer("garbage_collection");
         cfg.run_identifier = _run_identifier;
         cfg.monitor = monitor.get();
-        auto writer = sst->get_writer_v2(*schema(), partitions_per_sstable(), cfg, get_encoding_stats(), priority);
+        auto writer = sst->get_writer(*schema(), partitions_per_sstable(), cfg, get_encoding_stats(), priority);
         return compaction_writer(std::move(monitor), std::move(writer), std::move(sst));
     }
 
@@ -916,7 +916,7 @@ public:
         setup_new_sstable(sst);
 
         sstable_writer_config cfg = make_sstable_writer_config(compaction_type::Reshape);
-        return compaction_writer{sst->get_writer_v2(*_schema, partitions_per_sstable(), cfg, get_encoding_stats(), _io_priority), sst};
+        return compaction_writer{sst->get_writer(*_schema, partitions_per_sstable(), cfg, get_encoding_stats(), _io_priority), sst};
     }
 
     virtual void stop_sstable_writer(compaction_writer* writer) override {
@@ -964,7 +964,7 @@ public:
         auto monitor = std::make_unique<compaction_write_monitor>(sst, _table_s, maximum_timestamp(), _sstable_level);
         sstable_writer_config cfg = make_sstable_writer_config(_type);
         cfg.monitor = monitor.get();
-        return compaction_writer{std::move(monitor), sst->get_writer_v2(*_schema, partitions_per_sstable(), cfg, get_encoding_stats(), _io_priority), sst};
+        return compaction_writer{std::move(monitor), sst->get_writer(*_schema, partitions_per_sstable(), cfg, get_encoding_stats(), _io_priority), sst};
     }
 
     virtual void stop_sstable_writer(compaction_writer* writer) override {
@@ -1548,7 +1548,7 @@ public:
         auto cfg = make_sstable_writer_config(compaction_type::Reshard);
         // sstables generated for a given shard will share the same run identifier.
         cfg.run_identifier = _run_identifiers.at(shard);
-        return compaction_writer{sst->get_writer_v2(*_schema, partitions_per_sstable(shard), cfg, get_encoding_stats(), _io_priority, shard), sst};
+        return compaction_writer{sst->get_writer(*_schema, partitions_per_sstable(shard), cfg, get_encoding_stats(), _io_priority, shard), sst};
     }
 
     void stop_sstable_writer(compaction_writer* writer) override {

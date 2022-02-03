@@ -19,7 +19,7 @@
 
 namespace sstables {
 
-struct sstable_writer_v2::writer_impl {
+struct sstable_writer::writer_impl {
     sstable& _sst;
     const schema& _schema;
     const io_priority_class& _pc;

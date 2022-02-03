@@ -2148,7 +2148,7 @@ std::vector<mutation_fragment_v2> write_corrupt_sstable(test_env& env, sstable& 
 
     auto config = env.manager().configure_writer();
     config.validation_level = mutation_fragment_stream_validation_level::partition_region; // this test violates key order on purpose
-    auto writer = sst.get_writer_v2(*schema, local_keys.size(), config, encoding_stats{});
+    auto writer = sst.get_writer(*schema, local_keys.size(), config, encoding_stats{});
 
     auto make_static_row = [&, schema, ts] {
         auto r = row{};
@@ -3313,11 +3313,11 @@ SEASTAR_TEST_CASE(purged_tombstone_consumer_sstable_test) {
 
         class compacting_sstable_writer_test {
             shared_sstable& _sst;
-            sstable_writer_v2 _writer;
+            sstable_writer _writer;
         public:
             explicit compacting_sstable_writer_test(const schema_ptr& s, shared_sstable& sst, sstables_manager& manager)
                 : _sst(sst),
-                  _writer(sst->get_writer_v2(*s, 1, manager.configure_writer("test"),
+                  _writer(sst->get_writer(*s, 1, manager.configure_writer("test"),
                         encoding_stats{}, service::get_local_compaction_priority())) {}
 
             void consume_new_partition(const dht::decorated_key& dk) { _writer.consume_new_partition(dk); }

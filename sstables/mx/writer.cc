@@ -524,7 +524,7 @@ concept Clustered = requires(T t) {
 };
 
 // Used for writing SSTables in 'mc' format.
-class writer : public sstable_writer_v2::writer_impl {
+class writer : public sstable_writer::writer_impl {
 private:
     const encoding_stats _enc_stats;
     shard_id _shard; // Specifies which shard the new SStable will belong to.
@@ -737,7 +737,7 @@ public:
     writer(sstable& sst, const schema& s, uint64_t estimated_partitions,
         const sstable_writer_config& cfg, encoding_stats enc_stats,
         const io_priority_class& pc, shard_id shard = this_shard_id())
-        : sstable_writer_v2::writer_impl(sst, s, pc, cfg)
+        : sstable_writer::writer_impl(sst, s, pc, cfg)
         , _enc_stats(enc_stats)
         , _shard(shard)
         , _tmp_bufs(_sst.sstable_buffer_size)
@@ -1419,7 +1419,7 @@ void writer::consume_end_of_stream() {
     }
 }
 
-std::unique_ptr<sstable_writer_v2::writer_impl> make_writer(sstable& sst,
+std::unique_ptr<sstable_writer::writer_impl> make_writer(sstable& sst,
         const schema& s,
         uint64_t estimated_partitions,
         const sstable_writer_config& cfg,

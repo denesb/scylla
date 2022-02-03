@@ -70,7 +70,7 @@ namespace fs = std::filesystem;
 extern logging::logger sstlog;
 class key;
 class sstable_writer;
-class sstable_writer_v2;
+class sstable_writer;
 class sstables_manager;
 class metadata_collector;
 
@@ -260,7 +260,7 @@ public:
             encoding_stats stats,
             const io_priority_class& pc = default_priority_class());
 
-    sstable_writer_v2 get_writer_v2(const schema& s,
+    sstable_writer get_writer(const schema& s,
         uint64_t estimated_partitions,
         const sstable_writer_config&,
         encoding_stats enc_stats,

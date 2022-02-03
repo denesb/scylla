@@ -22,20 +22,20 @@ namespace sstables {
 class sstable;
 struct sstable_writer_config;
 
-class sstable_writer_v2 {
+class sstable_writer {
 public:
     class writer_impl;
 private:
     std::unique_ptr<writer_impl> _impl;
 public:
-    sstable_writer_v2(sstable& sst, const schema& s, uint64_t estimated_partitions,
+    sstable_writer(sstable& sst, const schema& s, uint64_t estimated_partitions,
             const sstable_writer_config&, encoding_stats enc_stats,
             const io_priority_class& pc, shard_id shard = this_shard_id());
 
-    sstable_writer_v2(sstable_writer_v2&& o);
-    sstable_writer_v2& operator=(sstable_writer_v2&& o);
+    sstable_writer(sstable_writer&& o);
+    sstable_writer& operator=(sstable_writer&& o);
 
-    ~sstable_writer_v2();
+    ~sstable_writer();
 
     void consume_new_partition(const dht::decorated_key& dk);
     void consume(tombstone t);
