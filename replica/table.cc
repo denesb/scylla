@@ -665,7 +665,7 @@ table::try_flush_memtable_to_sstable(lw_shared_ptr<memtable> old, sstable_write_
             auto monitor = database_sstable_write_monitor(permit, newtab, _compaction_strategy,
                 old->get_max_timestamp());
 
-            co_return co_await write_memtable_to_sstable(downgrade_to_v1(std::move(reader)), *old, newtab, estimated_partitions, monitor, cfg, priority);
+            co_return co_await write_memtable_to_sstable(std::move(reader), *old, newtab, estimated_partitions, monitor, cfg, priority);
         });
 
         auto reader = upgrade_to_v2(old->make_flush_reader(
@@ -2048,7 +2048,7 @@ template void table::do_apply(db::rp_handle&&, const frozen_mutation&, const sch
 }
 
 future<>
-write_memtable_to_sstable(flat_mutation_reader reader,
+write_memtable_to_sstable(flat_mutation_reader_v2 reader,
                           memtable& mt, sstables::shared_sstable sst,
                           size_t estimated_partitions,
                           sstables::write_monitor& monitor,
@@ -2066,7 +2066,7 @@ write_memtable_to_sstable(reader_permit permit, memtable& mt, sstables::shared_s
                           sstables::write_monitor& monitor,
                           sstables::sstable_writer_config& cfg,
                           const io_priority_class& pc) {
-    return write_memtable_to_sstable(mt.make_flush_reader(mt.schema(), std::move(permit), pc), mt, std::move(sst), mt.partition_count(), monitor, cfg, pc);
+    return write_memtable_to_sstable(upgrade_to_v2(mt.make_flush_reader(mt.schema(), std::move(permit), pc)), mt, std::move(sst), mt.partition_count(), monitor, cfg, pc);
 }
 
 future<>

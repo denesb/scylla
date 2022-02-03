@@ -26,7 +26,7 @@ class write_monitor;
 }
 
 seastar::future<>
-write_memtable_to_sstable(flat_mutation_reader reader,
+write_memtable_to_sstable(flat_mutation_reader_v2 reader,
         memtable& mt, sstables::shared_sstable sst,
         size_t estimated_partitions,
         sstables::write_monitor& monitor,
