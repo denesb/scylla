@@ -253,20 +253,6 @@ public:
     // The mutation_source shares ownership of this sstable.
     mutation_source as_mutation_source();
 
-    future<> write_components(flat_mutation_reader mr,
-            uint64_t estimated_partitions,
-            schema_ptr schema,
-            const sstable_writer_config&,
-            encoding_stats stats,
-            const io_priority_class& pc = default_priority_class());
-
-    sstable_writer get_writer(const schema& s,
-        uint64_t estimated_partitions,
-        const sstable_writer_config&,
-        encoding_stats enc_stats,
-        const io_priority_class& pc = default_priority_class(),
-        shard_id shard = this_shard_id());
-
     future<> write_components(flat_mutation_reader_v2 mr,
             uint64_t estimated_partitions,
             schema_ptr schema,

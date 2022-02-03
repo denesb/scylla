@@ -1625,14 +1625,6 @@ future<> sstable::seal_sstable(bool backup)
     });
 }
 
-sstable_writer sstable::get_writer(const schema& s, uint64_t estimated_partitions,
-        const sstable_writer_config& cfg, encoding_stats enc_stats, const io_priority_class& pc, shard_id shard)
-{
-    // Mark sstable for implicit deletion if destructed before it is sealed.
-    _marked_for_deletion = mark_for_deletion::implicit;
-    return sstable_writer(*this, s, estimated_partitions, cfg, enc_stats, pc, shard);
-}
-
 sstable_writer_v2 sstable::get_writer_v2(const schema& s, uint64_t estimated_partitions,
         const sstable_writer_config& cfg, encoding_stats enc_stats, const io_priority_class& pc, shard_id shard)
 {
@@ -1660,23 +1652,6 @@ void sstable::assert_large_data_handler_is_running() {
     if (!get_large_data_handler().running()) {
         on_internal_error(sstlog, "The large data handler is not running");
     }
-}
-
-future<> sstable::write_components(
-        flat_mutation_reader mr,
-        uint64_t estimated_partitions,
-        schema_ptr schema,
-        const sstable_writer_config& cfg,
-        encoding_stats stats,
-        const io_priority_class& pc) {
-    assert_large_data_handler_is_running();
-    return seastar::async([this, mr = std::move(mr), estimated_partitions, schema = std::move(schema), cfg, stats, &pc] () mutable {
-        auto close_mr = deferred_close(mr);
-        auto wr = get_writer(*schema, estimated_partitions, cfg, stats, pc);
-        mr.consume_in_thread(std::move(wr));
-    }).finally([this] {
-        assert_large_data_handler_is_running();
-    });
 }
 
 future<> sstable::write_components(
