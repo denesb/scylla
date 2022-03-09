@@ -440,6 +440,40 @@ namespace replica {
 
 static const metrics::label class_label("class");
 
+static void setup_reader_concurrency_semaphore_metrics(seastar::metrics::metric_groups& metrics, const metrics::label::instance& label, reader_concurrency_semaphore& sem) {
+    namespace sm = seastar::metrics;
+    metrics.add_group("database", {
+        sm::make_gauge("active_reads", [&sem] { return sem.initial_resources().count - sem.available_resources().count; },
+                       sm::description("Currently active read operations (cache and disk). "),
+                       {label}),
+
+        sm::make_gauge("active_reads_memory_consumption", [&sem] { return sem.initial_resources().memory - sem.available_resources().memory; },
+                       sm::description(seastar::format("The amount of memory consumed by currently active read operations. "
+                                                       "If this value gets close to {} we are likely to start dropping new read requests. "
+                                                       "In that case sstable_read_queue_overloads is going to get a non-zero value.", sem.initial_resources().memory)),
+                       {label}),
+
+        sm::make_gauge("queued_reads", [&sem] { return sem.waiters(); },
+                       sm::description("Holds the number of currently queued read operations."),
+                       {label}),
+
+        sm::make_gauge("paused_reads", sem.get_stats().inactive_reads,
+                       sm::description("The number of currently active reads that are temporarily paused."),
+                       {label}),
+
+        sm::make_derive("paused_reads_permit_based_evictions", sem.get_stats().permit_based_evictions,
+                       sm::description("The number of paused reads evicted to free up permits."
+                                       " Permits are required for new reads to start, and the database will evict paused reads (if any)"
+                                       " to be able to admit new ones, if there is a shortage of permits."),
+                       {label}),
+
+        sm::make_derive("reads_shed_due_to_overload", sem.get_stats().total_reads_shed_due_to_overload,
+                       sm::description("The number of reads shed because the admission queue reached its max capacity."
+                                       " When the queue is full, excessive reads are shed to avoid overload."),
+                       {label}),
+    });
+}
+
 void
 database::setup_metrics() {
     _dirty_memory_manager.setup_collectd("regular");
@@ -561,36 +595,7 @@ database::setup_metrics() {
     });
 
     // user read metrics
-    _metrics.add_group("database", {
-        sm::make_gauge("active_reads", [this] { return max_count_concurrent_reads - _read_concurrency_sem.available_resources().count; },
-                       sm::description("Holds the number of currently active read operations. "),
-                       {user_label_instance}),
-
-        sm::make_gauge("active_reads_memory_consumption", [this] { return max_memory_concurrent_reads() - _read_concurrency_sem.available_resources().memory; },
-                       sm::description(seastar::format("Holds the amount of memory consumed by currently active read operations. "
-                                                       "If this value gets close to {} we are likely to start dropping new read requests. "
-                                                       "In that case sstable_read_queue_overloads is going to get a non-zero value.", max_memory_concurrent_reads())),
-                       {user_label_instance}),
-
-        sm::make_gauge("queued_reads", [this] { return _read_concurrency_sem.waiters(); },
-                       sm::description("Holds the number of currently queued read operations."),
-                       {user_label_instance}),
-
-        sm::make_gauge("paused_reads", _read_concurrency_sem.get_stats().inactive_reads,
-                       sm::description("The number of currently active reads that are temporarily paused."),
-                       {user_label_instance}),
-
-        sm::make_derive("paused_reads_permit_based_evictions", _read_concurrency_sem.get_stats().permit_based_evictions,
-                       sm::description("The number of paused reads evicted to free up permits."
-                                       " Permits are required for new reads to start, and the database will evict paused reads (if any)"
-                                       " to be able to admit new ones, if there is a shortage of permits."),
-                       {user_label_instance}),
-
-        sm::make_derive("reads_shed_due_to_overload", _read_concurrency_sem.get_stats().total_reads_shed_due_to_overload,
-                       sm::description("The number of reads shed because the admission queue reached its max capacity."
-                                       " When the queue is full, excessive reads are shed to avoid overload."),
-                       {user_label_instance}),
-    });
+    setup_reader_concurrency_semaphore_metrics(_metrics, user_label_instance, _read_concurrency_sem);
 
     // streaming read metrics
     _metrics.add_group("database", {
