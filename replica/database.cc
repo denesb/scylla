@@ -558,14 +558,14 @@ database::setup_metrics() {
                        sm::description("Counts the number of times the sstable read queue was overloaded. "
                                        "A non-zero value indicates that we have to drop read requests because they arrive faster than we can serve them.")),
 
+    });
+
+    // user read metrics
+    _metrics.add_group("database", {
         sm::make_gauge("active_reads", [this] { return max_count_concurrent_reads - _read_concurrency_sem.available_resources().count; },
                        sm::description("Holds the number of currently active read operations. "),
                        {user_label_instance}),
 
-    });
-
-    // Registering all the metrics with a single call causes the stack size to blow up.
-    _metrics.add_group("database", {
         sm::make_gauge("active_reads_memory_consumption", [this] { return max_memory_concurrent_reads() - _read_concurrency_sem.available_resources().memory; },
                        sm::description(seastar::format("Holds the amount of memory consumed by currently active read operations. "
                                                        "If this value gets close to {} we are likely to start dropping new read requests. "
@@ -590,7 +590,10 @@ database::setup_metrics() {
                        sm::description("The number of reads shed because the admission queue reached its max capacity."
                                        " When the queue is full, excessive reads are shed to avoid overload."),
                        {user_label_instance}),
+    });
 
+    // streaming read metrics
+    _metrics.add_group("database", {
         sm::make_gauge("active_reads", [this] { return max_count_streaming_concurrent_reads - _streaming_concurrency_sem.available_resources().count; },
                        sm::description("Holds the number of currently active read operations issued on behalf of streaming "),
                        {streaming_label_instance}),
@@ -620,7 +623,10 @@ database::setup_metrics() {
                        sm::description("The number of reads shed because the admission queue reached its max capacity."
                                        " When the queue is full, excessive reads are shed to avoid overload."),
                        {streaming_label_instance}),
+    });
 
+    // system read metrics
+    _metrics.add_group("database", {
         sm::make_gauge("active_reads", [this] { return max_count_system_concurrent_reads - _system_read_concurrency_sem.available_resources().count; },
                        sm::description("Holds the number of currently active read operations from \"system\" keyspace tables. "),
                        {system_label_instance}),
@@ -649,7 +655,9 @@ database::setup_metrics() {
                        sm::description("The number of reads shed because the admission queue reached its max capacity."
                                        " When the queue is full, excessive reads are shed to avoid overload."),
                        {system_label_instance}),
+    });
 
+    _metrics.add_group("database", {
         sm::make_gauge("total_result_bytes", [this] { return get_result_memory_limiter().total_used_memory(); },
                        sm::description("Holds the current amount of memory used for results.")),
 
