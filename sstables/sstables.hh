@@ -634,6 +634,11 @@ private:
     future<> create_data() noexcept;
 
 public:
+    // Create a data stream to the raw data. The data is presented as-is, it is
+    // not uncompressed when the sstable uses compression.
+    input_stream<char> raw_data_stream(uint64_t pos, size_t len, const io_priority_class& pc,
+            reader_permit permit, tracing::trace_state_ptr trace_state);
+
     // Return an input_stream which reads exactly the specified byte range
     // from the data file (after uncompression, if the file is compressed).
     // Unlike data_read() below, this method does not read the entire byte

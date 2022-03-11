@@ -2305,6 +2305,16 @@ component_type sstable::component_from_sstring(version_types v, sstring &s) {
     }
 }
 
+input_stream<char> sstable::raw_data_stream(uint64_t pos, size_t len, const io_priority_class& pc,
+    reader_permit permit, tracing::trace_state_ptr trace_state) {
+    file_input_stream_options options;
+    options.buffer_size = sstable_buffer_size;
+    options.io_priority_class = pc;
+    options.read_ahead = 4;
+    auto data_file = make_tracked_file(_data_file, std::move(permit));
+    return make_file_input_stream(std::move(data_file), pos, len, std::move(options));
+}
+
 input_stream<char> sstable::data_stream(uint64_t pos, size_t len, const io_priority_class& pc,
         reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history) {
     file_input_stream_options options;
