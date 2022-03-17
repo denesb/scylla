@@ -20,58 +20,65 @@
 #include "test/boost/total_order_check.hh"
 #include "schema_upgrader.hh"
 #include "replica/memtable.hh"
+#include "mutation_rebuilder.hh"
 
 #include "test/lib/mutation_assertions.hh"
 #include "test/lib/reader_concurrency_semaphore.hh"
 #include "test/lib/simple_schema.hh"
 
 #include <boost/range/algorithm/transform.hpp>
-#include "readers/from_mutations.hh"
+#include "readers/from_mutations_v2.hh"
 
 // A StreamedMutationConsumer which distributes fragments randomly into several mutations.
 class fragment_scatterer {
-    std::vector<mutation>& _mutations;
+    std::vector<mutation_rebuilder_v2>& _mutations;
     size_t _next = 0;
+    std::optional<size_t> _last_rt;
 private:
-    void for_each_target(noncopyable_function<void (mutation&)> func) {
+    void for_each_target(noncopyable_function<void (mutation_rebuilder_v2&)> func) {
         // round-robin
         func(_mutations[_next % _mutations.size()]);
         ++_next;
     }
 public:
-    fragment_scatterer(std::vector<mutation>& muts)
+    fragment_scatterer(std::vector<mutation_rebuilder_v2>& muts)
         : _mutations(muts)
     { }
 
     void consume_new_partition(const dht::decorated_key&) {}
 
     stop_iteration consume(tombstone t) {
-        for_each_target([&] (mutation& m) {
-            m.partition().apply(t);
+        for_each_target([&] (mutation_rebuilder_v2& m) {
+            m.consume(t);
         });
         return stop_iteration::no;
     }
 
-    stop_iteration consume(range_tombstone&& rt) {
-        for_each_target([&] (mutation& m) {
-            m.partition().apply_row_tombstone(*m.schema(), std::move(rt));
-        });
+    stop_iteration consume(range_tombstone_change&& rtc) {
+        if (_last_rt) {
+            _mutations[*_last_rt].consume(range_tombstone_change(rtc.position(), {}));
+        }
+        if (rtc.tombstone()) {
+            const auto i = _next % _mutations.size();
+            _mutations[i].consume(std::move(rtc));
+            _last_rt = i;
+        } else {
+            _last_rt.reset();
+        }
+        ++_next;
         return stop_iteration::no;
     }
 
     stop_iteration consume(static_row&& sr) {
-        for_each_target([&] (mutation& m) {
-            m.partition().static_row().apply(*m.schema(), column_kind::static_column, std::move(sr.cells()));
+        for_each_target([&] (mutation_rebuilder_v2& m) {
+            m.consume(std::move(sr));
         });
         return stop_iteration::no;
     }
 
     stop_iteration consume(clustering_row&& cr) {
-        for_each_target([&] (mutation& m) {
-            auto& dr = m.partition().clustered_row(*m.schema(), std::move(cr.key()));
-            dr.apply(cr.tomb());
-            dr.apply(cr.marker());
-            dr.cells().apply(*m.schema(), column_kind::regular_column, std::move(cr.cells()));
+        for_each_target([&] (mutation_rebuilder_v2& m) {
+            m.consume(std::move(cr));
         });
         return stop_iteration::no;
     }
@@ -100,15 +107,16 @@ SEASTAR_TEST_CASE(test_mutation_merger_conforms_to_mutation_source) {
             }
 
             for (auto&& m : partitions) {
-                std::vector<mutation> muts;
+                std::vector<mutation_rebuilder_v2> muts;
                 for (int i = 0; i < n; ++i) {
-                    muts.push_back(mutation(m.schema(), m.decorated_key()));
+                    muts.emplace_back(m.schema());
+                    muts.back().consume_new_partition(m.decorated_key());
                 }
-                auto rd = make_flat_mutation_reader_from_mutations(s, semaphore.make_permit(), {m});
+                auto rd = make_flat_mutation_reader_from_mutations_v2(s, semaphore.make_permit(), {m});
                 auto close_rd = deferred_close(rd);
                 rd.consume(fragment_scatterer{muts}).get();
                 for (int i = 0; i < n; ++i) {
-                    memtables[i]->apply(std::move(muts[i]));
+                    memtables[i]->apply(std::move(*muts[i].consume_end_of_stream()));
                 }
             }
 
@@ -395,7 +403,7 @@ SEASTAR_TEST_CASE(test_schema_upgrader_is_equivalent_with_mutation_upgrade) {
             if (m1.schema()->version() != m2.schema()->version()) {
                 // upgrade m1 to m2's schema
 
-                auto reader = transform(make_flat_mutation_reader_from_mutations(m1.schema(), semaphore.make_permit(), {m1}), schema_upgrader(m2.schema()));
+                auto reader = transform(make_flat_mutation_reader_from_mutations_v2(m1.schema(), semaphore.make_permit(), {m1}), schema_upgrader_v2(m2.schema()));
                 auto close_reader = deferred_close(reader);
                 auto from_upgrader = read_mutation_from_flat_mutation_reader(reader).get0();
 

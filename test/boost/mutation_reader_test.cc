@@ -1212,12 +1212,13 @@ SEASTAR_TEST_CASE(test_combined_mutation_source_is_a_mutation_source) {
 
                 int source_index = 0;
                 for (auto&& m : muts) {
-                    auto rd = make_flat_mutation_reader_from_mutations(s, semaphore.make_permit(), {m});
+                    auto rd = make_flat_mutation_reader_from_mutations_v2(s, semaphore.make_permit(), {m});
                     auto close_rd = deferred_close(rd);
-                    rd.consume_pausable([&] (mutation_fragment&& mf) {
-                        mutation mf_m(m.schema(), m.decorated_key());
-                        mf_m.partition().apply(*s, mf);
-                        memtables[source_index++ % memtables.size()]->apply(mf_m);
+                    rd.consume_pausable([&] (mutation_fragment_v2&& mf) {
+                        mutation_rebuilder_v2 mf_m(m.schema());
+                        mf_m.consume_new_partition(m.decorated_key());
+                        mf_m.consume(std::move(mf));
+                        memtables[source_index++ % memtables.size()]->apply(*mf_m.consume_end_of_stream());
                         return stop_iteration::no;
                     }).get();
                 }
@@ -4055,32 +4056,36 @@ SEASTAR_THREAD_TEST_CASE(clustering_combined_reader_mutation_source_test) {
 
             std::optional<std::pair<position_in_partition, position_in_partition>> bounds;
             position_in_partition::less_compare less{*s};
-            mutation good(m.schema(), dk);
-            std::optional<mutation> bad;
-            auto rd = make_flat_mutation_reader_from_mutations(s, semaphore.make_permit(), {m});
+            mutation_rebuilder_v2 good(m.schema());
+            good.consume_new_partition(dk);
+            std::optional<mutation_rebuilder_v2> bad;
+            auto rd = make_flat_mutation_reader_from_mutations_v2(s, semaphore.make_permit(), {m});
             auto close_rd = deferred_close(rd);
-            rd.consume_pausable([&] (mutation_fragment&& mf) {
-                if ((mf.is_partition_start() && mf.as_partition_start().partition_tombstone()) || mf.is_static_row()) {
+            rd.consume_pausable([&] (mutation_fragment_v2&& mf) {
+                if (mf.is_partition_start()) {
+                    if (mf.as_partition_start().partition_tombstone()) {
+                        bad.emplace(m.schema());
+                        bad->consume(std::move(mf));
+                    }
+                } else if (mf.is_static_row()) {
                     if (!bad) {
-                        bad = mutation{m.schema(), dk};
+                        bad.emplace(m.schema());
+                        bad->consume_new_partition(dk);
                     }
-                    bad->apply(std::move(mf));
-                } else {
-                    if (!mf.is_partition_start() && !mf.is_end_of_partition()) {
-                        auto upper = mf.is_range_tombstone() ? mf.as_range_tombstone().end : mf.position();
-                        if (!bounds) {
-                            bounds = std::pair{mf.position(), upper};
-                        } else if (less(bounds->second, upper)) {
-                            bounds->second = upper;
-                        }
+                    bad->consume(std::move(mf));
+                } else if (!mf.is_end_of_partition()) {
+                    if (!bounds) {
+                        bounds = std::pair{mf.position(), mf.position()};
+                    } else {
+                        bounds->second = mf.position();
                     }
-                    good.apply(std::move(mf));
+                    good.consume(std::move(mf));
                 }
                 return stop_iteration::no;
             }).get();
 
             mutation_bounds mb {
-                std::move(good),
+                std::move(*good.consume_end_of_stream()),
                 bounds ? std::move(bounds->first) : position_in_partition::before_all_clustered_rows(),
                 bounds ? std::move(bounds->second) : position_in_partition::after_all_clustered_rows()
             };
@@ -4093,7 +4098,7 @@ SEASTAR_THREAD_TEST_CASE(clustering_combined_reader_mutation_source_test) {
             }
 
             if (bad) {
-                bad_mutations.push_back(std::move(*bad));
+                bad_mutations.push_back(std::move(*bad->consume_end_of_stream()));
             }
         }
 
