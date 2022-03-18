@@ -16,7 +16,7 @@
 #include "locator/token_metadata.hh"
 #include "exceptions/exceptions.hh"
 #include "locator/abstract_replication_strategy.hh"
-#include "replica/database.hh"
+#include "data_dictionary/data_dictionary.hh"
 #include "gms/feature_service.hh"
 
 extern logging::logger dblog;
@@ -157,10 +157,10 @@ void update_repair_time(schema_ptr s, const dht::token_range& range, gc_clock::t
     m->map += std::make_pair(locator::token_metadata::range_to_interval(range), repair_time);
 }
 
-static bool needs_repair_before_gc(const replica::database& db, sstring ks_name) {
+static bool needs_repair_before_gc(data_dictionary::database db, sstring ks_name) {
     // If a table uses local replication strategy or rf one, there is no
     // need to run repair even if tombstone_gc mode = repair.
-    auto& ks = db.find_keyspace(ks_name);
+    auto ks = db.find_keyspace(ks_name);
     auto& rs = ks.get_replication_strategy();
     auto erm = ks.get_effective_replication_map();
     bool needs_repair = rs.get_type() != locator::replication_strategy_type::local
@@ -168,7 +168,7 @@ static bool needs_repair_before_gc(const replica::database& db, sstring ks_name)
     return needs_repair;
 }
 
-void validate_tombstone_gc_options(const tombstone_gc_options* options, const replica::database& db, sstring ks_name) {
+void validate_tombstone_gc_options(const tombstone_gc_options* options, data_dictionary::database db, sstring ks_name) {
     if (!options) {
         return;
     }
