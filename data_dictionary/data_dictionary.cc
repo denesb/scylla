@@ -53,6 +53,11 @@ keyspace::get_replication_strategy() const {
     return _ops->get_replication_strategy(*this);
 }
 
+locator::effective_replication_map_ptr
+keyspace::get_effective_replication_map() const {
+    return _ops->get_effective_replication_map(*this);
+}
+
 std::optional<keyspace>
 database::try_find_keyspace(std::string_view name) const {
     return _ops->try_find_keyspace(*this, name);

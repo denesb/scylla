@@ -39,6 +39,8 @@ class feature_service;
 
 namespace locator {
 class abstract_replication_strategy;
+class effective_replication_map;
+using effective_replication_map_ptr = lw_shared_ptr<const effective_replication_map>;
 }
 
 // Classes representing the overall schema, but without access to data.
@@ -90,6 +92,7 @@ public:
     lw_shared_ptr<keyspace_metadata> metadata() const;
     const user_types_metadata& user_types() const;
     const locator::abstract_replication_strategy& get_replication_strategy() const;
+    locator::effective_replication_map_ptr get_effective_replication_map() const;
 };
 
 class database {

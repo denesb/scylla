@@ -92,6 +92,9 @@ public:
     virtual const locator::abstract_replication_strategy& get_replication_strategy(data_dictionary::keyspace ks) const override {
         return unwrap(ks).get_replication_strategy();
     }
+    virtual locator::effective_replication_map_ptr get_effective_replication_map(data_dictionary::keyspace ks) const override {
+        return unwrap(ks).get_effective_replication_map();
+    }
     virtual bool is_internal(data_dictionary::keyspace ks) const override {
         return is_internal_keyspace(unwrap(ks).metadata()->name());
     }
