@@ -1335,8 +1335,6 @@ private:
     std::unique_ptr<wasm::engine> _wasm_engine;
     utils::cross_shard_barrier _stop_barrier;
 
-    class data_dictionary_impl;
-    friend class data_dictionary_impl;
 public:
     data_dictionary::database as_data_dictionary() const;
     future<> init_commitlog();
