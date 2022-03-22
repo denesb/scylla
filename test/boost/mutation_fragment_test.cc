@@ -19,6 +19,7 @@
 #include "schema_builder.hh"
 #include "test/boost/total_order_check.hh"
 #include "schema_upgrader.hh"
+#include "readers/combined.hh"
 #include "replica/memtable.hh"
 
 #include "test/lib/mutation_assertions.hh"
