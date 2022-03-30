@@ -17,7 +17,6 @@
 #include "readers/combined.hh"
 #include "readers/delegating.hh"
 #include "readers/delegating_v2.hh"
-#include "readers/empty.hh"
 #include "readers/empty_v2.hh"
 #include "readers/flat_mutation_reader.hh"
 #include "readers/flat_mutation_reader_v2.hh"
@@ -82,20 +81,6 @@ future<> delegating_reader::close() noexcept {
 
 flat_mutation_reader_v2 make_delegating_reader_v2(flat_mutation_reader_v2& r) {
     return make_flat_mutation_reader_v2<delegating_reader_v2>(r);
-}
-
-class empty_flat_reader final : public flat_mutation_reader::impl {
-public:
-    empty_flat_reader(schema_ptr s, reader_permit permit) : impl(std::move(s), std::move(permit)) { _end_of_stream = true; }
-    virtual future<> fill_buffer() override { return make_ready_future<>(); }
-    virtual future<> next_partition() override { return make_ready_future<>(); }
-    virtual future<> fast_forward_to(const dht::partition_range& pr) override { return make_ready_future<>(); };
-    virtual future<> fast_forward_to(position_range cr) override { return make_ready_future<>(); };
-    virtual future<> close() noexcept override { return make_ready_future<>(); }
-};
-
-flat_mutation_reader make_empty_flat_reader(schema_ptr s, reader_permit permit) {
-    return make_flat_mutation_reader<empty_flat_reader>(std::move(s), std::move(permit));
 }
 
 class empty_flat_reader_v2 final : public flat_mutation_reader_v2::impl {
@@ -1284,7 +1269,7 @@ make_flat_mutation_reader_from_mutations(schema_ptr s, reader_permit permit, std
         };
     };
     if (mutations.empty()) {
-        return make_empty_flat_reader(std::move(s), std::move(permit));
+        return downgrade_to_v1(make_empty_flat_reader_v2(std::move(s), std::move(permit)));
     }
     auto res = make_flat_mutation_reader<reader>(std::move(s), std::move(permit), std::move(mutations), pr);
     if (fwd) {
@@ -1672,7 +1657,7 @@ mutation_source make_empty_mutation_source() {
             tracing::trace_state_ptr tr,
             streamed_mutation::forwarding fwd,
             mutation_reader::forwarding) {
-        return make_empty_flat_reader(s, std::move(permit));
+        return make_empty_flat_reader_v2(s, std::move(permit));
     }, [] {
         return [] (const dht::decorated_key& key) {
             return partition_presence_checker_result::definitely_doesnt_exist;

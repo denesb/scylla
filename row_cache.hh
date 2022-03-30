@@ -24,7 +24,7 @@
 #include "mutation_cleaner.hh"
 #include "utils/double-decker.hh"
 #include "db/cache_tracker.hh"
-#include "readers/empty.hh"
+#include "readers/empty_v2.hh"
 #include "readers/mutation_source.hh"
 
 namespace bi = boost::intrusive;
@@ -373,7 +373,7 @@ public:
         if (auto reader_opt = make_reader_opt(s, permit, range, slice, pc, std::move(trace_state), fwd, fwd_mr)) {
             return std::move(*reader_opt);
         }
-        [[unlikely]] return make_empty_flat_reader(std::move(s), std::move(permit));
+        [[unlikely]] return downgrade_to_v1(make_empty_flat_reader_v2(std::move(s), std::move(permit)));
     }
     // Same as make_reader, but returns an empty optional instead of a no-op reader when there is nothing to
     // read. This is an optimization.
