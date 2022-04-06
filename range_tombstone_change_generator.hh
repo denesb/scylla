@@ -75,16 +75,24 @@ public:
     //
     // FIXME: respect preemption
     template<RangeTombstoneChangeConsumer C>
-    void flush(const position_in_partition_view upper_bound, C consumer) {
+    void flush(const position_in_partition_view upper_bound, C consumer, bool end_of_range = false) {
         if (_range_tombstones.empty()) {
             return;
         }
 
         position_in_partition::tri_compare cmp(_schema);
         std::optional<range_tombstone> prev;
-        bool flush_all = cmp(upper_bound, position_in_partition::after_all_clustered_rows()) == 0;
+        const bool allow_eq = end_of_range || upper_bound.is_after_all_clustered_rows(_schema);
+        const auto should_flush = [&] (position_in_partition_view pos) {
+            const auto res = cmp(pos, upper_bound);
+            if (allow_eq) {
+                return res <= 0;
+            } else {
+                return res < 0;
+            }
+        };
 
-        while (!_range_tombstones.empty() && (flush_all || (cmp(_range_tombstones.begin()->end_position(), upper_bound) < 0))) {
+        while (!_range_tombstones.empty() && should_flush(_range_tombstones.begin()->end_position())) {
             auto rt = _range_tombstones.pop(_range_tombstones.begin());
 
             if (prev && (cmp(prev->end_position(), rt.position()) < 0)) { // [1]
