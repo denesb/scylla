@@ -15,6 +15,7 @@
 #include "partition_snapshot_row_cursor.hh"
 #include "read_context.hh"
 #include "readers/flat_mutation_reader.hh"
+#include "readers/range_tombstone_change_merger.hh"
 #include "readers/delegating_v2.hh"
 #include "clustering_key_filter.hh"
 
@@ -51,6 +52,9 @@ class cache_flat_mutation_reader final : public flat_mutation_reader_v2::impl {
 
         end_of_stream
     };
+    using source_id_t = uint64_t;
+    constexpr static source_id_t cache_source_id = 0;
+    constexpr static source_id_t underlying_source_id = 1;
     partition_snapshot_ptr _snp;
 
     query::clustering_key_filter_ranges _ck_ranges; // Query schema domain, reversed reads use native order
@@ -82,6 +86,7 @@ class cache_flat_mutation_reader final : public flat_mutation_reader_v2::impl {
 
     range_tombstone_change_generator _rt_gen;
     range_tombstone_change _current_tombstone_underlying;
+    range_tombstone_change_merger _rt_merger;
 
     state _state = state::before_static_row;
 
@@ -116,7 +121,7 @@ class cache_flat_mutation_reader final : public flat_mutation_reader_v2::impl {
     void flush_tombstones(position_in_partition_view, bool end_of_range = false);
     void add_to_buffer(const partition_snapshot_row_cursor&);
     void add_clustering_row_to_buffer(mutation_fragment_v2&&);
-    void add_to_buffer(range_tombstone_change&&);
+    void add_to_buffer(range_tombstone_change&&, source_id_t);
     void add_to_buffer(range_tombstone&&);
     void add_to_buffer(mutation_fragment_v2&&);
     future<> read_from_underlying();
@@ -141,7 +146,6 @@ class cache_flat_mutation_reader final : public flat_mutation_reader_v2::impl {
     void maybe_add_to_cache(const static_row& sr);
     void maybe_set_static_row_continuous();
     void finish_reader() {
-        flush_tombstones(position_in_partition::after_all_clustered_rows());
         push_mutation_fragment(*_schema, _permit, partition_end());
         _end_of_stream = true;
         _state = state::end_of_stream;
@@ -718,8 +722,9 @@ void cache_flat_mutation_reader::move_to_next_entry() {
 
 void cache_flat_mutation_reader::flush_tombstones(position_in_partition_view pos, bool end_of_range) {
     clogger.trace("csm {}: flush_tombstones() pos={}", fmt::ptr(this), pos);
-    _rt_gen.flush(pos, [this] (range_tombstone_change&& rtc) {
-        add_to_buffer(std::move(rtc));
+    position_in_partition::tri_compare cmp(*_schema);
+    _rt_gen.flush(pos, [this, &cmp] (range_tombstone_change&& rtc) {
+        add_to_buffer(std::move(rtc), cache_source_id);
     }, end_of_range);
 }
 
@@ -731,7 +736,7 @@ void cache_flat_mutation_reader::add_to_buffer(mutation_fragment_v2&& mf) {
         add_clustering_row_to_buffer(std::move(mf));
     } else {
         assert(mf.is_range_tombstone_change());
-        add_to_buffer(std::move(mf).as_range_tombstone_change());
+        add_to_buffer(std::move(mf).as_range_tombstone_change(), underlying_source_id);
     }
 }
 
@@ -771,18 +776,17 @@ void cache_flat_mutation_reader::add_clustering_row_to_buffer(mutation_fragment_
 }
 
 inline
-void cache_flat_mutation_reader::add_to_buffer(range_tombstone_change&& rtc) {
+void cache_flat_mutation_reader::add_to_buffer(range_tombstone_change&& rtc, source_id_t source) {
     clogger.trace("csm {}: add_to_buffer({})", fmt::ptr(this), rtc);
-    position_in_partition::tri_compare cmp(*_schema);
-    if (cmp(_lower_bound, rtc.position()) > 0) {
-        rtc.set_position(_lower_bound);
+    _rt_merger.apply(source, rtc.tombstone());
+    if (auto topt = _rt_merger.get()) {
+        rtc.set_tombstone(*topt);
     } else {
-        if (cmp(_upper_bound, rtc.position()) < 0) {
-            rtc.set_position(position_in_partition(_upper_bound));
-        }
-        _lower_bound = position_in_partition(rtc.position());
-        _lower_bound_changed = true;
+        return;
     }
+    position_in_partition::tri_compare cmp(*_schema);
+    _lower_bound = position_in_partition(rtc.position());
+    _lower_bound_changed = cmp(_lower_bound, rtc.position()) < 0;
     clogger.trace("csm {}: push({})", fmt::ptr(this), rtc);
     push_mutation_fragment(*_schema, _permit, std::move(rtc));
     _read_context.cache()._tracker.on_range_tombstone_read();
@@ -794,12 +798,9 @@ void cache_flat_mutation_reader::add_to_buffer(range_tombstone&& rt) {
     position_in_partition::tri_compare cmp(*_schema);
     if (cmp(_lower_bound, rt.position()) > 0) {
         rt.set_start(_lower_bound);
-    } else {
-        _lower_bound = position_in_partition(rt.position());
-        _lower_bound_changed = true;
     }
-    clogger.trace("csm {}: push({})", fmt::ptr(this), rt);
     flush_tombstones(rt.position());
+    clogger.trace("csm {}: push({})", fmt::ptr(this), rt);
     _rt_gen.consume(std::move(rt));
     _read_context.cache()._tracker.on_range_tombstone_read();
 }
