@@ -30,7 +30,7 @@ using stream_id_t = const flat_mutation_reader_v2*;
 // Emit them with the current position.
 class range_tombstone_change_merger {
     struct stream_tombstone {
-        stream_id_t stream_id;
+        uint64_t stream_id;
         ::tombstone tombstone;
     };
 
@@ -51,7 +51,7 @@ private:
     }
 
 public:
-    void apply(stream_id_t stream_id, tombstone tomb) {
+    void apply(uint64_t stream_id, tombstone tomb) {
         auto it = std::find_if(_tombstones.begin(), _tombstones.end(), [&] (const stream_tombstone& tomb) {
             return tomb.stream_id == stream_id;
         });
@@ -70,6 +70,9 @@ public:
                 _tombstones.pop_back();
             }
         }
+    }
+    void apply(stream_id_t stream_id, tombstone tomb) {
+        return apply(reinterpret_cast<uint64_t>(stream_id), tomb);
     }
 
     std::optional<tombstone> get() {
