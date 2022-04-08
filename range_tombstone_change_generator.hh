@@ -126,6 +126,15 @@ public:
                     _range_tombstones.begin()->position(), _range_tombstones.begin()->tombstone().tomb));
         }
 
+        // Close current tombstone (if any) at upper_bound if end_of_range is
+        // set, so a sliced read will have properly closed range tombstone bounds
+        // at each range end
+        if (!_range_tombstones.empty()
+                && end_of_range
+                && (cmp(_range_tombstones.begin()->position(), upper_bound) < 0)) {
+            consumer(range_tombstone_change(upper_bound, tombstone()));
+        }
+
         _lower_bound = upper_bound;
     }
 

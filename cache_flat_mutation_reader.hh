@@ -721,7 +721,7 @@ void cache_flat_mutation_reader::move_to_next_entry() {
 }
 
 void cache_flat_mutation_reader::flush_tombstones(position_in_partition_view pos, bool end_of_range) {
-    clogger.trace("csm {}: flush_tombstones() pos={}", fmt::ptr(this), pos);
+    clogger.trace("csm {}: flush_tombstones({}) end_of_range: {}", fmt::ptr(this), pos, end_of_range);
     position_in_partition::tri_compare cmp(*_schema);
     _rt_gen.flush(pos, [this, &cmp] (range_tombstone_change&& rtc) {
         add_to_buffer(std::move(rtc), cache_source_id);
