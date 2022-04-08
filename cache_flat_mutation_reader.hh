@@ -329,7 +329,7 @@ future<> cache_flat_mutation_reader::do_fill_buffer() {
         if (!_read_context.partition_exists()) {
             return read_from_underlying();
         }
-        auto end = _next_row_in_range ? position_in_partition(_next_row.position())
+        auto end = _next_row_in_range ? position_in_partition::before_key(_next_row.position().key())
                                       : position_in_partition(_upper_bound);
         return _underlying->fast_forward_to(position_range{_lower_bound, std::move(end)}).then([this] {
             return read_from_underlying();
@@ -582,11 +582,11 @@ void cache_flat_mutation_reader::copy_from_cache_to_buffer() {
     position_in_partition_view next_lower_bound = _next_row.dummy() ? _next_row.position() : position_in_partition_view::after_key(_next_row.key());
     auto upper_bound = _next_row_in_range ? next_lower_bound : _upper_bound;
     if (_snp->range_tombstones(_lower_bound, upper_bound, [&] (range_tombstone rts) {
-        position_in_partition::less_compare less(*_schema);
+        //position_in_partition::less_compare less(*_schema);
         // Avoid emitting overlapping range tombstones for performance reasons.
-        if (less(upper_bound, rts.end_position())) {
-            rts.set_end(*_schema, upper_bound);
-        }
+        //if (less(upper_bound, rts.end_position())) {
+        //    rts.set_end(*_schema, upper_bound);
+        //}
         add_to_buffer(std::move(rts));
         return stop_iteration(_lower_bound_changed && is_buffer_full());
     }, _read_context.is_reversed()) == stop_iteration::no) {
