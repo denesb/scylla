@@ -8,9 +8,14 @@
 
 #include <boost/algorithm/string/join.hpp>
 #include <seastar/core/app-template.hh>
+#include <seastar/core/fstream.hh>
+#include <seastar/core/reactor.hh>
+#include <seastar/core/thread.hh>
+#include <seastar/util/short_streams.hh>
 
 #include "compound.hh"
 #include "db/marshal/type_parser.hh"
+#include "interval.hh"
 #include "log.hh"
 #include "tools/utils.hh"
 
@@ -116,7 +121,129 @@ void validate_handler(type_variant type, std::vector<bytes> values) {
     }
 }
 
-using action_handler_func = void(*)(type_variant, std::vector<bytes>);
+sstring read_file(sstring path) {
+    auto file = open_file_dma(path, open_flags::ro).get();
+    auto fstream = make_file_input_stream(file);
+    return util::read_entire_stream_contiguous(fstream).get();
+}
+
+sstring consume(const sstring& in, size_t pos, std::string_view desired_chars, size_t desired_count_min, bool exact_count = false) {
+    auto i = pos;
+    while (i < in.size() && std::find(desired_chars.begin(), desired_chars.end(), in[i]) != desired_chars.end()) {
+        ++i;
+    }
+    const auto count = i - pos;
+    if (count < desired_count_min) {
+        throw std::runtime_error(fmt::format("parsing failed at pos {}: expected to find at least {} of '{}', but found only {}", pos, desired_count_min, desired_chars, count));
+    }
+    if (exact_count && count > desired_count_min) {
+        throw std::runtime_error(fmt::format("parsing failed at pos {}: expected to find exactly {} of '{}', but found {}", pos, desired_count_min, desired_chars, count));
+    }
+    return in.substr(pos, count);
+}
+
+std::vector<nonwrapping_interval<bytes>> parse_ranges(sstring path) {
+    auto str = read_file(path);
+
+    using range_t = nonwrapping_interval<bytes>;
+    std::vector<range_t> ranges;
+
+    size_t pos = 0;
+    const char hex_chars[] = "0123456789abcdef+-inf";
+    auto get = [&path, &str, &pos] (std::string_view desired_chars, size_t desired_count_min, bool exact_count = false) {
+        sstring token;
+        try {
+            token = consume(str, pos, desired_chars, desired_count_min, exact_count);
+        } catch (...) {
+            throw std::runtime_error(fmt::format("failed parsing ranges from {}: {}", path, std::current_exception()));
+        }
+        pos += token.size();
+        return token;
+    };
+
+    while (pos < str.size()) {
+        auto start_paren = get("[(", 1, true)[0];
+        auto start_value = get(hex_chars, 2);
+        get(",", 1, true);
+        get(" ", 0);
+        auto end_value = get(hex_chars, 2);
+        auto end_paren = get("])", 1, true)[0];
+        get("\n", 1, sstring::npos);
+
+        std::optional<range_t::bound> start_bound, end_bound;
+        if (start_value != "-inf") {
+            start_bound.emplace(from_hex(start_value), start_paren == '[');
+        }
+        if (end_value != "+inf") {
+            end_bound.emplace(from_hex(end_value), end_paren == '[');
+        }
+        ranges.emplace_back(std::move(start_bound), std::move(end_bound));
+    }
+
+    return ranges;
+}
+
+template <allow_prefixes AllowPrefixes>
+void intersect_ranges(const compound_type<AllowPrefixes>& type, sstring path_a, sstring path_b) {
+    auto ranges_a = parse_ranges(path_a);
+    auto ranges_b = parse_ranges(path_b);
+    auto cmp = [&type] (const bytes& a, const bytes& b) -> std::strong_ordering {
+        return type.compare(a, b);
+    };
+
+    auto it_a = ranges_a.begin();
+    auto it_b = ranges_b.begin();
+    auto end_a = ranges_a.end();
+    auto end_b = ranges_b.end();
+
+    while (it_a != end_a && it_b != end_b) {
+        auto int_opt = it_a->intersection(*it_b, cmp);
+        if (int_opt) {
+            fmt::print("{}\n", *int_opt);
+        }
+
+        auto end_b = it_b->end();
+        if (!end_b || it_a->after(end_b->value(), cmp)) {
+            ++it_a;
+        } else {
+            ++it_b;
+        }
+    }
+}
+
+void intersect_ranges_handler(type_variant type, std::vector<sstring> values) {
+    struct intersect_visitor {
+        sstring path_a;
+        sstring path_b;
+
+        void operator()(const data_type&) {
+            throw std::invalid_argument("intersecting ranges requires compound type");
+        }
+        void operator()(const compound_type<allow_prefixes::yes>& type) {
+            intersect_ranges<allow_prefixes::yes>(type, path_a, path_b);
+        }
+        void operator()(const compound_type<allow_prefixes::no>& type) {
+            intersect_ranges<allow_prefixes::no>(type, path_a, path_b);
+        }
+    };
+    if (values.size() != 2) {
+        throw std::invalid_argument(fmt::format("intersecting ranges requires exactly two arguments, got {}", values.size()));
+    }
+    std::visit(intersect_visitor{values.front(), values.back()}, type);
+}
+
+using hex_values_action_handler_func = void(*)(type_variant, std::vector<bytes>);
+
+struct hex_values_input_wrapper {
+    hex_values_action_handler_func func;
+
+    void operator()(type_variant type, std::vector<sstring> raw_values) const {
+        auto parsed_values = boost::copy_range<std::vector<bytes>>(raw_values | boost::adaptors::transformed(from_hex));
+        return func(std::move(type), std::move(parsed_values));
+    }
+};
+
+using action_handler_func = std::function<void(type_variant, std::vector<sstring>)>;
 
 class action_handler {
     std::string _name;
@@ -133,13 +260,13 @@ public:
     const std::string& summary() const { return _summary; }
     const std::string& description() const { return _description; }
 
-    void operator()(type_variant type, std::vector<bytes> values) const {
+    void operator()(type_variant type, std::vector<sstring> values) const {
         _func(std::move(type), std::move(values));
     }
 };
 
 const std::vector<action_handler> action_handlers = {
-    {"print", "print the value(s) in a human readable form", print_handler,
+    {"print", "print the value(s) in a human readable form", hex_values_input_wrapper{print_handler},
 R"(
 Deserialize and print the value(s) in a human-readable form.
 
@@ -153,7 +280,7 @@ $ scylla types print -t Int32Type b34b62d4
 $ scylla types print --prefix-compound -t TimeUUIDType -t Int32Type 0010d00819896f6b11ea00000000001c571b000400000010
 (d0081989-6f6b-11ea-0000-0000001c571b, 16)
 )"},
-    {"compare", "compare two values", compare_handler,
+    {"compare", "compare two values", hex_values_input_wrapper{compare_handler},
 R"(
 Compare two values and print the result.
 
@@ -164,7 +291,7 @@ Examples:
 $ scylla types compare -t 'ReversedType(TimeUUIDType)' b34b62d46a8d11ea0000005000237906 d00819896f6b11ea00000000001c571b
 b34b62d4-6a8d-11ea-0000-005000237906 > d0081989-6f6b-11ea-0000-0000001c571b
 )"},
-    {"validate", "validate the value(s)", validate_handler,
+    {"validate", "validate the value(s)", hex_values_input_wrapper{validate_handler},
 R"(
 Check that the value(s) are valid for the type according to the requirements of
 the type.
@@ -175,6 +302,9 @@ Examples:
 
 $  scylla types validate -t Int32Type b34b62d4
 b34b62d4: VALID - -1286905132
+)"},
+    {"intersect-ranges", "intersect the ranges", intersect_ranges_handler,
+R"(
 )"},
 };
 
@@ -241,6 +371,7 @@ $ scylla types {action} --help
     });
 
     return app.run(argc, argv, [&app, found_ah] {
+      return async([&app, found_ah] {
         const action_handler& handler = *found_ah;
 
         if (!app.configuration().contains("type")) {
@@ -264,12 +395,9 @@ $ scylla types {action} --help
         if (!app.configuration().contains("value")) {
             throw std::invalid_argument("error: no values specified");
         }
-        auto values = boost::copy_range<std::vector<bytes>>(
-                app.configuration()["value"].as<std::vector<sstring>>() | boost::adaptors::transformed(from_hex));
 
-        handler(std::move(type), std::move(values));
-
-        return make_ready_future<>();
+        handler(std::move(type), app.configuration()["value"].as<std::vector<sstring>>());
+      });
     });
 }
 
