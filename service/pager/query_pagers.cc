@@ -50,6 +50,7 @@ static bool has_clustering_keys(const schema& s, const query::read_command& cmd)
                     : _has_clustering_keys(has_clustering_keys(*s, *cmd))
                     , _max(cmd->get_row_limit())
                     , _per_partition_limit(cmd->slice.partition_row_limit())
+                    , _last_pos(position_in_partition::end_of_partition_tag_t())
                     , _proxy(p.shared_from_this())
                     , _schema(std::move(s))
                     , _selection(selection)
@@ -72,7 +73,7 @@ static bool has_clustering_keys(const schema& s, const query::read_command& cmd)
         if (!_last_pkey && state) {
             _max = state->get_remaining();
             _last_pkey = state->get_partition_key();
-            _last_ckey = state->get_clustering_key();
+            _last_pos = state->get_position_in_partition();
             _query_uuid = state->get_query_uuid();
             _last_replicas = state->get_last_replicas();
             _query_read_repair_decision = state->get_query_read_repair_decision();
@@ -93,7 +94,7 @@ static bool has_clustering_keys(const schema& s, const query::read_command& cmd)
 
             auto reversed = _cmd->slice.options.contains<query::partition_slice::option::reversed>();
 
-            qlogger.trace("PKey={}, CKey={}, reversed={}", dpk, _last_ckey, reversed);
+            qlogger.trace("PKey={}, Pos={}, reversed={}", dpk, _last_pos, reversed);
 
             // Note: we're assuming both that the ranges are checked
             // and "cql-compliant", and that storage_proxy will process
@@ -142,7 +143,7 @@ static bool has_clustering_keys(const schema& s, const query::read_command& cmd)
             // last ck can be empty depending on whether we
             // deserialized state or not. This case means "last page ended on
             // something-not-bound-by-clustering" (i.e. a static row, alone)
-            const bool has_ck = _has_clustering_keys && _last_ckey;
+            const bool has_ck = _has_clustering_keys && _last_pos.region() == partition_region::clustered;
 
             // If we have no clustering keys, it should mean we only have one row
             // per PK. Thus we can just bypass the last one.
@@ -150,8 +151,7 @@ static bool has_clustering_keys(const schema& s, const query::read_command& cmd)
 
             if (has_ck) {
                 query::clustering_row_ranges row_ranges = _cmd->slice.default_row_ranges();
-                clustering_key_prefix ckp = clustering_key_prefix::from_exploded(*_schema, _last_ckey->explode(*_schema));
-                query::trim_clustering_row_ranges_to(*_schema, row_ranges, ckp, reversed);
+                query::trim_clustering_row_ranges_to(*_schema, row_ranges, _last_pos, reversed);
 
                 _cmd->slice.set_range(*_schema, *_last_pkey, row_ranges);
             }
@@ -351,7 +351,7 @@ public:
                 }
             }
             _last_pkey = v.last_pkey;
-            _last_ckey = v.last_ckey;
+            _last_pos = position_in_partition::for_key(v.last_ckey);
         } else {
             row_count = results->row_count() ? *results->row_count() : std::get<1>(view.count_partitions_and_rows());
             _max = _max - row_count;
@@ -363,7 +363,7 @@ public:
                 }
                 auto [ last_pkey, last_ckey ] = view.get_last_partition_and_clustering_key();
                 _last_pkey = std::move(last_pkey);
-                _last_ckey = std::move(last_ckey);
+                _last_pos = position_in_partition::for_key(std::move(last_ckey));
             }
         }
 
@@ -372,13 +372,13 @@ public:
         if (_last_pkey) {
             qlogger.debug("Last partition key: {}", *_last_pkey);
         }
-        if (_has_clustering_keys && _last_ckey) {
-            qlogger.debug("Last clustering key: {}", *_last_ckey);
+        if (_has_clustering_keys && _last_pos.region() == partition_region::clustered) {
+            qlogger.debug("Last clustering pos: {}", _last_pos);
         }
     }
 
     lw_shared_ptr<const paging_state> query_pager::state() const {
-        return make_lw_shared<paging_state>(_last_pkey.value_or(partition_key::make_empty()), _last_ckey, _exhausted ? 0 : _max, _cmd->query_uuid, _last_replicas, _query_read_repair_decision, _rows_fetched_for_last_partition);
+        return make_lw_shared<paging_state>(_last_pkey.value_or(partition_key::make_empty()), _last_pos, _exhausted ? 0 : _max, _cmd->query_uuid, _last_replicas, _query_read_repair_decision, _rows_fetched_for_last_partition);
     }
 
 }
