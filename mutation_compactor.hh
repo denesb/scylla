@@ -559,6 +559,11 @@ public:
     }
 
     const compaction_stats& stats() const { return _stats; }
+
+    // Only updated when SSTableCompaction == compact_for_sstables::no.
+    position_in_partition_view last_clustering_pos() const {
+        return _last_clustering_pos;
+    }
 };
 
 template<emit_only_live_rows OnlyLive, compact_for_sstables SSTableCompaction, typename Consumer, typename GCConsumer>
