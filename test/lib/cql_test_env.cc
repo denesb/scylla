@@ -448,6 +448,10 @@ public:
             }).get();
 
             tests::logalloc::sharded_tracker logalloc_tracker;
+            debug::the_logalloc_tracker = &logalloc_tracker.get();
+            auto reset_logalloc_ptr = defer([] {
+                debug::the_logalloc_tracker = nullptr;
+            });
 
             bool old_active = false;
             if (!active.compare_exchange_strong(old_active, true)) {
@@ -664,7 +668,7 @@ public:
             cm.start(std::move(get_cm_cfg), std::ref(abort_sources)).get();
             auto stop_cm = deferred_stop(cm);
 
-            db.start(std::ref(*cfg), dbcfg, std::ref(mm_notif), std::ref(feature_service), std::ref(token_metadata), std::ref(cm), std::ref(sst_dir_semaphore), utils::cross_shard_barrier()).get();
+            db.start(std::ref(*cfg), dbcfg, std::ref(logalloc_tracker.get()), std::ref(mm_notif), std::ref(feature_service), std::ref(token_metadata), std::ref(cm), std::ref(sst_dir_semaphore), utils::cross_shard_barrier()).get();
             auto stop_db = defer([&db] {
                 db.stop().get();
             });
@@ -939,5 +943,6 @@ cql_test_config raft_cql_test_config() {
 namespace debug {
 
 seastar::sharded<replica::database>* the_database;
+sharded<logalloc::tracker> *the_logalloc_tracker;
 
 }
