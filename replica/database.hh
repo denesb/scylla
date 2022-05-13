@@ -765,6 +765,10 @@ public:
         return _rate_limiter_label_for_reads;
     }
 
+    logalloc::tracker& logalloc_tracker() {
+        return _cache.get_cache_tracker().region().get_tracker();
+    }
+
     future<std::vector<locked_cell>> lock_counter_cells(const mutation& m, db::timeout_clock::time_point timeout);
 
     logalloc::occupancy_stats occupancy() const;
@@ -1293,6 +1297,8 @@ private:
 
     const db::config& _cfg;
 
+    logalloc::tracker& _tracker;
+
     dirty_memory_manager _system_dirty_memory_manager;
     dirty_memory_manager _dirty_memory_manager;
 
@@ -1431,6 +1437,8 @@ public:
             abort_source& as, sharded<semaphore>& sst_dir_sem, utils::cross_shard_barrier barrier = utils::cross_shard_barrier(utils::cross_shard_barrier::solo{}) /* for single-shard usage */);
     database(database&&) = delete;
     ~database();
+
+    logalloc::tracker& logalloc_tracker() const { return _tracker; }
 
     cache_tracker& row_cache_tracker() { return _row_cache_tracker; }
     future<> drop_caches() const;

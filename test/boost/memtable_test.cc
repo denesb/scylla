@@ -31,6 +31,7 @@
 #include "test/lib/simple_schema.hh"
 #include "test/lib/reader_concurrency_semaphore.hh"
 #include "test/lib/simple_schema.hh"
+#include "test/lib/logalloc.hh"
 #include "utils/error_injection.hh"
 #include "db/commitlog/commitlog.hh"
 
@@ -66,15 +67,16 @@ std::vector<mutation> make_ring(schema_ptr s, int n_mutations) {
 
 SEASTAR_TEST_CASE(test_memtable_conforms_to_mutation_source) {
     return seastar::async([] {
-        dirty_memory_manager dmm;
-        run_mutation_source_tests([&dmm](schema_ptr s, const std::vector<mutation>& partitions) {
+        tests::logalloc::sharded_tracker logalloc_tracker;
+        dirty_memory_manager dmm(*logalloc_tracker);
+        run_mutation_source_tests([&](schema_ptr s, const std::vector<mutation>& partitions) {
             auto mt = make_lw_shared<replica::memtable>(s, dmm);
 
             for (auto&& m : partitions) {
                 mt->apply(m);
             }
 
-            logalloc::shard_tracker().full_compaction();
+            logalloc_tracker->full_compaction();
 
             return mt->as_data_source();
         });
@@ -84,7 +86,8 @@ SEASTAR_TEST_CASE(test_memtable_conforms_to_mutation_source) {
 SEASTAR_TEST_CASE(test_memtable_with_many_versions_conforms_to_mutation_source) {
     return seastar::async([] {
         tests::reader_concurrency_semaphore_wrapper semaphore;
-        dirty_memory_manager dmm;
+        tests::logalloc::sharded_tracker logalloc_tracker;
+        dirty_memory_manager dmm(*logalloc_tracker);
         lw_shared_ptr<replica::memtable> mt;
         std::vector<flat_mutation_reader_v2> readers;
         auto clear_readers = [&readers] {
@@ -97,13 +100,13 @@ SEASTAR_TEST_CASE(test_memtable_with_many_versions_conforms_to_mutation_source) 
         auto cleanup_readers = defer([&] { clear_readers(); });
         std::deque<dht::partition_range> ranges_storage;
         lw_shared_ptr<bool> finished = make_lw_shared(false);
-        auto full_compaction_in_background = seastar::do_until([finished] {return *finished;}, [] {
+        auto full_compaction_in_background = seastar::do_until([finished] {return *finished;}, [&logalloc_tracker] {
             // do_refresh_state is called when we detect a new partition snapshot version.
             // If snapshot version changes in process of reading mutation fragments from a
             // clustering range, the partition_snapshot_reader state is refreshed with saved
             // last position of emitted row and range tombstone. full_compaction increases the
             // change mark.
-            logalloc::shard_tracker().full_compaction();
+            logalloc_tracker->full_compaction();
             return seastar::sleep(100us);
         });
         run_mutation_source_tests([&] (schema_ptr s, const std::vector<mutation>& muts) {
@@ -133,6 +136,7 @@ SEASTAR_TEST_CASE(test_memtable_flush_reader) {
     // run_mutation_source_tests() to test it.
     return seastar::async([] {
         tests::reader_concurrency_semaphore_wrapper semaphore;
+        tests::logalloc::sharded_tracker logalloc_tracker;
 
         auto make_memtable = [] (dirty_memory_manager& mgr, replica::table_stats& tbl_stats, std::vector<mutation> muts) {
             assert(!muts.empty());
@@ -146,7 +150,7 @@ SEASTAR_TEST_CASE(test_memtable_flush_reader) {
         auto test_random_streams = [&] (random_mutation_generator&& gen) {
             for (auto i = 0; i < 4; i++) {
                 replica::table_stats tbl_stats;
-                dirty_memory_manager mgr;
+                dirty_memory_manager mgr(*logalloc_tracker);
                 const auto muts = gen(4);
                 const auto now = gc_clock::now();
                 auto compacted_muts = muts;
@@ -212,7 +216,8 @@ SEASTAR_TEST_CASE(test_adding_a_column_during_reading_doesnt_affect_read_result)
                 .build();
 
         tests::reader_concurrency_semaphore_wrapper semaphore;
-        dirty_memory_manager dmm;
+        tests::logalloc::sharded_tracker logalloc_tracker;
+        dirty_memory_manager dmm(*logalloc_tracker);
 
         auto mt = make_lw_shared<replica::memtable>(s1, dmm);
 
@@ -257,8 +262,9 @@ SEASTAR_TEST_CASE(test_virtual_dirty_accounting_on_flush) {
                 .build();
 
         tests::reader_concurrency_semaphore_wrapper semaphore;
+        tests::logalloc::sharded_tracker logalloc_tracker;
 
-        dirty_memory_manager mgr;
+        dirty_memory_manager mgr(*logalloc_tracker);
         replica::table_stats tbl_stats;
 
         auto mt = make_lw_shared<replica::memtable>(s, mgr, tbl_stats);
@@ -301,7 +307,7 @@ SEASTAR_TEST_CASE(test_virtual_dirty_accounting_on_flush) {
         while ((*rd1)().get0()) ;
         close_rd1.close_now();
 
-        logalloc::shard_tracker().full_compaction();
+        logalloc_tracker->full_compaction();
 
         flush_reader_check.produces_partition(current_ring[2]);
         virtual_dirty_values.push_back(mgr.virtual_dirty_memory());
@@ -323,7 +329,8 @@ SEASTAR_TEST_CASE(test_partition_version_consistency_after_lsa_compaction_happen
                 .build();
 
         tests::reader_concurrency_semaphore_wrapper semaphore;
-        dirty_memory_manager dmm;
+        tests::logalloc::sharded_tracker logalloc_tracker;
+        dirty_memory_manager dmm(*logalloc_tracker);
 
         auto mt = make_lw_shared<replica::memtable>(s, dmm);
 
@@ -356,7 +363,7 @@ SEASTAR_TEST_CASE(test_partition_version_consistency_after_lsa_compaction_happen
         rd3->set_max_buffer_size(1);
         rd3->fill_buffer().get();
 
-        logalloc::shard_tracker().full_compaction();
+        logalloc_tracker->full_compaction();
 
         auto rd4 = assert_that(mt->make_flat_reader(s, semaphore.make_permit()));
         rd4.set_max_buffer_size(1);
@@ -393,9 +400,10 @@ SEASTAR_TEST_CASE(test_segment_migration_during_flush) {
                 .build();
 
         tests::reader_concurrency_semaphore_wrapper semaphore;
+        tests::logalloc::sharded_tracker logalloc_tracker;
 
         replica::table_stats tbl_stats;
-        dirty_memory_manager mgr;
+        dirty_memory_manager mgr(*logalloc_tracker);
 
         auto mt = make_lw_shared<replica::memtable>(s, mgr, tbl_stats);
 
@@ -423,7 +431,7 @@ SEASTAR_TEST_CASE(test_segment_migration_during_flush) {
             BOOST_REQUIRE(bool(mfopt));
             BOOST_REQUIRE(mfopt->is_partition_start());
             while (!mfopt->is_end_of_partition()) {
-                logalloc::shard_tracker().full_compaction();
+                logalloc_tracker->full_compaction();
                 mfopt = rd().get0();
             }
             virtual_dirty_values.push_back(mgr.virtual_dirty_memory());
@@ -445,7 +453,8 @@ SEASTAR_TEST_CASE(test_fast_forward_to_after_memtable_is_flushed) {
             .build();
 
         tests::reader_concurrency_semaphore_wrapper semaphore;
-        dirty_memory_manager dmm;
+        tests::logalloc::sharded_tracker logalloc_tracker;
+        dirty_memory_manager dmm(*logalloc_tracker);
 
         auto mt = make_lw_shared<replica::memtable>(s, dmm);
         auto mt2 = make_lw_shared<replica::memtable>(s, dmm);
@@ -472,7 +481,8 @@ SEASTAR_TEST_CASE(test_exception_safety_of_partition_range_reads) {
         random_mutation_generator gen(random_mutation_generator::generate_counters::no);
         auto s = gen.schema();
         tests::reader_concurrency_semaphore_wrapper semaphore;
-        dirty_memory_manager dmm;
+        tests::logalloc::sharded_tracker logalloc_tracker;
+        dirty_memory_manager dmm(*logalloc_tracker);
         std::vector<mutation> ms = gen(2);
 
         auto mt = make_lw_shared<replica::memtable>(s, dmm);
@@ -492,7 +502,8 @@ SEASTAR_TEST_CASE(test_exception_safety_of_flush_reads) {
         random_mutation_generator gen(random_mutation_generator::generate_counters::no);
         auto s = gen.schema();
         tests::reader_concurrency_semaphore_wrapper semaphore;
-        dirty_memory_manager dmm;
+        tests::logalloc::sharded_tracker logalloc_tracker;
+        dirty_memory_manager dmm(*logalloc_tracker);
         std::vector<mutation> ms = gen(2);
 
         auto mt = make_lw_shared<replica::memtable>(s, dmm);
@@ -515,7 +526,8 @@ SEASTAR_TEST_CASE(test_exception_safety_of_single_partition_reads) {
         random_mutation_generator gen(random_mutation_generator::generate_counters::no);
         auto s = gen.schema();
         tests::reader_concurrency_semaphore_wrapper semaphore;
-        dirty_memory_manager dmm;
+        tests::logalloc::sharded_tracker logalloc_tracker;
+        dirty_memory_manager dmm(*logalloc_tracker);
         std::vector<mutation> ms = gen(2);
 
         auto mt = make_lw_shared<replica::memtable>(s, dmm);
@@ -531,10 +543,12 @@ SEASTAR_TEST_CASE(test_exception_safety_of_single_partition_reads) {
 }
 
 SEASTAR_THREAD_TEST_CASE(test_tombstone_compaction_during_flush) {
+    tests::logalloc::sharded_tracker logalloc_tracker;
+    dirty_memory_manager dmm(*logalloc_tracker);
     tests::reader_concurrency_semaphore_wrapper semaphore;
     simple_schema ss;
     auto s = ss.schema();
-    auto mt = make_lw_shared<replica::memtable>(ss.schema());
+    auto mt = make_lw_shared<replica::memtable>(ss.schema(), dmm);
 
     auto pk = ss.make_pkey(0);
     auto pr = dht::partition_range::make_singular(pk);
@@ -582,10 +596,12 @@ SEASTAR_THREAD_TEST_CASE(test_tombstone_compaction_during_flush) {
 }
 
 SEASTAR_THREAD_TEST_CASE(test_range_tombstones_are_compacted_with_data) {
+    tests::logalloc::sharded_tracker logalloc_tracker;
+    dirty_memory_manager dmm(*logalloc_tracker);
     tests::reader_concurrency_semaphore_wrapper semaphore;
     simple_schema ss;
     auto s = ss.schema();
-    auto mt = make_lw_shared<replica::memtable>(ss.schema());
+    auto mt = make_lw_shared<replica::memtable>(ss.schema(), dmm);
 
     auto pk = ss.make_pkey(0);
     auto pr = dht::partition_range::make_singular(pk);
@@ -656,7 +672,8 @@ SEASTAR_TEST_CASE(test_hash_is_cached) {
                 .with_column("v", bytes_type, column_kind::regular_column)
                 .build();
         tests::reader_concurrency_semaphore_wrapper semaphore;
-        dirty_memory_manager dmm;
+        tests::logalloc::sharded_tracker logalloc_tracker;
+        dirty_memory_manager dmm(*logalloc_tracker);
 
         auto mt = make_lw_shared<replica::memtable>(s, dmm);
 
@@ -722,7 +739,8 @@ SEASTAR_TEST_CASE(test_hash_is_cached) {
 }
 
 SEASTAR_THREAD_TEST_CASE(test_collecting_encoding_stats) {
-    dirty_memory_manager dmm;
+    tests::logalloc::sharded_tracker logalloc_tracker;
+    dirty_memory_manager dmm(*logalloc_tracker);
     auto random_int32_value = [] {
         return int32_type->decompose(tests::random::get_int<int32_t>());
     };

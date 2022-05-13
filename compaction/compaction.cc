@@ -1460,7 +1460,7 @@ public:
         }
         return [this, end_consumer = std::move(end_consumer)] (flat_mutation_reader_v2 reader) mutable -> future<> {
             auto cfg = mutation_writer::segregate_config{_io_priority, memory::stats().total_memory() / 10};
-            return mutation_writer::segregate_by_partition(std::move(reader), cfg,
+            return mutation_writer::segregate_by_partition(std::move(reader), cfg, *_options.logalloc_tracker,
                     [consumer = std::move(end_consumer), this] (flat_mutation_reader_v2 rd) {
                 ++_bucket_count;
                 return consumer(std::move(rd));

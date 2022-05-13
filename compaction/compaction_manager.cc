@@ -1183,7 +1183,7 @@ private:
                     sst->get_sstable_level(),
                     sstables::compaction_descriptor::default_max_sstable_bytes,
                     sst->run_identifier(),
-                    sstables::compaction_type_options::make_scrub(sstables::compaction_type_options::scrub::mode::validate));
+                    sstables::compaction_type_options::make_scrub(sstables::compaction_type_options::scrub::mode::validate, _compacting_table->logalloc_tracker()));
             co_await sstables::compact_sstables(std::move(desc), _compaction_data, _compacting_table->as_table_state());
         } catch (sstables::compaction_stopped_exception&) {
             // ignore, will be handled by can_proceed()
@@ -1366,7 +1366,7 @@ future<> compaction_manager::perform_sstable_scrub(replica::table* t, sstables::
     if (scrub_mode == sstables::compaction_type_options::scrub::mode::validate) {
         return perform_sstable_scrub_validate_mode(t);
     }
-    return rewrite_sstables(t, sstables::compaction_type_options::make_scrub(scrub_mode), [this, t, quarantine_mode] {
+    return rewrite_sstables(t, sstables::compaction_type_options::make_scrub(scrub_mode, t->logalloc_tracker()), [this, t, quarantine_mode] {
         auto all_sstables = t->get_sstable_set().all();
         std::vector<sstables::shared_sstable> sstables = boost::copy_range<std::vector<sstables::shared_sstable>>(*all_sstables
                 | boost::adaptors::filtered([&quarantine_mode] (const sstables::shared_sstable& sst) {

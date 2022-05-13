@@ -73,14 +73,14 @@ private:
     }
 
 public:
-    partition_sorting_mutation_writer(schema_ptr schema, reader_permit permit, reader_consumer_v2 consumer, const segregate_config& cfg)
+    partition_sorting_mutation_writer(schema_ptr schema, reader_permit permit, reader_consumer_v2 consumer, const segregate_config& cfg, logalloc::tracker& tracker)
         : _schema(std::move(schema))
         , _permit(std::move(permit))
         , _consumer(std::move(consumer))
         , _pc(cfg.pc)
         , _max_memory(cfg.max_memory)
         , _bucket_writer(_schema, _permit, _consumer)
-        , _dmm(std::make_unique<dirty_memory_manager>())
+        , _dmm(std::make_unique<dirty_memory_manager>(tracker))
         , _memtable(make_lw_shared<replica::memtable>(_schema, *_dmm))
         , _last_pos(position_in_partition::for_partition_start())
     { }
@@ -133,12 +133,12 @@ public:
     }
 };
 
-future<> segregate_by_partition(flat_mutation_reader_v2 producer, segregate_config cfg, reader_consumer_v2 consumer) {
+future<> segregate_by_partition(flat_mutation_reader_v2 producer, segregate_config cfg, logalloc::tracker& tracker, reader_consumer_v2 consumer) {
     auto schema = producer.schema();
     auto permit = producer.permit();
   try {
     return feed_writer(std::move(producer),
-            partition_sorting_mutation_writer(std::move(schema), std::move(permit), std::move(consumer), std::move(cfg)));
+            partition_sorting_mutation_writer(std::move(schema), std::move(permit), std::move(consumer), std::move(cfg), tracker));
   } catch (...) {
     return producer.close().then([ex = std::current_exception()] () mutable {
         return make_exception_future<>(std::move(ex));

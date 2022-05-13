@@ -197,7 +197,7 @@ void database::setup_scylla_memory_diagnostics_producer() {
     memory::set_additional_diagnostics_producer([this] (memory::memory_diagnostics_writer wr) {
         auto writeln = memory_diagnostics_line_writer(std::move(wr));
 
-        const auto lsa_occupancy_stats = logalloc::shard_tracker().global_occupancy();
+        const auto lsa_occupancy_stats = _tracker.global_occupancy();
         writeln("LSA\n");
         writeln("  allocated: {}\n", utils::to_hr_size(lsa_occupancy_stats.total_space()));
         writeln("  used:      {}\n", utils::to_hr_size(lsa_occupancy_stats.used_space()));
@@ -318,6 +318,7 @@ database::database(const db::config& cfg, database_config dbcfg, service::migrat
     , _user_types(std::make_shared<db_user_types_storage>(*this))
     , _cl_stats(std::make_unique<cell_locker_stats>())
     , _cfg(cfg)
+    , _tracker(logalloc::shard_tracker())
     // Allow system tables a pool of 10 MB memory to write, but never block on other regions.
     , _system_dirty_memory_manager(*this, 10 << 20, cfg.virtual_dirty_soft_limit(), default_scheduling_group())
     , _dirty_memory_manager(*this, dbcfg.available_memory * 0.50, cfg.virtual_dirty_soft_limit(), dbcfg.statement_scheduling_group)
@@ -349,7 +350,7 @@ database::database(const db::config& cfg, database_config dbcfg, service::migrat
             max_memory_system_concurrent_reads(),
             "_system_read_concurrency_sem",
             std::numeric_limits<size_t>::max())
-    , _row_cache_tracker(cache_tracker::register_metrics::yes)
+    , _row_cache_tracker(_tracker, cache_tracker::register_metrics::yes)
     , _apply_stage("db_apply", &database::do_apply)
     , _version(empty_version)
     , _compaction_manager(std::make_unique<compaction_manager>(make_compaction_manager_config(_cfg, dbcfg), as))
@@ -451,8 +452,8 @@ dirty_memory_manager::dirty_memory_manager(replica::database& db, size_t thresho
     : logalloc::region_group_reclaimer(threshold / 2, threshold * soft_limit / 2)
     , _real_dirty_reclaimer(threshold)
     , _db(&db)
-    , _real_region_group("memtable", _real_dirty_reclaimer, deferred_work_sg)
-    , _virtual_region_group("memtable (virtual)", &_real_region_group, *this, deferred_work_sg)
+    , _real_region_group(db.logalloc_tracker(), "memtable", _real_dirty_reclaimer, deferred_work_sg)
+    , _virtual_region_group(db.logalloc_tracker(), "memtable (virtual)", &_real_region_group, *this, deferred_work_sg)
     , _flush_serializer(1)
     , _waiting_flush(flush_when_needed()) {}
 

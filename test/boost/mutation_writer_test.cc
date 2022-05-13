@@ -26,6 +26,7 @@
 #include "test/lib/random_utils.hh"
 #include "test/lib/random_schema.hh"
 #include "test/lib/log.hh"
+#include "test/lib/logalloc.hh"
 
 #include <boost/range/adaptor/map.hpp>
 #include "readers/from_mutations_v2.hh"
@@ -442,6 +443,7 @@ SEASTAR_THREAD_TEST_CASE(test_timestamp_based_splitting_mutation_writer_abort) {
 
 // Check that the partition_based_splitting_mutation_writer can fix reordered partitions
 SEASTAR_THREAD_TEST_CASE(test_partition_based_splitting_mutation_writer) {
+    tests::logalloc::sharded_tracker logalloc_tracker;
     tests::reader_concurrency_semaphore_wrapper semaphore;
     auto random_spec = tests::make_random_schema_specification(
             get_name(),
@@ -516,6 +518,7 @@ SEASTAR_THREAD_TEST_CASE(test_partition_based_splitting_mutation_writer) {
         mutation_writer::segregate_by_partition(
                 make_flat_mutation_reader_from_mutations_v2(random_schema.schema(), semaphore.make_permit(), shuffled_input_mutations),
                 mutation_writer::segregate_config{default_priority_class(), max_memory},
+                *logalloc_tracker,
                 consumer).get();
         testlog.info("Done segregating with in-memory method (max_memory={}): input segregated into {} buckets", max_memory, output_mutations.size());
         check_and_reset();

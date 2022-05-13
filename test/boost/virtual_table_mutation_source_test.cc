@@ -17,8 +17,8 @@
 class memtable_filling_test_vt : public db::memtable_filling_virtual_table {
     std::vector<mutation> _mutations;
 public:
-    memtable_filling_test_vt(schema_ptr s, std::vector<mutation> mutations)
-            : memtable_filling_virtual_table(s)
+    memtable_filling_test_vt(schema_ptr s, logalloc::tracker& tracker, std::vector<mutation> mutations)
+            : memtable_filling_virtual_table(s, tracker)
             , _mutations(std::move(mutations)) {}
 
     future<> execute(std::function<void(mutation)> mutation_sink) override {
@@ -53,16 +53,19 @@ public:
 };
 
 SEASTAR_THREAD_TEST_CASE(test_memtable_filling_vt_as_mutation_source) {
+    tests::logalloc::sharded_tracker logalloc_tracker;
+
     std::unique_ptr<memtable_filling_test_vt> table; // Used to prolong table's life
 
-    run_mutation_source_tests([&table] (schema_ptr s, const std::vector<mutation>& mutations, gc_clock::time_point) -> mutation_source {
-        table = std::make_unique<memtable_filling_test_vt>(s, mutations);
+    run_mutation_source_tests([&logalloc_tracker, &table] (schema_ptr s, const std::vector<mutation>& mutations, gc_clock::time_point) -> mutation_source {
+        table = std::make_unique<memtable_filling_test_vt>(s, *logalloc_tracker, mutations);
         return table->as_mutation_source();
     });
 }
 
 SEASTAR_THREAD_TEST_CASE(test_streaming_vt_as_mutation_source) {
-    dirty_memory_manager dmm;
+    tests::logalloc::sharded_tracker logalloc_tracker;
+    dirty_memory_manager dmm(*logalloc_tracker);
     std::unique_ptr<streaming_test_vt> table; // Used to prolong table's life
 
     run_mutation_source_tests([&table, &dmm] (schema_ptr s, const std::vector<mutation>& mutations, gc_clock::time_point) -> mutation_source {

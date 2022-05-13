@@ -20,6 +20,10 @@
 #include "dht/i_partitioner.hh"
 #include "compaction_weight_registration.hh"
 
+namespace logalloc {
+class tracker;
+}
+
 namespace sstables {
 
 enum class compaction_type {
@@ -68,6 +72,12 @@ public:
         };
         mode operation_mode = mode::abort;
 
+        logalloc::tracker* logalloc_tracker; // not null, pointer so it is copyable
+
+
+        scrub(mode operation_mode, logalloc::tracker& logalloc_tracker) : operation_mode(operation_mode), logalloc_tracker(&logalloc_tracker) {
+        }
+
         enum class quarantine_mode {
             include, // scrub all sstables, including quarantined
             exclude, // scrub only non-quarantined sstables
@@ -109,8 +119,8 @@ public:
         return compaction_type_options(upgrade{std::move(owned_ranges)});
     }
 
-    static compaction_type_options make_scrub(scrub::mode mode) {
-        return compaction_type_options(scrub{mode});
+    static compaction_type_options make_scrub(scrub::mode mode, logalloc::tracker& tracker) {
+        return compaction_type_options(scrub{mode, tracker});
     }
 
     template <typename... Visitor>

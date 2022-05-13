@@ -1798,8 +1798,8 @@ private:
     service::storage_service& _ss;
     gms::gossiper& _gossiper;
 public:
-    cluster_status_table(service::storage_service& ss, gms::gossiper& g)
-            : memtable_filling_virtual_table(build_schema())
+    cluster_status_table(replica::database& db, service::storage_service& ss, gms::gossiper& g)
+            : memtable_filling_virtual_table(build_schema(), db.logalloc_tracker())
             , _ss(ss), _gossiper(g) {}
 
     static schema_ptr build_schema() {
@@ -2077,8 +2077,8 @@ private:
         }
     };
 public:
-    explicit protocol_servers_table(service::storage_service& ss)
-        : memtable_filling_virtual_table(build_schema())
+    explicit protocol_servers_table(replica::database& db, service::storage_service& ss)
+        : memtable_filling_virtual_table(build_schema(), db.logalloc_tracker())
         , _ss(ss) {
         _shard_aware = true;
     }
@@ -2203,7 +2203,7 @@ private:
 
 public:
     explicit runtime_info_table(distributed<replica::database>& db, service::storage_service& ss)
-        : memtable_filling_virtual_table(build_schema())
+        : memtable_filling_virtual_table(build_schema(), db.local().logalloc_tracker())
         , _db(db)
         , _ss(ss) {
         _shard_aware = true;
@@ -2332,8 +2332,8 @@ public:
 
 class versions_table : public memtable_filling_virtual_table {
 public:
-    explicit versions_table()
-        : memtable_filling_virtual_table(build_schema()) {
+    explicit versions_table(replica::database& db)
+        : memtable_filling_virtual_table(build_schema(), db.logalloc_tracker()) {
         _shard_aware = false;
     }
 
@@ -2645,12 +2645,12 @@ do_create_virtual_table_factories(distributed<replica::database>* dist_db, distr
     auto* gossiper = dist_gossiper ? &dist_gossiper->local() : nullptr;
 
     // Add built-in virtual tables here.
-    concrete_virtual_table_factory<cluster_status_table>::create_and_register(virtual_tables, [&] { return std::make_unique<cluster_status_table>(*ss, *gossiper); });
+    concrete_virtual_table_factory<cluster_status_table>::create_and_register(virtual_tables, [&] { return std::make_unique<cluster_status_table>(*db, *ss, *gossiper); });
     concrete_virtual_table_factory<token_ring_table>::create_and_register(virtual_tables, [&] { return std::make_unique<token_ring_table>(*db, *ss); });
     concrete_virtual_table_factory<snapshots_table>::create_and_register(virtual_tables, [&] { return std::make_unique<snapshots_table>(*dist_db); });
-    concrete_virtual_table_factory<protocol_servers_table>::create_and_register(virtual_tables, [&] { return std::make_unique<protocol_servers_table>(*ss); });
+    concrete_virtual_table_factory<protocol_servers_table>::create_and_register(virtual_tables, [&] { return std::make_unique<protocol_servers_table>(*db, *ss); });
     concrete_virtual_table_factory<runtime_info_table>::create_and_register(virtual_tables, [&] { return std::make_unique<runtime_info_table>(*dist_db, *ss); });
-    concrete_virtual_table_factory<versions_table>::create_and_register(virtual_tables, [&] { return std::make_unique<versions_table>(); });
+    concrete_virtual_table_factory<versions_table>::create_and_register(virtual_tables, [&] { return std::make_unique<versions_table>(*db); });
     concrete_virtual_table_factory<db_config_table>::create_and_register(virtual_tables, [&] { return std::make_unique<db_config_table>(*cfg); });
     concrete_virtual_table_factory<clients_table>::create_and_register(virtual_tables, [&] { return std::make_unique<clients_table>(*ss); });
 

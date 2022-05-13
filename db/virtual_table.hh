@@ -54,7 +54,7 @@ public:
 class memtable_filling_virtual_table : public virtual_table {
     dirty_memory_manager _dmm;
 public:
-    using virtual_table::virtual_table;
+    explicit memtable_filling_virtual_table(schema_ptr s, logalloc::tracker& tracker) : virtual_table(std::move(s)), _dmm(tracker) { }
 
     // Override one of these execute() overloads.
     // The handler is always allowed to produce more data than implied by the query_restrictions.
