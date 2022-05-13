@@ -48,7 +48,7 @@ struct column_family_for_tests {
         cell_locker_stats cl_stats;
         compaction_manager cm{compaction_manager::for_testing_tag{}};
         lw_shared_ptr<replica::column_family> cf;
-        data();
+        explicit data(logalloc::tracker& tracker);
     };
     lw_shared_ptr<data> _data;
 
