@@ -213,7 +213,7 @@ SEASTAR_TEST_CASE(compaction_manager_basic_test) {
     cfg.enable_commitlog = false;
     cfg.enable_incremental_backups = false;
     auto cl_stats = make_lw_shared<cell_locker_stats>();
-    auto tracker = make_lw_shared<cache_tracker>();
+    auto tracker = make_lw_shared<cache_tracker>(env.logalloc_tracker());
     auto cf = make_lw_shared<replica::column_family>(s, cfg, replica::column_family::no_commitlog(), *cm, env.manager(), *cl_stats, *tracker);
     cf->start();
     cf->mark_ready_for_writes();
@@ -282,7 +282,7 @@ SEASTAR_TEST_CASE(compact) {
     auto s = builder.build();
     auto cm = compaction_manager_for_testing(env.get_dirty_memory_manager());
     auto cl_stats = make_lw_shared<cell_locker_stats>();
-    auto tracker = make_lw_shared<cache_tracker>();
+    auto tracker = make_lw_shared<cache_tracker>(env.logalloc_tracker());
     auto cf = make_lw_shared<replica::column_family>(s, env.make_table_config(), replica::column_family::no_commitlog(), *cm, env.manager(), *cl_stats, *tracker);
     cf->mark_ready_for_writes();
 
@@ -2801,7 +2801,8 @@ SEASTAR_THREAD_TEST_CASE(test_scrub_segregate_stack) {
     simple_schema ss;
     auto schema = ss.schema();
     tests::reader_concurrency_semaphore_wrapper semaphore;
-    dirty_memory_manager dmm;
+    tests::logalloc::sharded_tracker logalloc_tracker;
+    dirty_memory_manager dmm(*logalloc_tracker);
     auto permit = semaphore.make_permit();
 
     struct expected_rows_type {
@@ -3055,7 +3056,7 @@ SEASTAR_TEST_CASE(sstable_run_based_compaction_test) {
             return sst;
         };
 
-        auto tracker = make_lw_shared<cache_tracker>();
+        auto tracker = make_lw_shared<cache_tracker>(env.logalloc_tracker());
         column_family_for_tests cf(env.manager(), s);
         auto close_cf = deferred_stop(cf);
         cf->mark_ready_for_writes();
@@ -3300,7 +3301,7 @@ SEASTAR_TEST_CASE(partial_sstable_run_filtered_out_test) {
         cfg.enable_commitlog = false;
         cfg.enable_incremental_backups = false;
         auto cl_stats = make_lw_shared<cell_locker_stats>();
-        auto tracker = make_lw_shared<cache_tracker>();
+        auto tracker = make_lw_shared<cache_tracker>(env.logalloc_tracker());
         auto cf = make_lw_shared<replica::column_family>(s, cfg, replica::column_family::no_commitlog(), *cm, env.manager(), *cl_stats, *tracker);
         cf->start();
         cf->mark_ready_for_writes();
@@ -3562,7 +3563,7 @@ SEASTAR_TEST_CASE(incremental_compaction_data_resurrection_test) {
         cfg.enable_commitlog = false;
         cfg.enable_cache = true;
         cfg.enable_incremental_backups = false;
-        auto tracker = make_lw_shared<cache_tracker>();
+        auto tracker = make_lw_shared<cache_tracker>(env.logalloc_tracker());
         auto cf = make_lw_shared<replica::column_family>(s, cfg, replica::column_family::no_commitlog(), *cm, env.manager(), cl_stats, *tracker);
         auto stop_cf = deferred_stop(*cf);
         cf->mark_ready_for_writes();
@@ -3676,7 +3677,7 @@ SEASTAR_TEST_CASE(twcs_major_compaction_test) {
         cfg.enable_commitlog = false;
         cfg.enable_cache = false;
         cfg.enable_incremental_backups = false;
-        auto tracker = make_lw_shared<cache_tracker>();
+        auto tracker = make_lw_shared<cache_tracker>(env.logalloc_tracker());
         auto cf = make_lw_shared<replica::column_family>(s, cfg, replica::column_family::no_commitlog(), *cm, env.manager(), cl_stats, *tracker);
         cf->mark_ready_for_writes();
         cf->start();
@@ -3696,7 +3697,7 @@ SEASTAR_TEST_CASE(twcs_major_compaction_test) {
 SEASTAR_TEST_CASE(autocompaction_control_test) {
     return test_env::do_with_async([] (test_env& env) {
         cell_locker_stats cl_stats;
-        cache_tracker tracker;
+        cache_tracker tracker(env.logalloc_tracker());
 
         auto cmft = compaction_manager_for_testing(env.get_dirty_memory_manager());
         auto& cm = *cmft;
@@ -3814,7 +3815,7 @@ SEASTAR_TEST_CASE(test_bug_6472) {
         cfg.enable_commitlog = false;
         cfg.enable_cache = false;
         cfg.enable_incremental_backups = false;
-        auto tracker = make_lw_shared<cache_tracker>();
+        auto tracker = make_lw_shared<cache_tracker>(env.logalloc_tracker());
         cell_locker_stats cl_stats;
         auto cf = make_lw_shared<replica::column_family>(s, cfg, replica::column_family::no_commitlog(), *cm, env.manager(), cl_stats, *tracker);
         cf->mark_ready_for_writes();
@@ -3946,7 +3947,7 @@ SEASTAR_TEST_CASE(test_twcs_partition_estimate) {
         cfg.enable_commitlog = false;
         cfg.enable_cache = false;
         cfg.enable_incremental_backups = false;
-        auto tracker = make_lw_shared<cache_tracker>();
+        auto tracker = make_lw_shared<cache_tracker>(env.logalloc_tracker());
         cell_locker_stats cl_stats;
         auto cf = make_lw_shared<replica::column_family>(s, cfg, replica::column_family::no_commitlog(), *cm, env.manager(), cl_stats, *tracker);
         cf->mark_ready_for_writes();
@@ -4073,7 +4074,7 @@ SEASTAR_TEST_CASE(test_twcs_interposer_on_memtable_flush) {
         cfg.datadir = tmp.path().string();
         cfg.enable_disk_writes = true;
         cfg.enable_cache = false;
-        auto tracker = make_lw_shared<cache_tracker>();
+        auto tracker = make_lw_shared<cache_tracker>(env.logalloc_tracker());
         cell_locker_stats cl_stats;
         auto cf = make_lw_shared<replica::column_family>(s, cfg, replica::column_family::no_commitlog(), *cm, env.manager(), cl_stats, *tracker);
         cf->mark_ready_for_writes();
@@ -4180,7 +4181,7 @@ SEASTAR_TEST_CASE(test_offstrategy_sstable_compaction) {
             cfg.datadir = tmp.path().string();
             cfg.enable_disk_writes = true;
             cfg.enable_cache = false;
-            auto tracker = make_lw_shared<cache_tracker>();
+            auto tracker = make_lw_shared<cache_tracker>(env.logalloc_tracker());
             cell_locker_stats cl_stats;
             auto cf = make_lw_shared<replica::column_family>(s, cfg, replica::column_family::no_commitlog(), *cm, env.manager(), cl_stats, *tracker);
             // Make sure we release reference to all sstables, allowing them to be deleted before dir is destroyed
@@ -4463,7 +4464,7 @@ SEASTAR_TEST_CASE(test_twcs_single_key_reader_filtering) {
         replica::cf_stats cf_stats{0};
         cfg.cf_stats = &cf_stats;
         cfg.datadir = tmp.path().string();
-        auto tracker = make_lw_shared<cache_tracker>();
+        auto tracker = make_lw_shared<cache_tracker>(env.logalloc_tracker());
         cell_locker_stats cl_stats;
         replica::column_family cf(s, cfg, replica::column_family::no_commitlog(), *cm, env.manager(), cl_stats, *tracker);
         cf.mark_ready_for_writes();
@@ -4530,7 +4531,7 @@ SEASTAR_TEST_CASE(max_ongoing_compaction_test) {
 
         auto tmp = tmpdir();
         auto cl_stats = make_lw_shared<cell_locker_stats>();
-        auto tracker = make_lw_shared<cache_tracker>();
+        auto tracker = make_lw_shared<cache_tracker>(env.logalloc_tracker());
         auto tokens = token_generation_for_shard(1, this_shard_id(), test_db_config.murmur3_partitioner_ignore_msb_bits(), smp::count);
 
         auto next_timestamp = [] (auto step) {
@@ -4793,7 +4794,7 @@ SEASTAR_TEST_CASE(twcs_single_key_reader_through_compound_set_test) {
         cfg.datadir = tmp.path().string();
         cfg.enable_disk_writes = true;
         cfg.enable_cache = false;
-        auto tracker = make_lw_shared<cache_tracker>();
+        auto tracker = make_lw_shared<cache_tracker>(env.logalloc_tracker());
         cell_locker_stats cl_stats;
         auto cf = make_lw_shared<replica::column_family>(s, cfg, replica::column_family::no_commitlog(), *cm, env.manager(), cl_stats, *tracker);
         cf->mark_ready_for_writes();
@@ -4914,7 +4915,7 @@ SEASTAR_TEST_CASE(simple_backlog_controller_test) {
                           t.get_compaction_strategy().get_backlog_tracker().backlog() - backlog_before);
         };
 
-        auto tracker = make_lw_shared<cache_tracker>();
+        auto tracker = make_lw_shared<cache_tracker>(env.logalloc_tracker());
         cell_locker_stats cl_stats;
         auto create_table = [&] () {
             simple_schema ss;

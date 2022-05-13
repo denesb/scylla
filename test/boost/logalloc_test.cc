@@ -17,6 +17,7 @@
 #include <seastar/core/print.hh>
 #include <seastar/core/thread.hh>
 #include <seastar/core/timer.hh>
+#include <seastar/core/sharded.hh>
 #include <seastar/core/sleep.hh>
 #include <seastar/core/thread_cputime_clock.hh>
 #include <seastar/core/when_all.hh>
@@ -36,6 +37,7 @@
 #include "log.hh"
 #include "test/lib/random_utils.hh"
 #include "test/lib/make_random_string.hh"
+#include "test/lib/logalloc.hh"
 
 [[gnu::unused]]
 static auto x = [] {
@@ -46,16 +48,12 @@ static auto x = [] {
 using namespace logalloc;
 using namespace std::chrono_literals;
 
-// this test should be first in order to initialize logalloc for others
-SEASTAR_TEST_CASE(test_prime_logalloc) {
-    return prime_segment_pool(memory::stats().total_memory(), memory::min_free_memory());
-}
-
 SEASTAR_TEST_CASE(test_compaction) {
     return seastar::async([] {
-        region reg;
+        tests::logalloc::sharded_tracker logalloc_tracker;
+        region reg(*logalloc_tracker);
 
-        with_allocator(reg.allocator(), [&reg] {
+        with_allocator(reg.allocator(), [&logalloc_tracker, &reg] {
             std::vector<managed_ref<int>> _allocated;
 
             // Allocate several segments
@@ -69,7 +67,7 @@ SEASTAR_TEST_CASE(test_compaction) {
             // Allocation should not invalidate references
             BOOST_REQUIRE_EQUAL(reg.reclaim_counter(), reclaim_counter_1);
 
-            shard_tracker().reclaim_all_free_segments();
+            logalloc_tracker->reclaim_all_free_segments();
 
             // Free 1/3 randomly
 
@@ -88,7 +86,7 @@ SEASTAR_TEST_CASE(test_compaction) {
             // Try to reclaim
 
             size_t target = sizeof(managed<int>) * nr_freed;
-            BOOST_REQUIRE(shard_tracker().reclaim(target) >= target);
+            BOOST_REQUIRE(logalloc_tracker->reclaim(target) >= target);
 
             // There must have been some compaction during such reclaim
             BOOST_REQUIRE(reg.reclaim_counter() != reclaim_counter_1);
@@ -98,7 +96,9 @@ SEASTAR_TEST_CASE(test_compaction) {
 
 SEASTAR_TEST_CASE(test_occupancy) {
     return seastar::async([] {
-        region reg;
+        tests::logalloc::sharded_tracker logalloc_tracker;
+
+        region reg(*logalloc_tracker);
         auto& alloc = reg.allocator();
         auto* obj1 = alloc.construct<short>(42);
 #ifdef SEASTAR_ASAN_ENABLED
@@ -132,8 +132,10 @@ SEASTAR_TEST_CASE(test_occupancy) {
 
 SEASTAR_TEST_CASE(test_compaction_with_multiple_regions) {
     return seastar::async([] {
-        region reg1;
-        region reg2;
+        tests::logalloc::sharded_tracker logalloc_tracker;
+
+        region reg1(*logalloc_tracker);
+        region reg2(*logalloc_tracker);
 
         std::vector<managed_ref<int>> allocated1;
         std::vector<managed_ref<int>> allocated2;
@@ -152,12 +154,12 @@ SEASTAR_TEST_CASE(test_compaction_with_multiple_regions) {
             }
         });
 
-        size_t quarter = shard_tracker().region_occupancy().total_space() / 4;
+        size_t quarter = logalloc_tracker->region_occupancy().total_space() / 4;
 
-        shard_tracker().reclaim_all_free_segments();
+        logalloc_tracker->reclaim_all_free_segments();
 
         // Can't reclaim anything yet
-        BOOST_REQUIRE(shard_tracker().reclaim(quarter) == 0);
+        BOOST_REQUIRE(logalloc_tracker->reclaim(quarter) == 0);
         
         // Free 65% from the second pool
 
@@ -173,8 +175,8 @@ SEASTAR_TEST_CASE(test_compaction_with_multiple_regions) {
             }
         });
 
-        BOOST_REQUIRE(shard_tracker().reclaim(quarter) >= quarter);
-        BOOST_REQUIRE(shard_tracker().reclaim(quarter) < quarter);
+        BOOST_REQUIRE(logalloc_tracker->reclaim(quarter) >= quarter);
+        BOOST_REQUIRE(logalloc_tracker->reclaim(quarter) < quarter);
 
         // Free 65% from the first pool
 
@@ -187,8 +189,8 @@ SEASTAR_TEST_CASE(test_compaction_with_multiple_regions) {
             }
         });
 
-        BOOST_REQUIRE(shard_tracker().reclaim(quarter) >= quarter);
-        BOOST_REQUIRE(shard_tracker().reclaim(quarter) < quarter);
+        BOOST_REQUIRE(logalloc_tracker->reclaim(quarter) >= quarter);
+        BOOST_REQUIRE(logalloc_tracker->reclaim(quarter) < quarter);
 
         with_allocator(reg2.allocator(), [&] () mutable {
             allocated2.clear();
@@ -202,6 +204,8 @@ SEASTAR_TEST_CASE(test_compaction_with_multiple_regions) {
 
 SEASTAR_TEST_CASE(test_mixed_type_compaction) {
     return seastar::async([] {
+        tests::logalloc::sharded_tracker logalloc_tracker;
+
         static bool a_moved = false;
         static bool b_moved = false;
         static bool c_moved = false;
@@ -244,7 +248,7 @@ SEASTAR_TEST_CASE(test_mixed_type_compaction) {
             }
         };
 
-        region reg;
+        region reg(*logalloc_tracker);
         with_allocator(reg.allocator(), [&] {
             {
                 std::vector<int*> objs;
@@ -293,7 +297,9 @@ SEASTAR_TEST_CASE(test_mixed_type_compaction) {
 
 SEASTAR_TEST_CASE(test_blob) {
     return seastar::async([] {
-        region reg;
+        tests::logalloc::sharded_tracker logalloc_tracker;
+
+        region reg(*logalloc_tracker);
         with_allocator(reg.allocator(), [&] {
             auto src = bytes("123456");
             managed_bytes b(src);
@@ -309,8 +315,10 @@ SEASTAR_TEST_CASE(test_blob) {
 
 SEASTAR_TEST_CASE(test_merging) {
     return seastar::async([] {
-        region reg1;
-        region reg2;
+        tests::logalloc::sharded_tracker logalloc_tracker;
+
+        region reg1(*logalloc_tracker);
+        region reg2(*logalloc_tracker);
 
         reg1.merge(reg2);
 
@@ -357,7 +365,9 @@ SEASTAR_THREAD_TEST_CASE(test_region_move) {
 #ifndef SEASTAR_DEFAULT_ALLOCATOR
 SEASTAR_TEST_CASE(test_region_lock) {
     return seastar::async([] {
-        region reg;
+        tests::logalloc::sharded_tracker logalloc_tracker;
+
+        region reg(*logalloc_tracker);
         with_allocator(reg.allocator(), [&] {
             std::deque<managed_bytes> refs;
 
@@ -414,8 +424,10 @@ SEASTAR_TEST_CASE(test_region_lock) {
 
 SEASTAR_TEST_CASE(test_large_allocation) {
     return seastar::async([] {
-        logalloc::region r_evictable;
-        logalloc::region r_non_evictable;
+        tests::logalloc::sharded_tracker logalloc_tracker;
+
+        logalloc::region r_evictable(*logalloc_tracker);
+        logalloc::region r_non_evictable(*logalloc_tracker);
 
         static constexpr unsigned element_size = 16 * 1024;
 
@@ -485,7 +497,9 @@ SEASTAR_TEST_CASE(test_large_allocation) {
 
 SEASTAR_TEST_CASE(test_zone_reclaiming_preserves_free_size) {
     return seastar::async([] {
-        region r;
+        tests::logalloc::sharded_tracker logalloc_tracker;
+
+        region r(*logalloc_tracker);
         with_allocator(r.allocator(), [&] {
             chunked_fifo<managed_bytes> objs;
 
@@ -493,26 +507,26 @@ SEASTAR_TEST_CASE(test_zone_reclaiming_preserves_free_size) {
 
             // We need to generate 3 zones, so that at least one zone (not last) can be released fully. The first
             // zone would not due to emergency reserve.
-            while (logalloc::shard_tracker().region_occupancy().used_space() < zone_size * 2 + zone_size / 4) {
+            while (logalloc_tracker->region_occupancy().used_space() < zone_size * 2 + zone_size / 4) {
                 objs.emplace_back(managed_bytes(managed_bytes::initialized_later(), 1024));
             }
 
-            testlog.info("non_lsa_used_space = {}", logalloc::shard_tracker().non_lsa_used_space());
-            testlog.info("region_occupancy = {}", logalloc::shard_tracker().region_occupancy());
+            testlog.info("non_lsa_used_space = {}", logalloc_tracker->non_lsa_used_space());
+            testlog.info("region_occupancy = {}", logalloc_tracker->region_occupancy());
 
-            while (logalloc::shard_tracker().region_occupancy().used_space() >= logalloc::segment_size * 2) {
+            while (logalloc_tracker->region_occupancy().used_space() >= logalloc::segment_size * 2) {
                 objs.pop_front();
             }
 
-            testlog.info("non_lsa_used_space = {}", logalloc::shard_tracker().non_lsa_used_space());
-            testlog.info("region_occupancy = {}", logalloc::shard_tracker().region_occupancy());
+            testlog.info("non_lsa_used_space = {}", logalloc_tracker->non_lsa_used_space());
+            testlog.info("region_occupancy = {}", logalloc_tracker->region_occupancy());
 
-            auto before = logalloc::shard_tracker().non_lsa_used_space();
-            logalloc::shard_tracker().reclaim(logalloc::segment_size);
-            auto after = logalloc::shard_tracker().non_lsa_used_space();
+            auto before = logalloc_tracker->non_lsa_used_space();
+            logalloc_tracker->reclaim(logalloc::segment_size);
+            auto after = logalloc_tracker->non_lsa_used_space();
 
-            testlog.info("non_lsa_used_space = {}", logalloc::shard_tracker().non_lsa_used_space());
-            testlog.info("region_occupancy = {}", logalloc::shard_tracker().region_occupancy());
+            testlog.info("non_lsa_used_space = {}", logalloc_tracker->non_lsa_used_space());
+            testlog.info("region_occupancy = {}", logalloc_tracker->region_occupancy());
 
             BOOST_REQUIRE(after <= before);
         });
@@ -522,10 +536,10 @@ SEASTAR_TEST_CASE(test_zone_reclaiming_preserves_free_size) {
 // No point in testing contiguous memory allocation in debug mode
 #ifndef SEASTAR_DEFAULT_ALLOCATOR
 SEASTAR_THREAD_TEST_CASE(test_can_reclaim_contiguous_memory_with_mixed_allocations) {
-    prime_segment_pool(memory::stats().total_memory(), memory::min_free_memory()).get();  // if previous test cases muddied the pool
+    tests::logalloc::sharded_tracker logalloc_tracker;
 
-    region evictable;
-    region non_evictable;
+    region evictable(*logalloc_tracker);
+    region non_evictable(*logalloc_tracker);
     std::vector<managed_bytes> evictable_allocs;
     std::vector<managed_bytes> non_evictable_allocs;
     std::vector<std::unique_ptr<char[]>> std_allocs;
@@ -590,7 +604,9 @@ SEASTAR_THREAD_TEST_CASE(test_can_reclaim_contiguous_memory_with_mixed_allocatio
 }
 
 SEASTAR_THREAD_TEST_CASE(test_decay_reserves) {
-    logalloc::region region;
+    tests::logalloc::sharded_tracker logalloc_tracker;
+
+    logalloc::region region(*logalloc_tracker);
     std::list<managed_bytes> lru;
     unsigned reclaims = 0;
     logalloc::allocating_section alloc_section;
@@ -685,9 +701,21 @@ SEASTAR_THREAD_TEST_CASE(test_decay_reserves) {
 }
 
 SEASTAR_THREAD_TEST_CASE(background_reclaim) {
-    prime_segment_pool(memory::stats().total_memory(), memory::min_free_memory()).get();  // if previous test cases muddied the pool
+    // Set up the background reclaimer
 
-    region evictable;
+    auto background_reclaim_scheduling_group = create_scheduling_group("background_reclaim", 100).get0();
+    auto kill_sched_group = defer([&] () noexcept {
+        destroy_scheduling_group(background_reclaim_scheduling_group).get();
+    });
+
+    logalloc::tracker::config st_cfg;
+    st_cfg.defragment_on_idle = false;
+    st_cfg.abort_on_lsa_bad_alloc = false;
+    st_cfg.lsa_reclamation_step = 1;
+    st_cfg.background_reclaim_sched_group = background_reclaim_scheduling_group;
+    tests::logalloc::sharded_tracker logalloc_tracker(st_cfg);
+
+    region evictable(*logalloc_tracker);
     std::vector<managed_bytes> evictable_allocs;
 
     auto& rnd = seastar::testing::local_random_engine;
@@ -725,33 +753,15 @@ SEASTAR_THREAD_TEST_CASE(background_reclaim) {
        return memory::reclaiming_result::reclaimed_something;
     });
 
-    // Set up the background reclaimer
-
-    auto background_reclaim_scheduling_group = create_scheduling_group("background_reclaim", 100).get0();
-    auto kill_sched_group = defer([&] () noexcept {
-        destroy_scheduling_group(background_reclaim_scheduling_group).get();
-    });
-
-    logalloc::tracker::config st_cfg;
-    st_cfg.defragment_on_idle = false;
-    st_cfg.abort_on_lsa_bad_alloc = false;
-    st_cfg.lsa_reclamation_step = 1;
-    st_cfg.background_reclaim_sched_group = background_reclaim_scheduling_group;
-    logalloc::shard_tracker().configure(st_cfg);
-
-    auto stop_lsa_background_reclaim = defer([&] () noexcept {
-        logalloc::shard_tracker().stop().get();
-    });
-
     sleep(500ms).get(); // sleep a little, to give the reclaimer a head start
 
     std::vector<managed_bytes> std_allocs;
     size_t std_alloc_size = 1000000; // note that managed_bytes fragments these, even in std
     for (int i = 0; i < 50; ++i) {
-        auto compacted_pre = logalloc::shard_tracker().statistics().memory_compacted;
+        auto compacted_pre = logalloc_tracker->statistics().memory_compacted;
         fmt::print("compacted {} items {} (pre)\n", compacted_pre, evictable_allocs.size());
         std_allocs.emplace_back(managed_bytes::initialized_later(), std_alloc_size);
-        auto compacted_post = logalloc::shard_tracker().statistics().memory_compacted;
+        auto compacted_post = logalloc_tracker->statistics().memory_compacted;
         fmt::print("compacted {} items {} (post)\n", compacted_post, evictable_allocs.size());
         BOOST_REQUIRE_EQUAL(compacted_pre, compacted_post);
     
@@ -779,7 +789,9 @@ static sstring to_sstring(const lsa_buffer& buf) {
 }
 
 SEASTAR_THREAD_TEST_CASE(test_buf_allocation) {
-    logalloc::region region;
+    tests::logalloc::sharded_tracker logalloc_tracker;
+
+    logalloc::region region(*logalloc_tracker);
     size_t buf_size = 4096;
     auto cookie = make_random_string(buf_size);
 
@@ -840,7 +852,9 @@ SEASTAR_THREAD_TEST_CASE(test_buf_allocation) {
 }
 
 SEASTAR_THREAD_TEST_CASE(test_lsa_buffer_alloc_dealloc_patterns) {
-    logalloc::region region;
+    tests::logalloc::sharded_tracker logalloc_tracker;
+
+    logalloc::region region(*logalloc_tracker);
     size_t buf_size = 128*1024;
 
     std::vector<sstring> cookies;
@@ -1042,7 +1056,9 @@ SEASTAR_THREAD_TEST_CASE(test_lsa_buffer_alloc_dealloc_patterns) {
 }
 
 SEASTAR_THREAD_TEST_CASE(test_weak_ptr) {
-    logalloc::region region;
+    tests::logalloc::sharded_tracker logalloc_tracker;
+
+    logalloc::region region(*logalloc_tracker);
 
     const int cookie = 172;
     const int cookie2 = 341;
@@ -1109,7 +1125,9 @@ SEASTAR_THREAD_TEST_CASE(test_weak_ptr) {
 }
 
 SEASTAR_THREAD_TEST_CASE(test_buf_alloc_compaction) {
-    logalloc::region region;
+    tests::logalloc::sharded_tracker logalloc_tracker;
+
+    logalloc::region region(*logalloc_tracker);
     size_t buf_size = 128; // much smaller than region_impl::buf_align
 
     utils::chunked_vector<lsa_buffer> bufs;

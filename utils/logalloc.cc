@@ -2108,8 +2108,8 @@ memory::reclaiming_result tracker::reclaim(seastar::memory::reclaimer::request r
            : memory::reclaiming_result::reclaimed_nothing;
 }
 
-region::region()
-    : _impl(make_shared<impl>(shard_tracker(), this))
+region::region(tracker& tracker)
+    : _impl(make_shared<impl>(tracker, this))
 { }
 
 void

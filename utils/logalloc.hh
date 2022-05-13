@@ -334,7 +334,7 @@ private:
     region_impl& get_impl() noexcept;
     const region_impl& get_impl() const noexcept;
 public:
-    region();
+    region(tracker& tracker);
     ~region();
     region(region&& other) noexcept;
     region& operator=(region&& other) noexcept;
