@@ -1473,7 +1473,7 @@ public:
                     [consumer = std::move(end_consumer), this] (flat_mutation_reader_v2 rd) {
                 ++_bucket_count;
                 return consumer(std::move(rd));
-            });
+            }, _options.memtable_factory);
         };
     }
 
