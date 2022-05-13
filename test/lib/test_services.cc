@@ -52,7 +52,7 @@ column_family_for_tests::column_family_for_tests(sstables::sstables_manager& sst
     : _data(make_lw_shared<data>())
 {
     _data->s = s;
-    _data->cfg = replica::table::config{.compaction_concurrency_semaphore = &_data->semaphore};
+    _data->cfg = replica::table::config{.dirty_memory_manager = &_data->dmm, .compaction_concurrency_semaphore = &_data->semaphore};
     _data->cfg.enable_disk_writes = bool(datadir);
     _data->cfg.datadir = datadir.value_or(sstring());
     _data->cfg.cf_stats = &_data->cf_stats;

@@ -64,6 +64,7 @@ private:
 
     conf _cfg;
     schema_ptr s;
+    dirty_memory_manager _dmm;
     std::default_random_engine _generator;
     std::uniform_int_distribution<char> _distribution;
     lw_shared_ptr<replica::memtable> _mt;
@@ -98,7 +99,7 @@ public:
     perf_sstable_test_env(conf cfg) : _cfg(std::move(cfg))
            , s(create_schema(cfg.compaction_strategy))
            , _distribution('@', '~')
-           , _mt(make_lw_shared<replica::memtable>(s))
+           , _mt(make_lw_shared<replica::memtable>(s, _dmm))
     {}
 
     future<> stop() {

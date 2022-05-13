@@ -10,6 +10,7 @@
 
 #include "readers/filtering.hh"
 #include "replica/memtable.hh"
+#include "dirty_memory_manager.hh"
 #include "schema.hh"
 #include "replica/database_fwd.hh"
 
@@ -51,6 +52,7 @@ public:
 // Produces results by filling a memtable on each read.
 // Use when the amount of data is not significant relative to shard's memory size.
 class memtable_filling_virtual_table : public virtual_table {
+    dirty_memory_manager _dmm;
 public:
     using virtual_table::virtual_table;
 

@@ -8,6 +8,7 @@
 
 #include "mutation_writer/partition_based_splitting_writer.hh"
 #include "mutation_rebuilder.hh"
+#include "dirty_memory_manager.hh"
 #include "replica/memtable.hh"
 
 #include <seastar/core/coroutine.hh>
@@ -22,6 +23,7 @@ class partition_sorting_mutation_writer {
     size_t _max_memory;
     bucket_writer_v2 _bucket_writer;
     std::optional<dht::decorated_key> _last_bucket_key;
+    std::unique_ptr<dirty_memory_manager> _dmm;
     lw_shared_ptr<replica::memtable> _memtable;
     future<> _background_memtable_flush = make_ready_future<>();
     std::optional<mutation_rebuilder_v2> _mut_builder;
@@ -42,7 +44,7 @@ private:
 
     future<> flush_memtable() {
         co_await _consumer(_memtable->make_flush_reader(_schema, _permit, _pc));
-        _memtable = make_lw_shared<replica::memtable>(_schema);
+        _memtable = make_lw_shared<replica::memtable>(_schema, *_dmm);
     }
 
     future<> maybe_flush_memtable() {
@@ -78,7 +80,8 @@ public:
         , _pc(cfg.pc)
         , _max_memory(cfg.max_memory)
         , _bucket_writer(_schema, _permit, _consumer)
-        , _memtable(make_lw_shared<replica::memtable>(_schema))
+        , _dmm(std::make_unique<dirty_memory_manager>())
+        , _memtable(make_lw_shared<replica::memtable>(_schema, *_dmm))
         , _last_pos(position_in_partition::for_partition_start())
     { }
 

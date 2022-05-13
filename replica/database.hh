@@ -1435,6 +1435,8 @@ public:
     cache_tracker& row_cache_tracker() { return _row_cache_tracker; }
     future<> drop_caches() const;
 
+    dirty_memory_manager& get_user_dirty_memory_manager() { return _dirty_memory_manager; }
+
     void update_version(const utils::UUID& version);
 
     const utils::UUID& get_version() const;
