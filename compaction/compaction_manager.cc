@@ -1505,7 +1505,8 @@ future<> compaction_manager::perform_sstable_upgrade(owned_ranges_ptr sorted_own
 }
 
 // Submit a table to be scrubbed and wait for its termination.
-future<compaction_manager::compaction_stats_opt> compaction_manager::perform_sstable_scrub(compaction::table_state& t, sstables::compaction_type_options::scrub opts) {
+future<compaction_manager::compaction_stats_opt> compaction_manager::perform_sstable_scrub(compaction::table_state& t,
+        sstables::compaction_type_options::scrub::mode scrub_mode, sstables::compaction_type_options::scrub::quarantine_mode quarantine_mode) {
     auto scrub_mode = opts.operation_mode;
     if (scrub_mode == sstables::compaction_type_options::scrub::mode::validate) {
         return perform_sstable_scrub_validate_mode(t);
@@ -1513,14 +1514,14 @@ future<compaction_manager::compaction_stats_opt> compaction_manager::perform_sst
     auto mt_factory = [dmm = &_cfg.dmm] (schema_ptr s) {
         return make_lw_shared<replica::memtable>(std::move(s), *dmm);
     };
-    return rewrite_sstables(t, sstables::compaction_type_options::make_scrub(scrub_mode, mt_factory), [this, &t, opts] {
+    return rewrite_sstables(t, sstables::compaction_type_options::make_scrub(scrub_mode, mt_factory), [this, &t, opts, quarantine_mode] {
         auto all_sstables = get_all_sstables(t);
         std::vector<sstables::shared_sstable> sstables = boost::copy_range<std::vector<sstables::shared_sstable>>(all_sstables
-                | boost::adaptors::filtered([&opts] (const sstables::shared_sstable& sst) {
+                | boost::adaptors::filtered([&opts, &quarantine_mode] (const sstables::shared_sstable& sst) {
             if (sst->requires_view_building()) {
                 return false;
             }
-            switch (opts.quarantine_operation_mode) {
+            switch (quarantine_mode) {
             case sstables::compaction_type_options::scrub::quarantine_mode::include:
                 return true;
             case sstables::compaction_type_options::scrub::quarantine_mode::exclude:

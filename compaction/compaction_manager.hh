@@ -429,7 +429,8 @@ public:
     future<> perform_sstable_upgrade(owned_ranges_ptr sorted_owned_ranges, compaction::table_state& t, bool exclude_current_version);
 
     // Submit a table to be scrubbed and wait for its termination.
-    future<compaction_stats_opt> perform_sstable_scrub(compaction::table_state& t, sstables::compaction_type_options::scrub opts);
+    future<compaction_stats_opt> perform_sstable_scrub(compaction::table_state& t, sstables::compaction_type_options::scrub::mode scrub_mode,
+            sstables::compaction_type_options::scrub::quarantine_mode quarantine_mode = sstables::compaction_type_options::scrub::quarantine_mode::include);
 
     // Submit a table for major compaction.
     future<> perform_major_compaction(compaction::table_state& t);

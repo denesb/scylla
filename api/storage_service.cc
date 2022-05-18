@@ -1406,16 +1406,14 @@ void set_snapshot(http_context& ctx, routes& r, sharded<db::snapshot_ctl>& snap_
             });
         }
 
-        sstables::compaction_type_options::scrub opts = {
-            .operation_mode = scrub_mode,
-        };
         const sstring quarantine_mode_str = req_param<sstring>(*req, "quarantine_mode", "INCLUDE");
+        sstables::compaction_type_options::scrub::quarantine_mode quarantine_mode;
         if (quarantine_mode_str == "INCLUDE") {
-            opts.quarantine_operation_mode = sstables::compaction_type_options::scrub::quarantine_mode::include;
+            quarantine_mode = sstables::compaction_type_options::scrub::quarantine_mode::include;
         } else if (quarantine_mode_str == "EXCLUDE") {
-            opts.quarantine_operation_mode = sstables::compaction_type_options::scrub::quarantine_mode::exclude;
+            quarantine_mode = sstables::compaction_type_options::scrub::quarantine_mode::exclude;
         } else if (quarantine_mode_str == "ONLY") {
-            opts.quarantine_operation_mode = sstables::compaction_type_options::scrub::quarantine_mode::only;
+            quarantine_mode = sstables::compaction_type_options::scrub::quarantine_mode::only;
         } else {
             throw httpd::bad_param_exception(fmt::format("Unknown argument for 'quarantine_mode' parameter: {}", quarantine_mode_str));
         }
@@ -1427,12 +1425,12 @@ void set_snapshot(http_context& ctx, routes& r, sharded<db::snapshot_ctl>& snap_
             return stats;
         };
 
-        return f.then([&ctx, keyspace, column_families, opts, &reduce_compaction_stats] {
+        return f.then([&ctx, keyspace, column_families, scrub_mode, quarantine_mode, &reduce_compaction_stats] {
             return ctx.db.map_reduce0([=] (replica::database& db) {
                 return map_reduce(column_families, [=, &db] (sstring cfname) {
                     auto& cm = db.get_compaction_manager();
                     auto& cf = db.find_column_family(keyspace, cfname);
-                    return cm.perform_sstable_scrub(cf.as_table_state(), opts);
+                    return cm.perform_sstable_scrub(cf.as_table_state(), scrub_mode, quarantine_mode);
                 }, std::make_optional(sstables::compaction_stats{}), reduce_compaction_stats);
             }, std::make_optional(sstables::compaction_stats{}), reduce_compaction_stats);
         }).then_wrapped([] (auto f) {
