@@ -73,7 +73,6 @@ public:
             exclude, // scrub only non-quarantined sstables
             only, // scrub only quarantined sstables
         };
-        quarantine_mode quarantine_operation_mode = quarantine_mode::include;
     };
     struct reshard {
     };

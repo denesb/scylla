@@ -1361,19 +1361,19 @@ future<> compaction_manager::perform_sstable_upgrade(replica::database& db, repl
 }
 
 // Submit a table to be scrubbed and wait for its termination.
-future<> compaction_manager::perform_sstable_scrub(replica::table* t, sstables::compaction_type_options::scrub opts) {
-    auto scrub_mode = opts.operation_mode;
+future<> compaction_manager::perform_sstable_scrub(replica::table* t, sstables::compaction_type_options::scrub::mode scrub_mode,
+        sstables::compaction_type_options::scrub::quarantine_mode quarantine_mode) {
     if (scrub_mode == sstables::compaction_type_options::scrub::mode::validate) {
         return perform_sstable_scrub_validate_mode(t);
     }
-    return rewrite_sstables(t, sstables::compaction_type_options::make_scrub(scrub_mode), [this, t, opts] {
+    return rewrite_sstables(t, sstables::compaction_type_options::make_scrub(scrub_mode), [this, t, quarantine_mode] {
         auto all_sstables = t->get_sstable_set().all();
         std::vector<sstables::shared_sstable> sstables = boost::copy_range<std::vector<sstables::shared_sstable>>(*all_sstables
-                | boost::adaptors::filtered([&opts] (const sstables::shared_sstable& sst) {
+                | boost::adaptors::filtered([&quarantine_mode] (const sstables::shared_sstable& sst) {
             if (sst->requires_view_building()) {
                 return false;
             }
-            switch (opts.quarantine_operation_mode) {
+            switch (quarantine_mode) {
             case sstables::compaction_type_options::scrub::quarantine_mode::include:
                 return true;
             case sstables::compaction_type_options::scrub::quarantine_mode::exclude:
