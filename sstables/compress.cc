@@ -14,6 +14,7 @@
 #include <seastar/core/bitops.hh>
 #include <seastar/core/byteorder.hh>
 #include <seastar/core/fstream.hh>
+#include <seastar/core/coroutine.hh>
 
 #include "../compress.hh"
 #include "compress.hh"
@@ -539,6 +540,76 @@ public:
     }
 };
 
+template <typename ChecksumType>
+requires ChecksumUtils<ChecksumType>
+class checked_compressed_file_data_sink_impl : public data_sink_impl {
+    output_stream<char> _out;
+    sstables::compression& _compression_metadata;
+    sstables::compression::segmented_offsets::accessor _accessor;
+    temporary_buffer<char> _buf;
+    size_t _chunk_len = 0;
+    size_t _prev_chunk_end_offset = 0;
+    size_t _offset = 0;
+    size_t _i = 0;
+
+private:
+    size_t get_current_chunk_end() const {
+        if (_i + 1 == _compression_metadata.offsets.size()) {
+            return _compression_metadata.compressed_file_length();
+        }
+        return _accessor.at(_i + 1);
+    }
+    size_t get_remaining_chunk_data_len() const {
+        return get_current_chunk_end() - _offset;
+    }
+    void check_ready_chunk() {
+        auto compressed_len = _chunk_len - 4;
+        auto expected_checksum = read_be<uint32_t>(_buf.get() + compressed_len);
+        auto actual_checksum = ChecksumType::checksum(_buf.get(), compressed_len);
+        if (actual_checksum != expected_checksum) {
+            sstables::sstlog.error("Compressed chunk checksum mismatch at chunk #{} of size {} at offset {}: expected={}, actual={}", _i, compressed_len, _offset - _chunk_len, expected_checksum, actual_checksum);
+            std::abort();
+        }
+    }
+    void move_to_next_chunk() {
+        _prev_chunk_end_offset += _chunk_len;
+        ++_i;
+        _chunk_len = 0;
+    }
+
+public:
+    checked_compressed_file_data_sink_impl(output_stream<char> out, sstables::compression* cm)
+        : _out(std::move(out))
+        , _compression_metadata(*cm)
+        , _accessor(_compression_metadata.offsets.get_accessor())
+        , _buf(buffer_size())
+    { }
+
+    virtual future<> put(net::packet data) override { abort(); }
+    virtual future<> put(temporary_buffer<char> buf) override {
+        size_t i = 0;
+        while (i != buf.size()) {
+            auto n = std::min(buf.size() - i, get_remaining_chunk_data_len());
+            std::copy_n(buf.begin() + i, n, _buf.get_write() + _chunk_len);
+            i += n;
+            _chunk_len += n;
+            _offset += n;
+            if (_offset == get_current_chunk_end()) {
+                check_ready_chunk();
+                move_to_next_chunk();
+            }
+        }
+        co_await _out.write(buf.get(), buf.size());
+    }
+    virtual future<> close() override {
+        return _out.close();
+    }
+
+    virtual size_t buffer_size() const noexcept override {
+        return 1 << 17; // (128K)
+    }
+};
+
 template <typename ChecksumType, compressed_checksum_mode mode>
 requires ChecksumUtils<ChecksumType>
 class compressed_file_data_sink : public data_sink {
@@ -546,6 +617,15 @@ public:
     compressed_file_data_sink(output_stream<char> out, sstables::compression* cm, sstables::local_compression lc)
         : data_sink(std::make_unique<compressed_file_data_sink_impl<ChecksumType, mode>>(
                 std::move(out), cm, std::move(lc))) {}
+};
+
+template <typename ChecksumType>
+requires ChecksumUtils<ChecksumType>
+class checked_compressed_file_data_sink : public data_sink {
+public:
+    checked_compressed_file_data_sink(output_stream<char> out, sstables::compression* cm)
+        : data_sink(std::make_unique<checked_compressed_file_data_sink_impl<ChecksumType>>(std::move(out), cm))
+    {}
 };
 
 template <typename ChecksumType, compressed_checksum_mode mode>
@@ -564,7 +644,7 @@ inline output_stream<char> make_compressed_file_output_stream(output_stream<char
     // defaults to 1.0.
     cm->options.elements.push_back({"crc_check_chance", "1.0"});
 
-    return output_stream<char>(compressed_file_data_sink<ChecksumType, mode>(std::move(out), cm, p));
+    return output_stream<char>(compressed_file_data_sink<ChecksumType, mode>(std::move(out), cm, cp.get_compressor()));
 }
 
 input_stream<char> sstables::make_compressed_file_k_l_format_input_stream(file f,
@@ -583,7 +663,8 @@ input_stream<char> sstables::make_compressed_file_m_format_input_stream(file f,
 output_stream<char> sstables::make_compressed_file_m_format_output_stream(output_stream<char> out,
         sstables::compression* cm,
         const compression_parameters& cp) {
+    auto checked_out = output_stream<char>(checked_compressed_file_data_sink<crc32_utils>(std::move(out), cm));
     return make_compressed_file_output_stream<crc32_utils, compressed_checksum_mode::checksum_all>(
-            std::move(out), cm, cp);
+            std::move(checked_out), cm, cp);
 }
 
