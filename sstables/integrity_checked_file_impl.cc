@@ -9,6 +9,7 @@
 #include "integrity_checked_file_impl.hh"
 #include <seastar/core/do_with.hh>
 #include <seastar/core/print.hh>
+#include <seastar/core/on_internal_error.hh>
 #include <boost/algorithm/cxx11/all_of.hpp>
 
 namespace sstables {
@@ -53,8 +54,8 @@ integrity_checked_file_impl::write_dma(uint64_t pos, const void* buffer, size_t 
     return get_file_impl(_file)->write_dma(pos, buffer, len, pc)
             .then([this, pos, wbuf = std::move(wbuf), buffer = static_cast<const int8_t*>(buffer), len, &pc] (size_t ret) mutable {
         if (ret != len) {
-            sstlog.error("integrity check failed for {}, stage: after write finished, write: {} bytes to offset {}, " \
-                "reason: only {} bytes were written.", _fname, len, pos, ret);
+            on_internal_error(sstlog, fmt::format("integrity check failed for {}, stage: after write finished, write: {} bytes to offset {}, " \
+                "reason: only {} bytes were written.", _fname, len, pos, ret));
         }
 
         auto wbuf_end = wbuf.get() + wbuf.size();
@@ -62,20 +63,20 @@ integrity_checked_file_impl::write_dma(uint64_t pos, const void* buffer, size_t 
         if (r.first != wbuf_end) {
             auto mismatch_off = r.first - wbuf.get();
 
-            sstlog.error("integrity check failed for {}, stage: after write verification, write: {} bytes to offset {}, " \
+            on_internal_error(sstlog, fmt::format("integrity check failed for {}, stage: after write verification, write: {} bytes to offset {}, " \
                 "reason: buffer was modified during write call, mismatch at byte {}:\n" \
                 " unmodified sample:\t{}\n" \
                 " modified sample:  \t{}",
                 _fname, len, pos, mismatch_off,
-                data_sample(wbuf.get(), wbuf.size(), mismatch_off, 16), data_sample(buffer, len, mismatch_off, 16));
+                data_sample(wbuf.get(), wbuf.size(), mismatch_off, 16), data_sample(buffer, len, mismatch_off, 16)));
 
             return make_ready_future<size_t>(ret);
         }
 
         return _file.dma_read_exactly<int8_t>(pos, len, pc).then([this, pos, wbuf = std::move(wbuf), len, ret] (auto rbuf) mutable {
             if (rbuf.size() != len) {
-                sstlog.error("integrity check failed for {}, stage: read after write finished, write: {} bytes to offset {}, " \
-                    "reason: only able to read {} bytes for further verification", _fname, len, pos, rbuf.size());
+                on_internal_error(sstlog, fmt::format("integrity check failed for {}, stage: read after write finished, write: {} bytes to offset {}, " \
+                    "reason: only able to read {} bytes for further verification", _fname, len, pos, rbuf.size()));
             }
 
             auto rbuf_end = rbuf.get() + rbuf.size();
@@ -83,12 +84,12 @@ integrity_checked_file_impl::write_dma(uint64_t pos, const void* buffer, size_t 
             if (r.first != rbuf_end) {
                 auto mismatch_off = r.first - rbuf.get();
 
-                sstlog.error("integrity check failed for {}, stage: read after write verification, write: {} bytes to offset {}, " \
+                on_internal_error(sstlog, fmt::format("integrity check failed for {}, stage: read after write verification, write: {} bytes to offset {}, " \
                     "reason: data read from underlying storage isn't the same as written, mismatch at byte {}:\n" \
                     " data written sample:\t{}\n" \
                     " data read sample:   \t{}",
                     _fname, len, pos, mismatch_off,
-                    data_sample(wbuf.get(), wbuf.size(), mismatch_off, 16), data_sample(rbuf.get(), rbuf.size(), mismatch_off, 16));
+                    data_sample(wbuf.get(), wbuf.size(), mismatch_off, 16), data_sample(rbuf.get(), rbuf.size(), mismatch_off, 16)));
             }
             return make_ready_future<size_t>(ret);
         });
