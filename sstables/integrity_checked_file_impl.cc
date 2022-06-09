@@ -73,7 +73,7 @@ integrity_checked_file_impl::write_dma(uint64_t pos, const void* buffer, size_t 
             return make_ready_future<size_t>(ret);
         }
 
-        return _file.dma_read_exactly<int8_t>(pos, len, pc).then([this, pos, wbuf = std::move(wbuf), len, ret] (auto rbuf) mutable {
+        return _file.dma_read_exactly<int8_t>(pos, len, pc).then([this, pos, wbuf = std::move(wbuf), buffer, len, ret] (auto rbuf) mutable {
             if (rbuf.size() != len) {
                 on_internal_error(sstlog, fmt::format("integrity check failed for {}, stage: read after write finished, write: {} bytes to offset {}, " \
                     "reason: only able to read {} bytes for further verification", _fname, len, pos, rbuf.size()));
@@ -87,9 +87,11 @@ integrity_checked_file_impl::write_dma(uint64_t pos, const void* buffer, size_t 
                 on_internal_error(sstlog, fmt::format("integrity check failed for {}, stage: read after write verification, write: {} bytes to offset {}, " \
                     "reason: data read from underlying storage isn't the same as written, mismatch at byte {}:\n" \
                     " data written sample:\t{}\n" \
-                    " data read sample:   \t{}",
+                    " data read sample:   \t{}\n"
+                    "Additional info: this={}, pos={}, buffer={}, len={}, wbuf={}, rbuf={}",
                     _fname, len, pos, mismatch_off,
-                    data_sample(wbuf.get(), wbuf.size(), mismatch_off, 16), data_sample(rbuf.get(), rbuf.size(), mismatch_off, 16)));
+                    data_sample(wbuf.get(), wbuf.size(), mismatch_off, 16), data_sample(rbuf.get(), rbuf.size(), mismatch_off, 16),
+                    fmt::ptr(this), pos, fmt::ptr(buffer), len, fmt::ptr(wbuf.get()), fmt::ptr(rbuf.get())));
             }
             return make_ready_future<size_t>(ret);
         });
