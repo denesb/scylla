@@ -2961,11 +2961,41 @@ class scylla_threads(gdb.Command):
     def __init__(self):
         gdb.Command.__init__(self, 'scylla threads', gdb.COMMAND_USER, gdb.COMPLETE_NONE, True)
 
+    def _do_list_threads(self, shard, include_vtable):
+        for t in seastar_threads_on_current_shard():
+            stack = std_unique_ptr(t['_stack']).get()
+            if include_vtable:
+                maybe_vtable = ' vtable: {}'.format(t['_func']['_vtable'])
+            else:
+                maybe_vtable = ''
+            gdb.write('[shard {}] (seastar::thread_context*) 0x{:x}, stack: 0x{:x}{}\n'.format(
+                shard, int(t.address), int(stack), maybe_vtable))
+
     def invoke(self, arg, for_tty):
+        parser = argparse.ArgumentParser(description="scylla threads")
+        parser.add_argument("-a", "--all", action="store_true",
+                help="List threads on all shards")
+        parser.add_argument("-s", "--shard", action="store", type=int,
+                help="List threads on the specified shard")
+        parser.add_argument("-v", "--vtable", action="store_true",
+                help="Include functor vtable in the printout; could be useful for identifying the thread, but makes the output very verbose")
+
+        try:
+            args = parser.parse_args(arg.split())
+        except SystemExit:
+            return
+
+        if args.all:
+            shards = list(range(cpus()))
+        elif args.shard:
+            shards = [args.shard]
+        else:
+            shards = [int(gdb.parse_and_eval('seastar::local_engine._id'))]
+
         for r in reactors():
-            shard = r['_id']
-            for t in seastar_threads_on_current_shard():
-                gdb.write('[shard %2d] (seastar::thread_context*) 0x%x\n' % (shard, int(t.address)))
+            shard = int(r['_id'])
+            if shard in shards:
+                self._do_list_threads(shard, args.vtable)
 
 
 class circular_buffer(object):
