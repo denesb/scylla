@@ -2628,27 +2628,46 @@ public:
     virtual schema_ptr schema() override {
         return VirtualTable::build_schema();
     }
-    static void create_and_register(auto&& factory_fn) {
+    static void create_and_register(std::map<utils::UUID, std::unique_ptr<virtual_table_factory>>& virtual_tables, auto&& factory_fn) {
         auto factory = std::make_unique<db::concrete_virtual_table_factory<VirtualTable>>(
                 [fn = std::move(factory_fn)] () -> std::unique_ptr<db::virtual_table> { return fn(); });
         virtual_tables[factory->schema()->id()] = std::move(factory);
     }
 };
 
-void register_virtual_tables(distributed<replica::database>& dist_db, distributed<service::storage_service>& dist_ss, sharded<gms::gossiper>& dist_gossiper, db::config& cfg) {
-    auto& db = dist_db.local();
-    auto& ss = dist_ss.local();
-    auto& gossiper = dist_gossiper.local();
+// Called with nullptr:s when caller only wants the schemas
+static std::map<utils::UUID, std::unique_ptr<virtual_table_factory>>
+do_create_virtual_table_factories(distributed<replica::database>* dist_db, distributed<service::storage_service>* dist_ss, sharded<gms::gossiper>* dist_gossiper, db::config* cfg) {
+    std::map<utils::UUID, std::unique_ptr<virtual_table_factory>> virtual_tables;
+
+    auto* db = dist_db ? &dist_db->local() : nullptr;
+    auto* ss = dist_ss ? &dist_ss->local() : nullptr;
+    auto* gossiper = dist_gossiper ? &dist_gossiper->local() : nullptr;
 
     // Add built-in virtual tables here.
-    concrete_virtual_table_factory<cluster_status_table>::create_and_register([&] { return std::make_unique<cluster_status_table>(ss, gossiper); });
-    concrete_virtual_table_factory<token_ring_table>::create_and_register([&] { return std::make_unique<token_ring_table>(db, ss); });
-    concrete_virtual_table_factory<snapshots_table>::create_and_register([&] { return std::make_unique<snapshots_table>(dist_db); });
-    concrete_virtual_table_factory<protocol_servers_table>::create_and_register([&] { return std::make_unique<protocol_servers_table>(ss); });
-    concrete_virtual_table_factory<runtime_info_table>::create_and_register([&] { return std::make_unique<runtime_info_table>(dist_db, ss); });
-    concrete_virtual_table_factory<versions_table>::create_and_register([&] { return std::make_unique<versions_table>(); });
-    concrete_virtual_table_factory<db_config_table>::create_and_register([&] { return std::make_unique<db_config_table>(cfg); });
-    concrete_virtual_table_factory<clients_table>::create_and_register([&] { return std::make_unique<clients_table>(ss); });
+    concrete_virtual_table_factory<cluster_status_table>::create_and_register(virtual_tables, [&] { return std::make_unique<cluster_status_table>(*ss, *gossiper); });
+    concrete_virtual_table_factory<token_ring_table>::create_and_register(virtual_tables, [&] { return std::make_unique<token_ring_table>(*db, *ss); });
+    concrete_virtual_table_factory<snapshots_table>::create_and_register(virtual_tables, [&] { return std::make_unique<snapshots_table>(*dist_db); });
+    concrete_virtual_table_factory<protocol_servers_table>::create_and_register(virtual_tables, [&] { return std::make_unique<protocol_servers_table>(*ss); });
+    concrete_virtual_table_factory<runtime_info_table>::create_and_register(virtual_tables, [&] { return std::make_unique<runtime_info_table>(*dist_db, *ss); });
+    concrete_virtual_table_factory<versions_table>::create_and_register(virtual_tables, [&] { return std::make_unique<versions_table>(); });
+    concrete_virtual_table_factory<db_config_table>::create_and_register(virtual_tables, [&] { return std::make_unique<db_config_table>(*cfg); });
+    concrete_virtual_table_factory<clients_table>::create_and_register(virtual_tables, [&] { return std::make_unique<clients_table>(*ss); });
+
+    return virtual_tables;
+}
+
+static std::map<utils::UUID, std::unique_ptr<virtual_table_factory>>
+create_virtual_table_factories(distributed<replica::database>& dist_db, distributed<service::storage_service>& dist_ss, sharded<gms::gossiper>& dist_gossiper, db::config& cfg) {
+    return do_create_virtual_table_factories(&dist_db, &dist_ss, &dist_gossiper, &cfg);
+}
+
+static std::vector<schema_ptr>
+all_virtual_table_schemas() {
+    auto factories = do_create_virtual_table_factories(nullptr, nullptr, nullptr, nullptr);
+    return boost::copy_range<std::vector<schema_ptr>>(factories
+            | boost::adaptors::map_values
+            | boost::adaptors::transformed([] (std::unique_ptr<virtual_table_factory>& f) { return f->schema(); }));
 }
 
 std::vector<schema_ptr> system_keyspace::all_tables(const db::config& cfg) {
@@ -2677,14 +2696,13 @@ std::vector<schema_ptr> system_keyspace::all_tables(const db::config& cfg) {
                     legacy::columns(), legacy::triggers(), legacy::usertypes(),
                     legacy::functions(), legacy::aggregates(), });
 
-    for (auto&& [id, vt] : virtual_tables) {
-        r.push_back(vt->schema());
-    }
+    auto virtual_tables = all_virtual_table_schemas();
+    r.insert(r.end(), virtual_tables.begin(), virtual_tables.end());
 
     return r;
 }
 
-static void install_virtual_readers(replica::database& db) {
+static void install_virtual_readers(replica::database& db, std::map<utils::UUID, std::unique_ptr<virtual_table_factory>>&& factories) {
     db.find_column_family(system_keyspace::size_estimates()).set_virtual_table(std::make_unique<db::size_estimates::virtual_reader>(db));
     db.find_column_family(system_keyspace::v3::views_builds_in_progress()).set_virtual_table(std::make_unique<db::view::build_progress_virtual_reader>(db));
     db.find_column_family(system_keyspace::built_indexes()).set_virtual_table(std::make_unique<db::index::built_indexes_virtual_reader>(db));
@@ -2702,8 +2720,6 @@ static bool maybe_write_in_user_memory(schema_ptr s) {
 }
 
 future<> system_keyspace_make(distributed<replica::database>& dist_db, distributed<service::storage_service>& dist_ss, sharded<gms::gossiper>& dist_gossiper, db::config& cfg) {
-    register_virtual_tables(dist_db, dist_ss, dist_gossiper, cfg);
-
     auto& db = dist_db.local();
     auto& db_config = db.get_config();
     auto enable_cache = db_config.enable_cache();
@@ -2729,7 +2745,7 @@ future<> system_keyspace_make(distributed<replica::database>& dist_db, distribut
         db.add_column_family(ks, table, std::move(cfg));
     }
 
-    install_virtual_readers(db);
+    install_virtual_readers(db, create_virtual_table_factories(dist_db, dist_ss, dist_gossiper, cfg));
 }
 
 future<> system_keyspace::make(distributed<replica::database>& db, distributed<service::storage_service>& ss, sharded<gms::gossiper>& g, db::config& cfg) {
