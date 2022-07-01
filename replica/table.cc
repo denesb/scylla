@@ -150,8 +150,8 @@ table::make_reader_v2(schema_ptr s,
                            tracing::trace_state_ptr trace_state,
                            streamed_mutation::forwarding fwd,
                            mutation_reader::forwarding fwd_mr) const {
-    if (_virtual_reader) [[unlikely]] {
-        return (*_virtual_reader).make_reader_v2(s, std::move(permit), range, query_slice, pc, trace_state, fwd, fwd_mr);
+    if (_virtual_table) [[unlikely]] {
+        return _virtual_table->as_mutation_source().make_reader_v2(s, std::move(permit), range, query_slice, pc, trace_state, fwd, fwd_mr);
     }
 
     bool reversed = query_slice.is_reversed();
@@ -1970,8 +1970,8 @@ future<> table::apply(const mutation& m, db::rp_handle&& h, db::timeout_clock::t
 template void table::do_apply(db::rp_handle&&, const mutation&);
 
 future<> table::apply(const frozen_mutation& m, schema_ptr m_schema, db::rp_handle&& h, db::timeout_clock::time_point timeout) {
-    if (_virtual_writer) [[unlikely]] {
-        return (*_virtual_writer)(m);
+    if (_virtual_table) [[unlikely]] {
+        return _virtual_table->apply(m);
     }
 
     return dirty_memory_region_group().run_when_memory_available([this, &m, m_schema = std::move(m_schema), h = std::move(h)]() mutable {

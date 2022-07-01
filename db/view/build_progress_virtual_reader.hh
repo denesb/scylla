@@ -9,6 +9,7 @@
 #include "replica/database.hh"
 #include "db/system_keyspace.hh"
 #include "db/timeout_clock.hh"
+#include "db/virtual_table.hh"
 #include "dht/i_partitioner.hh"
 #include "readers/flat_mutation_reader_v2.hh"
 #include "mutation_fragment.hh"
@@ -35,7 +36,7 @@ namespace db::view {
 // is stored between mutation fragments. If the clustering key becomes
 // the same as the previous one (as a result of trimming cpu_id),
 // the duplicated fragment is ignored.
-class build_progress_virtual_reader {
+class build_progress_virtual_reader : public db::virtual_table {
     replica::database& _db;
 
     struct build_progress_reader : flat_mutation_reader_v2::impl {
@@ -77,7 +78,7 @@ class build_progress_virtual_reader {
                 , _previous_clustering_key() {
         }
 
-        const schema& underlying_schema() const {
+        const ::schema& underlying_schema() const {
             return *_underlying.schema();
         }
 
@@ -184,10 +185,11 @@ class build_progress_virtual_reader {
 
 public:
     build_progress_virtual_reader(replica::database& db)
-            : _db(db) {
+            : db::virtual_table(system_keyspace::v3::scylla_views_builds_in_progress()), _db(db) {
     }
 
-    flat_mutation_reader_v2 operator()(
+    mutation_source as_mutation_source() override {
+        return mutation_source([db = &_db] (
             schema_ptr s,
             reader_permit permit,
             const dht::partition_range& range,
@@ -199,13 +201,14 @@ public:
         return flat_mutation_reader_v2(std::make_unique<build_progress_reader>(
                 std::move(s),
                 std::move(permit),
-                _db.find_column_family(s->ks_name(), system_keyspace::v3::SCYLLA_VIEWS_BUILDS_IN_PROGRESS),
+                db->find_column_family(s->ks_name(), system_keyspace::v3::SCYLLA_VIEWS_BUILDS_IN_PROGRESS),
                 range,
                 slice,
                 pc,
                 std::move(trace_state),
                 fwd,
                 fwd_mr));
+        });
     }
 };
 

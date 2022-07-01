@@ -2363,6 +2363,7 @@ public:
 class db_config_table final : public streaming_virtual_table {
     db::config& _cfg;
 
+public:
     static schema_ptr build_schema() {
         auto id = generate_legacy_id(system_keyspace::NAME, "config");
         return schema_builder(system_keyspace::NAME, "config", std::make_optional(id))
@@ -2374,6 +2375,7 @@ class db_config_table final : public streaming_virtual_table {
             .build();
     }
 
+private:
     future<> execute(reader_permit permit, result_collector& result, const query_restrictions& qr) override {
         struct config_entry {
             dht::decorated_key key;
@@ -2466,6 +2468,7 @@ public:
 class clients_table : public streaming_virtual_table {
     service::storage_service& _ss;
 
+public:
     static schema_ptr build_schema() {
         auto id = generate_legacy_id(system_keyspace::NAME, "clients");
         return schema_builder(system_keyspace::NAME, "clients", std::make_optional(id))
@@ -2486,6 +2489,7 @@ class clients_table : public streaming_virtual_table {
             .build();
     }
 
+private:
     dht::decorated_key make_partition_key(net::inet_address ip) {
         return dht::decorate_key(*_s, partition_key::from_single_value(*_s, data_value(ip).serialize_nonnull()));
     }
@@ -2603,27 +2607,48 @@ public:
     }
 };
 
+class virtual_table_factory {
+    std::function<std::unique_ptr<virtual_table>()> _factory_fn;
+public:
+    virtual_table_factory(std::function<std::unique_ptr<virtual_table>()> factory_fn) : _factory_fn(factory_fn) { }
+    virtual ~virtual_table_factory() = default;
+    virtual schema_ptr schema() = 0;
+    std::unique_ptr<virtual_table> make_virtual_table() {
+        return _factory_fn();
+    }
+};
+
 // Map from table's schema ID to table itself. Helps avoiding accidental duplication.
-static thread_local std::map<utils::UUID, std::unique_ptr<virtual_table>> virtual_tables;
+static thread_local std::map<utils::UUID, std::unique_ptr<virtual_table_factory>> virtual_tables;
+
+template <typename VirtualTable>
+class concrete_virtual_table_factory : public virtual_table_factory {
+public:
+    using virtual_table_factory::virtual_table_factory;
+    virtual schema_ptr schema() override {
+        return VirtualTable::build_schema();
+    }
+    static void create_and_register(auto&& factory_fn) {
+        auto factory = std::make_unique<db::concrete_virtual_table_factory<VirtualTable>>(
+                [fn = std::move(factory_fn)] () -> std::unique_ptr<db::virtual_table> { return fn(); });
+        virtual_tables[factory->schema()->id()] = std::move(factory);
+    }
+};
 
 void register_virtual_tables(distributed<replica::database>& dist_db, distributed<service::storage_service>& dist_ss, sharded<gms::gossiper>& dist_gossiper, db::config& cfg) {
-    auto add_table = [] (std::unique_ptr<virtual_table>&& tbl) {
-        virtual_tables[tbl->schema()->id()] = std::move(tbl);
-    };
-
     auto& db = dist_db.local();
     auto& ss = dist_ss.local();
     auto& gossiper = dist_gossiper.local();
 
     // Add built-in virtual tables here.
-    add_table(std::make_unique<cluster_status_table>(ss, gossiper));
-    add_table(std::make_unique<token_ring_table>(db, ss));
-    add_table(std::make_unique<snapshots_table>(dist_db));
-    add_table(std::make_unique<protocol_servers_table>(ss));
-    add_table(std::make_unique<runtime_info_table>(dist_db, ss));
-    add_table(std::make_unique<versions_table>());
-    add_table(std::make_unique<db_config_table>(cfg));
-    add_table(std::make_unique<clients_table>(ss));
+    concrete_virtual_table_factory<cluster_status_table>::create_and_register([&] { return std::make_unique<cluster_status_table>(ss, gossiper); });
+    concrete_virtual_table_factory<token_ring_table>::create_and_register([&] { return std::make_unique<token_ring_table>(db, ss); });
+    concrete_virtual_table_factory<snapshots_table>::create_and_register([&] { return std::make_unique<snapshots_table>(dist_db); });
+    concrete_virtual_table_factory<protocol_servers_table>::create_and_register([&] { return std::make_unique<protocol_servers_table>(ss); });
+    concrete_virtual_table_factory<runtime_info_table>::create_and_register([&] { return std::make_unique<runtime_info_table>(dist_db, ss); });
+    concrete_virtual_table_factory<versions_table>::create_and_register([&] { return std::make_unique<versions_table>(); });
+    concrete_virtual_table_factory<db_config_table>::create_and_register([&] { return std::make_unique<db_config_table>(cfg); });
+    concrete_virtual_table_factory<clients_table>::create_and_register([&] { return std::make_unique<clients_table>(ss); });
 }
 
 std::vector<schema_ptr> system_keyspace::all_tables(const db::config& cfg) {
@@ -2660,14 +2685,13 @@ std::vector<schema_ptr> system_keyspace::all_tables(const db::config& cfg) {
 }
 
 static void install_virtual_readers(replica::database& db) {
-    db.find_column_family(system_keyspace::size_estimates()).set_virtual_reader(mutation_source(db::size_estimates::virtual_reader(db)));
-    db.find_column_family(system_keyspace::v3::views_builds_in_progress()).set_virtual_reader(mutation_source(db::view::build_progress_virtual_reader(db)));
-    db.find_column_family(system_keyspace::built_indexes()).set_virtual_reader(mutation_source(db::index::built_indexes_virtual_reader(db)));
+    db.find_column_family(system_keyspace::size_estimates()).set_virtual_table(std::make_unique<db::size_estimates::virtual_reader>(db));
+    db.find_column_family(system_keyspace::v3::views_builds_in_progress()).set_virtual_table(std::make_unique<db::view::build_progress_virtual_reader>(db));
+    db.find_column_family(system_keyspace::built_indexes()).set_virtual_table(std::make_unique<db::index::built_indexes_virtual_reader>(db));
 
     for (auto&& [id, vt] : virtual_tables) {
         auto&& cf = db.find_column_family(vt->schema());
-        cf.set_virtual_reader(vt->as_mutation_source());
-        cf.set_virtual_writer([&vt = *vt] (const frozen_mutation& m) { return vt.apply(m); });
+        cf.set_virtual_table(vt->make_virtual_table());
     }
 }
 

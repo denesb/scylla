@@ -1,8 +1,8 @@
 # Virtual Tables
 
 Virtual tables are tables that are not backed by physical storage (sstables), instead they generate their content on-the-fly when queried, by a specific reader instance.
-This reader is created by a `mutation_source` object stored in the `table` instance, set previously by `table::set_virtual_reader()`.
-So on a very low level, a table is virtual, if one calls `table::set_virtual_reader()` in its `table` instance.
+This reader is created by a `mutation_source` object, obtained from a virtual table instance stored in the `table` instance, set previously by `table::set_virtual_table()`.
+So on a very low level, a table is virtual, if one calls `table::set_virtual_table()` in its `table` instance.
 
 Virtual tables allow for exposing information already available in memory to the user in the form of a CQL table.
 They are much more lightweight than their regular counterparts and they completely lack all the burden and overhead of updating a persistent storage and keeping it consistent with the already existing in-memory structures.

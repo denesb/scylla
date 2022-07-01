@@ -201,6 +201,13 @@ static bool has_more_pages(::shared_ptr<cql_transport::messages::result_message>
     return rows->rs().get_metadata().flags().contains(cql3::metadata::flag::HAS_MORE_PAGES);
 };
 
+struct test_virtual_table : public db::virtual_table {
+    mutation_source ms;
+
+    test_virtual_table(schema_ptr s, mutation_source ms) : db::virtual_table(s), ms(std::move(ms)) { }
+    mutation_source as_mutation_source() override { return ms; }
+};
+
 SEASTAR_TEST_CASE(scan_enormous_table_test) {
     return do_with_cql_env_thread([] (cql_test_env& e) {
         e.create_table([](std::string_view ks_name) {
@@ -211,7 +218,8 @@ SEASTAR_TEST_CASE(scan_enormous_table_test) {
                     .build();
         }).get();
         auto& db = e.local_db();
-        db.find_column_family("ks", "enormous_table").set_virtual_reader(mutation_source(enormous_virtual_reader()));
+        auto& tbl = db.find_column_family("ks", "enormous_table");
+        tbl.set_virtual_table(std::make_unique<test_virtual_table>(tbl.schema(), mutation_source(enormous_virtual_reader())));
 
         uint64_t rows_fetched = 0;
         shared_ptr<cql_transport::messages::result_message> msg;
@@ -243,7 +251,8 @@ SEASTAR_TEST_CASE(count_enormous_table_test) {
                     .build();
         }).get();
         auto& db = e.local_db();
-        db.find_column_family("ks", "enormous_table").set_virtual_reader(mutation_source(enormous_virtual_reader()));
+        auto& tbl = db.find_column_family("ks", "enormous_table");
+        tbl.set_virtual_table(std::make_unique<test_virtual_table>(tbl.schema(), mutation_source(enormous_virtual_reader())));
 
         auto msg = e.execute_cql("select count(*) from enormous_table").get0();
         assert_that(msg).is_rows().with_rows({{{long_type->decompose(int64_t(enormous_table_reader::CLUSTERING_ROW_COUNT))}}});

@@ -8,6 +8,7 @@
 
 #include "replica/database.hh"
 #include "db/system_keyspace.hh"
+#include "db/virtual_table.hh"
 #include "readers/flat_mutation_reader_v2.hh"
 #include "mutation_fragment_v2.hh"
 #include "query-request.hh"
@@ -20,7 +21,7 @@
 
 namespace db::index {
 
-class built_indexes_virtual_reader {
+class built_indexes_virtual_reader : public db::virtual_table {
     replica::database& _db;
 
     struct built_indexes_reader : flat_mutation_reader_v2::impl {
@@ -34,8 +35,8 @@ class built_indexes_virtual_reader {
         // the backing materialized-view name (e.g., xyz_index).
         static clustering_key_prefix index_name_to_view_name(
                 const clustering_key_prefix& c,
-                const schema& built_views_schema,
-                const schema& built_indexes_schema)
+                const ::schema& built_views_schema,
+                const ::schema& built_indexes_schema)
         {
             sstring index_name = value_cast<sstring>(utf8_type->deserialize(*c.begin(built_indexes_schema)));
             sstring view_name = ::secondary_index::index_table_name(index_name);
@@ -46,8 +47,8 @@ class built_indexes_virtual_reader {
         // abc..xyz) to a range of backing view names (abc_index..xyz_index).
         static query::clustering_range index_name_range_to_view_name_range(
                 const query::clustering_range& range,
-                const schema& built_views_schema,
-                const schema& built_indexes_schema)
+                const ::schema& built_views_schema,
+                const ::schema& built_indexes_schema)
         {
             bool singular = range.is_singular();
             auto start = range.start();
@@ -71,8 +72,8 @@ class built_indexes_virtual_reader {
         // index_table_name().
         static query::partition_slice index_slice_to_view_slice(
                 const query::partition_slice& slice,
-                const schema& built_views_schema,
-                const schema& built_indexes_schema)
+                const ::schema& built_views_schema,
+                const ::schema& built_indexes_schema)
         {
             // Most of the slice - such as options and which columns to read -
             // should be copied unchanged. Just the clustering row ranges need
@@ -209,10 +210,11 @@ class built_indexes_virtual_reader {
 
 public:
     built_indexes_virtual_reader(replica::database& db)
-            : _db(db) {
+            : db::virtual_table(db::system_keyspace::built_indexes()), _db(db) {
     }
 
-    flat_mutation_reader_v2 operator()(
+    mutation_source as_mutation_source() override {
+        return mutation_source([db = &_db] (
             schema_ptr s,
             reader_permit permit,
             const dht::partition_range& range,
@@ -222,16 +224,17 @@ public:
             streamed_mutation::forwarding fwd,
             mutation_reader::forwarding fwd_mr) {
         return make_flat_mutation_reader_v2<built_indexes_reader>(
-                _db,
+                *db,
                 std::move(s),
                 std::move(permit),
-                _db.find_column_family(s->ks_name(), system_keyspace::v3::BUILT_VIEWS),
+                db->find_column_family(s->ks_name(), system_keyspace::v3::BUILT_VIEWS),
                 range,
                 slice,
                 pc,
                 std::move(trace_state),
                 fwd,
                 fwd_mr);
+        });
     }
 };
 

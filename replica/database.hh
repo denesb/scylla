@@ -69,6 +69,7 @@
 #include "db/rate_limiter.hh"
 #include "db/per_partition_rate_limit_info.hh"
 #include "db/operation_type.hh"
+#include "db/virtual_table.hh"
 
 class cell_locker;
 class cell_locker_stats;
@@ -609,8 +610,7 @@ private:
     // Called on schema change.
     void update_optimized_twcs_queries_flag();
 private:
-    mutation_source_opt _virtual_reader;
-    std::optional<noncopyable_function<future<>(const frozen_mutation&)>> _virtual_writer;
+    std::unique_ptr<db::virtual_table> _virtual_table; // when not null, this is a virtual table
 
     // Creates a mutation reader which covers given sstables.
     // Caller needs to ensure that column_family remains live (FIXME: relax this).
@@ -728,12 +728,8 @@ public:
     mutation_source as_mutation_source() const;
     mutation_source as_mutation_source_excluding(std::vector<sstables::shared_sstable>& sst) const;
 
-    void set_virtual_reader(mutation_source virtual_reader) {
-        _virtual_reader = std::move(virtual_reader);
-    }
-
-    void set_virtual_writer(noncopyable_function<future<>(const frozen_mutation&)> writer) {
-        _virtual_writer.emplace(std::move(writer));
+    void set_virtual_table(std::unique_ptr<db::virtual_table> tbl) {
+        _virtual_table = std::move(tbl);
     }
 
     // Queries can be satisfied from multiple data sources, so they are returned
