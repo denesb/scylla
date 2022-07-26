@@ -844,10 +844,7 @@ public:
     stop_iteration consume_end_of_partition()  { return _builder.consume_end_of_partition(); }
     result_type consume_end_of_stream() {
         _builder.consume_end_of_stream();
-        if (_compaction_state.are_limits_reached() || _res_builder->is_short_read()) {
-            return _res_builder->build(_compaction_state.current_full_position());
-        }
-        return _res_builder->build();
+        return _res_builder->build(_compaction_state.current_full_position());
     }
 };
 

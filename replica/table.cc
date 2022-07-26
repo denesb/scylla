@@ -2124,6 +2124,7 @@ table::query(schema_ptr s,
         querier_opt = std::move(*saved_querier);
     }
 
+    std::optional<full_position> last_pos;
     while (!qs.done()) {
         auto&& range = *qs.current_partition_range++;
 
@@ -2136,6 +2137,7 @@ table::query(schema_ptr s,
         std::exception_ptr ex;
       try {
         co_await q.consume_page(query_result_builder(*s, qs.builder), qs.remaining_rows(), qs.remaining_partitions(), qs.cmd.timestamp, trace_state);
+        last_pos = q.current_position();
       } catch (...) {
         ex = std::current_exception();
       }
@@ -2146,11 +2148,6 @@ table::query(schema_ptr s,
         if (ex) {
             co_return coroutine::exception(std::move(ex));
         }
-    }
-
-    std::optional<full_position> last_pos;
-    if (querier_opt && querier_opt->current_position()) {
-        last_pos.emplace(*querier_opt->current_position());
     }
 
     if (!saved_querier || (querier_opt && !querier_opt->are_limits_reached() && !qs.builder.is_short_read())) {
