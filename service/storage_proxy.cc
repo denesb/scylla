@@ -3095,6 +3095,15 @@ public:
         auto& first = *_digest_results.begin();
         return std::find_if(_digest_results.begin() + 1, _digest_results.end(), [&first] (const digest_and_last_pos& digest) { return digest.digest != first.digest; }) == _digest_results.end();
     }
+    const std::optional<full_position>& min_position() const {
+        return std::min_element(_digest_results.begin(), _digest_results.end(), [this] (const digest_and_last_pos& a, const digest_and_last_pos& b) {
+            // last_pos can be disengaged when there are not results whatsoever
+            if (!a.last_pos || !b.last_pos) {
+                return bool(a.last_pos) < bool(b.last_pos);
+            }
+            return full_position::cmp(*_schema, *a.last_pos, *b.last_pos) < 0;
+        })->last_pos;
+    }
     bool waiting_for(gms::inet_address ep) {
         return db::is_datacenter_local(_cl) ? fbu::is_me(ep) || db::is_local(ep) : true;
     }
@@ -3994,6 +4003,13 @@ public:
                 auto&& [result, digests_match] = res.value();
 
                 if (digests_match) {
+                    if (exec->_proxy->features().empty_replica_pages) {
+                        auto& mp = digest_resolver->min_position();
+                        auto& lp = result->last_position();
+                        if (!mp || bool(lp) < bool(mp) || full_position::cmp(*exec->_schema, *mp, *lp) < 0) {
+                            result->set_last_position(mp);
+                        }
+                    }
                     exec->_result_promise.set_value(std::move(result));
                     if (exec->_block_for < exec->_targets.size()) { // if there are more targets then needed for cl, check digest in background
                         background_repair_check = true;
