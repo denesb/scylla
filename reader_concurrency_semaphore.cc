@@ -301,6 +301,14 @@ public:
         return _semaphore.do_wait_admission(shared_from_this());
     }
 
+    future<> wait_admission(size_t memory) {
+        if (_base_resources_consumed) {
+            return make_ready_future<>();
+        }
+        _base_resources = reader_resources{1, memory};
+        return _semaphore.do_wait_admission(shared_from_this());
+    }
+
     db::timeout_clock::time_point timeout() const noexcept {
         return _timeout;
     }
@@ -362,6 +370,10 @@ reader_concurrency_semaphore& reader_permit::semaphore() {
 
 future<> reader_permit::maybe_wait_readmission() {
     return _impl->maybe_wait_readmission();
+}
+
+future<> reader_permit::wait_admission(size_t memory) {
+    return _impl->wait_admission(memory);
 }
 
 void reader_permit::consume(reader_resources res) {

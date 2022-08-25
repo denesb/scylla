@@ -136,6 +136,13 @@ public:
 
     future<> maybe_wait_readmission();
 
+    // Upgrades a permit created via make_tracking_only_permit() to one akin to
+    // one created via obtain_reader_permit(). Use when at the point of creating
+    // a permit it is not known whether admission is necessary or not. In all
+    // other cases prefer using obtain_reader_permit().
+    // If the permit is already admitted, returns immediately.
+    future<> wait_admission(size_t memory);
+
     void consume(reader_resources res);
 
     void signal(reader_resources res);
