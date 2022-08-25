@@ -337,6 +337,7 @@ using is_local_reader = bool_class<class is_local_reader_tag>;
 
 private:
     schema_ptr _schema;
+    replica::table& _tbl;
     reader_permit _permit;
     dht::partition_range _range;
     // Used to find the range that repair master will work on
@@ -367,14 +368,21 @@ public:
             uint64_t seed,
             is_local_reader local_reader)
             : _schema(s)
+            , _tbl(cf)
             , _permit(std::move(permit))
             , _range(dht::to_partition_range(range))
             , _sharder(remote_sharder, range, remote_shard)
             , _seed(seed)
             , _local_read_op(local_reader ? std::optional(cf.read_in_progress()) : std::nullopt)
             , _reader(nullptr) {
-        if (local_reader) {
-            auto ms = mutation_source([&cf] (
+    }
+
+    future<> init(seastar::sharded<replica::database>& db) {
+        if (_local_read_op) {
+          auto timeout = db::timeout_clock::now() + std::chrono::minutes(5);
+          _permit.set_timeout(timeout);
+          return _permit.wait_admission(_tbl.estimate_read_memory_cost()).then([this] {
+            auto ms = mutation_source([this] (
                         schema_ptr s,
                         reader_permit permit,
                         const dht::partition_range& pr,
@@ -383,7 +391,7 @@ public:
                         tracing::trace_state_ptr,
                         streamed_mutation::forwarding,
                         mutation_reader::forwarding fwd_mr) {
-                return cf.make_streaming_reader(std::move(s), std::move(permit), pr, ps, fwd_mr);
+                return _tbl.make_streaming_reader(std::move(s), std::move(permit), pr, ps, fwd_mr);
             });
             std::tie(_reader, _reader_handle) = make_manually_paused_evictable_reader(
                     std::move(ms),
@@ -394,11 +402,8 @@ public:
                     service::get_local_streaming_priority(),
                     {},
                     mutation_reader::forwarding::no);
+          });
         } else {
-            // We can't have two permits with count resource for 1 repair.
-            // So we release the one on _permit so the only one is the one the
-            // shard reader will obtain.
-            _permit.release_base_resources();
             _reader = downgrade_to_v1(make_multishard_streaming_reader(db, _schema, _permit, [this] {
                 auto shard_range = _sharder.next();
                 if (shard_range) {
@@ -406,6 +411,7 @@ public:
                 }
                 return std::optional<dht::partition_range>();
             }));
+            return make_ready_future<>();
         }
     }
 
@@ -792,6 +798,10 @@ public:
             for (auto& node : all_live_peer_nodes) {
                 _all_node_states.push_back(repair_node_state(node));
             }
+    }
+
+    future<> init() {
+        return _repair_reader.init(_db);
     }
 
 public:
@@ -2766,7 +2776,7 @@ public:
             rlogger.trace("repair[{}]: Finished to get memory budget, wanted={}, available={}, max_repair_memory={}",
                     _ri.id.uuid, wanted, mem_sem.current(), max);
 
-            auto permit = _ri.db.local().obtain_reader_permit(_cf, "repair-meta", db::no_timeout).get0();
+            auto permit = _ri.db.local().get_reader_concurrency_semaphore().make_tracking_only_permit(s.get(), "repair-meta", db::no_timeout);
 
             repair_meta master(_ri.rs,
                     _cf,
@@ -2783,6 +2793,8 @@ public:
                     _all_live_peer_nodes,
                     _all_live_peer_nodes.size(),
                     this);
+
+            master.init().get();
             auto auto_stop_master = defer([&master] {
                 master.stop().handle_exception([] (std::exception_ptr ep) {
                     rlogger.warn("Failed auto-stopping Row Level Repair (Master): {}. Ignored.", ep);
@@ -3090,19 +3102,7 @@ repair_service::insert_repair_meta(
             reason] (schema_ptr s) {
         auto& db = get_db();
         auto& cf = db.local().find_column_family(s->id());
-        return db.local().obtain_reader_permit(cf, "repair-meta", db::no_timeout).then([s = std::move(s),
-                &db,
-                &cf,
-                this,
-                from,
-                repair_meta_id,
-                range,
-                algo,
-                max_row_buf_size,
-                seed,
-                master_node_shard_config,
-                schema_version,
-                reason] (reader_permit permit) mutable {
+        auto permit = db.local().get_reader_concurrency_semaphore().make_tracking_only_permit(cf.schema().get(), "repair-meta", db::no_timeout);
         node_repair_meta_id id{from, repair_meta_id};
         auto rm = make_shared<repair_meta>(*this,
                 cf,
@@ -3117,6 +3117,7 @@ repair_service::insert_repair_meta(
                 reason,
                 std::move(master_node_shard_config),
                 inet_address_vector_replica_set{from});
+        return rm->init().then([this, rm, id] {
         rm->set_repair_state_for_local_node(repair_state::row_level_start_started);
         bool insertion = repair_meta_map().emplace(id, rm).second;
         if (!insertion) {
