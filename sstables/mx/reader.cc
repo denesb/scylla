@@ -1802,9 +1802,7 @@ flat_mutation_reader_v2 make_crawling_reader(
             std::move(trace_state), monitor);
 }
 
-} // namespace mx
-
-void mx::mp_row_consumer_reader_mx::on_next_partition(dht::decorated_key key, tombstone tomb) {
+void mp_row_consumer_reader_mx::on_next_partition(dht::decorated_key key, tombstone tomb) {
     _partition_finished = false;
     _before_partition = false;
     _end_of_stream = false;
@@ -1814,4 +1812,5 @@ void mx::mp_row_consumer_reader_mx::on_next_partition(dht::decorated_key key, to
     _sst->get_stats().on_partition_read();
 }
 
+} // namespace mx
 } // namespace sstables
