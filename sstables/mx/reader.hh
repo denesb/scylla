@@ -56,5 +56,14 @@ flat_mutation_reader_v2 make_crawling_reader(
         tracing::trace_state_ptr trace_state,
         read_monitor& monitor);
 
+// Validate the content of the sstable on the parser-consumer level, cross
+// checking the content with the index.
+future<uint64_t> validate(
+        shared_sstable sstable,
+        reader_permit permit,
+        const io_priority_class& pc,
+        abort_source& abort,
+        std::function<void(sstring)> error_handler);
+
 } // namespace mx
 } // namespace sstables
