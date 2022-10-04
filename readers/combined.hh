@@ -35,6 +35,9 @@ public:
 // Creates a mutation reader which combines data return by supplied readers.
 // Returns mutation of the same schema only when all readers return mutations
 // of the same schema.
+// Vector variant handles empty vector and vector of 1:
+// * If vector is empty it returns an empty reader
+// * If vector has a single reader, it returns that reader
 flat_mutation_reader_v2 make_combined_reader(schema_ptr schema,
         reader_permit permit,
         std::vector<flat_mutation_reader_v2>,
