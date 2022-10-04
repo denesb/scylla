@@ -1096,16 +1096,6 @@ compound_sstable_set::create_single_key_sstable_reader(
         mutation_reader::forwarding fwd_mr) const {
     auto sets = _sets;
     auto it = std::partition(sets.begin(), sets.end(), [] (const auto& set) { return !set->all()->empty(); });
-    auto non_empty_set_count = std::distance(sets.begin(), it);
-
-    if (!non_empty_set_count) {
-        return make_empty_flat_reader_v2(schema, permit);
-    }
-    // optimize for common case where only 1 set is populated, avoiding the expensive combined reader
-    if (non_empty_set_count == 1) {
-        const auto& non_empty_set = *std::begin(sets);
-        return non_empty_set->create_single_key_sstable_reader(cf, std::move(schema), std::move(permit), sstable_histogram, pr, slice, pc, trace_state, fwd, fwd_mr);
-    }
 
     auto readers = boost::copy_range<std::vector<flat_mutation_reader_v2>>(
         boost::make_iterator_range(sets.begin(), it)
