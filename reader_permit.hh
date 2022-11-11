@@ -151,6 +151,10 @@ public:
 
     sstring description() const;
 
+    const abort_source& get_abort_source() const;
+
+    abort_source& get_abort_source();
+
     db::timeout_clock::time_point timeout() const noexcept;
 
     void set_timeout(db::timeout_clock::time_point timeout) noexcept;

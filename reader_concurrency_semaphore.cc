@@ -80,7 +80,10 @@ class reader_permit::impl
     bool _marked_as_used = false;
     uint64_t _blocked_branches = 0;
     bool _marked_as_blocked = false;
-    db::timeout_clock::time_point _timeout;
+    timer<db::timeout_clock> _timeout_timer;
+    abort_source _abort_source;
+    // We need a dummy subscription, otherwise abort source triggers a real abort
+    optimized_optional<abort_source::subscription> _dummy_subscription;
     query::max_result_size _max_result_size{query::result_memory_limiter::unlimited_result_size};
 
 private:
@@ -116,6 +119,10 @@ private:
         }
     }
 
+    void on_timeout() {
+        _abort_source.request_abort_ex(std::make_exception_ptr(timed_out_error{}));
+    }
+
 public:
     struct value_tag {};
 
@@ -124,8 +131,10 @@ public:
         , _schema(schema)
         , _op_name_view(op_name)
         , _base_resources(base_resources)
-        , _timeout(timeout)
+        , _timeout_timer([this] { on_timeout(); })
+        , _dummy_subscription(_abort_source.subscribe([] () noexcept {}))
     {
+        set_timeout(timeout);
         _semaphore.on_permit_created(*this);
     }
     impl(reader_concurrency_semaphore& semaphore, const schema* const schema, sstring&& op_name, reader_resources base_resources, db::timeout_clock::time_point timeout)
@@ -134,8 +143,10 @@ public:
         , _op_name(std::move(op_name))
         , _op_name_view(_op_name)
         , _base_resources(base_resources)
-        , _timeout(timeout)
+        , _timeout_timer([this] { on_timeout(); })
+        , _dummy_subscription(_abort_source.subscribe([] () noexcept {}))
     {
+        set_timeout(timeout);
         _semaphore.on_permit_created(*this);
     }
     ~impl() {
@@ -304,19 +315,31 @@ public:
     }
 
     db::timeout_clock::time_point timeout() const noexcept {
-        return _timeout;
+        return _timeout_timer.armed() ? _timeout_timer.get_timeout() : db::no_timeout;
     }
 
     void set_timeout(db::timeout_clock::time_point timeout) noexcept {
         using namespace std::chrono_literals;
-        if (_timeout != db::no_timeout && timeout < _timeout) {
-            if (_timeout - timeout > 100ms) {
+        const auto prev_timeout = this->timeout();
+        if (prev_timeout != db::no_timeout && timeout < prev_timeout) {
+            if (prev_timeout - timeout > 100ms) {
                 rcslog.warn("Detected timeout skew of {}ms, please check time skew between nodes in the cluster.  backtrace: {}",
-                        std::chrono::duration_cast<std::chrono::milliseconds>(_timeout - timeout).count(),
+                        std::chrono::duration_cast<std::chrono::milliseconds>(prev_timeout - timeout).count(),
                         current_backtrace());
             }
         }
-        _timeout = timeout;
+        _timeout_timer.cancel();
+        if (timeout != db::no_timeout) {
+            _timeout_timer.arm(timeout);
+        }
+    }
+
+    const abort_source& get_abort_source() const {
+        return _abort_source;
+    }
+
+    abort_source& get_abort_source() {
+        return _abort_source;
     }
 
     query::max_result_size max_result_size() const {
@@ -416,6 +439,14 @@ void reader_permit::mark_blocked() noexcept {
 
 void reader_permit::mark_unblocked() noexcept {
     _impl->mark_unblocked();
+}
+
+const abort_source& reader_permit::get_abort_source() const {
+    return _impl->get_abort_source();
+}
+
+abort_source& reader_permit::get_abort_source() {
+    return _impl->get_abort_source();
 }
 
 db::timeout_clock::time_point reader_permit::timeout() const noexcept {
