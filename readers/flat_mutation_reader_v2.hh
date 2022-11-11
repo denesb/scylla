@@ -378,10 +378,8 @@ public:
             }
         }
 
-        void maybe_timed_out() {
-            if (db::timeout_clock::now() >= timeout()) {
-                throw timed_out_error();
-            }
+        void check_aborted() const {
+            return _permit.get_abort_source().check();
         }
 
         db::timeout_clock::time_point timeout() const noexcept {
