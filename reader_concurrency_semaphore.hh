@@ -481,9 +481,7 @@ public:
         return _initial_resources - _resources;
     }
 
-    void consume(resources r) {
-        _resources -= r;
-    }
+    void consume(resources r);
 
     void signal(const resources& r) noexcept;
 
