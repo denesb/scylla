@@ -629,6 +629,10 @@ future<> reader_concurrency_semaphore::execution_loop() noexcept {
     }
 }
 
+void reader_concurrency_semaphore::consume(resources r) {
+    _resources -= r;
+}
+
 void reader_concurrency_semaphore::signal(const resources& r) noexcept {
     _resources += r;
     maybe_admit_waiters();
