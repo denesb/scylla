@@ -15,6 +15,7 @@
 #include <seastar/core/expiring_fifo.hh>
 #include "reader_permit.hh"
 #include "readers/flat_mutation_reader_v2.hh"
+#include "utils/updateable_value.hh"
 
 namespace bi = boost::intrusive;
 
@@ -63,6 +64,8 @@ public:
         uint64_t permit_based_evictions = 0;
         // The number of inactive reads evicted due to expiring.
         uint64_t time_based_evictions = 0;
+        // Number of permits aborted due to OOM
+        uint64_t oom_kills = 0;
         // The number of inactive reads currently registered.
         uint64_t inactive_reads = 0;
         // Total number of successful reads executed through this semaphore.
@@ -178,6 +181,7 @@ private:
 
     sstring _name;
     size_t _max_queue_length = std::numeric_limits<size_t>::max();
+    utils::updateable_value<uint32_t> _oom_kill_limit_multiply_threshold;
     inactive_reads_type _inactive_reads;
     stats _stats;
     permit_list_type _permit_list;
@@ -239,7 +243,8 @@ public:
     reader_concurrency_semaphore(int count,
             ssize_t memory,
             sstring name,
-            size_t max_queue_length);
+            size_t max_queue_length,
+            utils::updateable_value<uint32_t> oom_kill_limit_multiply_threshold);
 
     /// Create a semaphore with practically unlimited count and memory.
     ///
@@ -254,8 +259,9 @@ public:
     reader_concurrency_semaphore(for_tests, sstring name,
             int count = std::numeric_limits<int>::max(),
             ssize_t memory = std::numeric_limits<ssize_t>::max(),
-            size_t max_queue_length = std::numeric_limits<size_t>::max())
-        : reader_concurrency_semaphore(count, memory, std::move(name), max_queue_length)
+            size_t max_queue_length = std::numeric_limits<size_t>::max(),
+            utils::updateable_value<uint32_t> oom_kill_limit_multiply_threshold = utils::updateable_value(std::numeric_limits<uint32_t>::max()))
+        : reader_concurrency_semaphore(count, memory, std::move(name), max_queue_length, std::move(oom_kill_limit_multiply_threshold))
     {}
 
     virtual ~reader_concurrency_semaphore();
@@ -419,6 +425,7 @@ public:
         return _resources;
     }
 
+    /// \throws std::bad_alloc if memory consumed is oom_kill_limit_multiply_threshold more than the memory limit.
     void consume(resources r);
 
     void signal(const resources& r) noexcept;
