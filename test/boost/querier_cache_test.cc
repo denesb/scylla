@@ -614,6 +614,8 @@ SEASTAR_THREAD_TEST_CASE(test_resources_based_cache_eviction) {
 
     db_cfg.enable_cache(false);
     db_cfg.enable_commitlog(false);
+    db_cfg.reader_concurrency_semaphore_serialize_limit_multiplier.set(0);
+    db_cfg.reader_concurrency_semaphore_kill_limit_multiplier.set(0);
 
     do_with_cql_env_thread([] (cql_test_env& env) {
         using namespace std::chrono_literals;
