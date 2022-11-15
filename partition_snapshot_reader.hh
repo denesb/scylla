@@ -449,6 +449,7 @@ private:
 
     void do_fill_buffer() {
         while (!is_end_of_stream() && !is_buffer_full()) {
+            check_aborted();
             auto mfopt = read_next();
             if (mfopt) {
                 emplace_mutation_fragment(std::move(*mfopt));
