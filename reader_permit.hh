@@ -79,7 +79,8 @@ public:
     class blocked_guard;
 
     enum class state {
-        waiting, // waiting for admission
+        waiting_for_admission,
+        waiting_for_memory,
         active_unused,
         active_used,
         active_blocked,
@@ -100,8 +101,11 @@ private:
     explicit reader_permit(reader_concurrency_semaphore& semaphore, const schema* const schema, sstring&& op_name,
             reader_resources base_resources, db::timeout_clock::time_point timeout);
 
-    void on_waiting();
+    void on_waiting_for_admission();
+    void on_waiting_for_memory(future<> f);
     void on_admission();
+
+    future<> get_memory_future();
 
     void mark_used() noexcept;
 
@@ -142,6 +146,8 @@ public:
     resource_units consume_memory(size_t memory = 0);
 
     resource_units consume_resources(reader_resources res);
+
+    future<resource_units> request_memory(size_t memory);
 
     reader_resources consumed_resources() const;
 

@@ -2028,13 +2028,13 @@ class scylla_memory(gdb.Command):
                 .format(
                         user_sst_rd_count=int(gdb.parse_and_eval(f'{database_typename}::max_count_concurrent_reads')) - int(db['_read_concurrency_sem']['_resources']['count']),
                         user_sst_rd_max_count=int(gdb.parse_and_eval(f'{database_typename}::max_count_concurrent_reads')),
-                        user_sst_rd_queued=int(db['_read_concurrency_sem']['_wait_list']['_size']),
+                        user_sst_rd_queued=int(db['_read_concurrency_sem']['_wait_list']['_admission_queue']['_size']),
                         streaming_sst_rd_count=int(gdb.parse_and_eval(f'{database_typename}::max_count_streaming_concurrent_reads')) - int(db['_streaming_concurrency_sem']['_resources']['count']),
                         streaming_sst_rd_max_count=int(gdb.parse_and_eval(f'{database_typename}::max_count_streaming_concurrent_reads')),
-                        streaming_sst_rd_queued=int(db['_streaming_concurrency_sem']['_wait_list']['_size']),
+                        streaming_sst_rd_queued=int(db['_streaming_concurrency_sem']['_wait_list']['_admission_queue']['_size']),
                         system_sst_rd_count=int(gdb.parse_and_eval(f'{database_typename}::max_count_system_concurrent_reads')) - int(db['_system_read_concurrency_sem']['_resources']['count']),
                         system_sst_rd_max_count=int(gdb.parse_and_eval(f'{database_typename}::max_count_system_concurrent_reads')),
-                        system_sst_rd_queued=int(db['_system_read_concurrency_sem']['_wait_list']['_size']),
+                        system_sst_rd_queued=int(db['_system_read_concurrency_sem']['_wait_list']['_admission_queue']['_size']),
                         **mem_stats))
 
         gdb.write('  Execution Stages:\n')
@@ -5093,7 +5093,7 @@ class scylla_read_stats(gdb.Command):
                 semaphore_name,
                 initial_count - int(semaphore['_resources']['count']), initial_count,
                 initial_memory - int(semaphore['_resources']['memory']), initial_memory,
-                int(semaphore['_wait_list']['_size']), inactive_read_count))
+                int(semaphore['_wait_list']['_admission_queue']['_size']), inactive_read_count))
 
         gdb.write("{:>10} {:5} {:>12} {}\n".format('permits', 'count', 'memory', 'table/description/state'))
 
