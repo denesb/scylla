@@ -64,6 +64,8 @@ public:
         uint64_t permit_based_evictions = 0;
         // The number of inactive reads evicted due to expiring.
         uint64_t time_based_evictions = 0;
+        // Number of permits aborted due to OOM
+        uint64_t oom_kills = 0;
         // The number of inactive reads currently registered.
         uint64_t inactive_reads = 0;
         // Total number of successful reads executed through this semaphore.
@@ -283,6 +285,7 @@ private:
     future<> execution_loop() noexcept;
 
     uint64_t get_serialize_limit() const;
+    uint64_t get_kill_limit() const;
 
 public:
     struct no_limits { };
@@ -481,6 +484,7 @@ public:
         return _initial_resources - _resources;
     }
 
+    /// \throws std::bad_alloc if memory consumed is oom_kill_limit_multiply_threshold more than the memory limit.
     void consume(resources r);
 
     void signal(const resources& r) noexcept;

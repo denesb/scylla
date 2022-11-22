@@ -716,7 +716,18 @@ uint64_t reader_concurrency_semaphore::get_serialize_limit() const {
     return _initial_resources.memory * _serialize_limit_multiplier();
 }
 
+uint64_t reader_concurrency_semaphore::get_kill_limit() const {
+    if (!_kill_limit_multiplier() || _kill_limit_multiplier() == std::numeric_limits<uint32_t>::max() || is_unlimited()) {
+        return std::numeric_limits<uint64_t>::max();
+    }
+    return _initial_resources.memory * _kill_limit_multiplier();
+}
+
 void reader_concurrency_semaphore::consume(resources r) {
+    if ((consumed_resources().memory + r.memory) >= get_kill_limit()) {
+        ++_stats.oom_kills;
+        throw std::bad_alloc();
+    }
     _resources -= r;
 }
 
@@ -989,6 +1000,9 @@ void reader_concurrency_semaphore::evict_readers_in_background() {
 reader_concurrency_semaphore::can_admit
 reader_concurrency_semaphore::can_admit_read(const reader_permit& permit) const noexcept {
     const auto consumed_memory = consumed_resources().memory;
+    if (consumed_memory >= get_kill_limit()) {
+        return can_admit::no;
+    }
     if (consumed_memory >= get_serialize_limit()) {
         if (_blessed_permit) {
             // blessed permit is never in the wait list
