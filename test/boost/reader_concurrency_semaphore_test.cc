@@ -13,6 +13,7 @@
 #include "test/lib/random_schema.hh"
 
 #include <seastar/core/coroutine.hh>
+#include <seastar/coroutine/parallel_for_each.hh>
 #include <seastar/testing/test_case.hh>
 #include <seastar/testing/thread_test_case.hh>
 #include <boost/test/unit_test.hpp>
@@ -1072,4 +1073,240 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_set_resources) {
     BOOST_REQUIRE_EQUAL(semaphore.available_resources(), reader_resources(1, 1024));
     BOOST_REQUIRE_EQUAL(semaphore.initial_resources(), reader_resources(4, 4 * 1024));
     permit3_fut.get();
+}
+
+namespace {
+
+class allocating_reader {
+    static constexpr size_t admission_cost = 1024;
+    static constexpr size_t buf_size = 1024;
+    static constexpr size_t read_iterations = 4;
+public:
+    enum class state {
+        wait_for_admission,
+        request_memory,
+        wait_for_memory,
+        release_memory,
+        done,
+    };
+    const char* to_string(state s) {
+        switch (s) {
+            case state::wait_for_admission: return "state::wait_for_admission";
+            case state::request_memory: return "state::request_memory";
+            case state::wait_for_memory: return "state::wait_for_memory";
+            case state::release_memory: return "state::release_memory";
+            case state::done: return "state::done";
+        }
+    };
+private:
+    reader_concurrency_semaphore& _sem;
+    state _state = state::wait_for_admission;
+    std::optional<future<>> _admission_fut;
+    std::optional<reader_permit> _permit;
+    std::list<reader_permit::resource_units> _current_resource_units;
+    std::list<future<reader_permit::resource_units>> _pending_resource_units;
+    unsigned _read_count = 0;
+    bool _success = true;
+public:
+    explicit allocating_reader(reader_concurrency_semaphore& sem) : _sem(sem) {
+        testlog.debug("[{}] allocating_reader created", fmt::ptr(this));
+        _admission_fut = sem.obtain_permit(nullptr, "reader", admission_cost, db::no_timeout).then_wrapped([this] (future<reader_permit>&& permit_fut) {
+            try {
+                _permit = std::move(permit_fut.get());
+                _state = state::request_memory;
+            } catch (...) {
+                _state = state::done;
+                _success = false;
+            }
+        });
+    }
+    ~allocating_reader() { }
+    void operator()() {
+        testlog.debug("[{}|p:0x{:x}] allocating_reader(): _state={}, _permit.state={}, _permit.resources={}, _sem.resources={}",
+                fmt::ptr(this),
+                _permit ? _permit->id() : 0,
+                to_string(_state),
+                _permit ? format("{}", _permit->get_state()) : "N/A",
+                _permit ? _permit->consumed_resources() : reader_resources{},
+                _sem.consumed_resources());
+        switch (_state) {
+            case state::wait_for_admission:
+                break;
+            case state::request_memory:
+            {
+                size_t n = 0;
+                if (!_read_count) {
+                    n = 1;
+                } else {
+                    n = tests::random::get_int(1, 8);
+                }
+                ++_read_count;
+                try {
+                    for (size_t i = 0; i < n; ++i) {
+                        _pending_resource_units.emplace_back(_permit->request_memory(buf_size));
+                    }
+                } catch (std::bad_alloc&) {
+                    testlog.debug("[{}|p:{}] read killed", fmt::ptr(this), _permit ? _permit->id() : 0);
+                    _read_count = read_iterations;
+                }
+                _state = state::wait_for_memory;
+                break;
+            }
+            case state::wait_for_memory:
+                for (auto it = _pending_resource_units.begin(); it != _pending_resource_units.end();) {
+                    if (it->available()) {
+                        try {
+                            _current_resource_units.push_back(it->get());
+                        } catch (std::bad_alloc&) {
+                            testlog.debug("[{}|p:{}] read killed", fmt::ptr(this), _permit ? _permit->id() : 0);
+                            _read_count = read_iterations;
+                        }
+                        it = _pending_resource_units.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+                if (_pending_resource_units.empty()) {
+                    _state = state::release_memory;
+                }
+                break;
+            case state::release_memory:
+                if (_current_resource_units.empty()) {
+                    if (_read_count == read_iterations) {
+                        _state = state::done;
+                    } else if (!tests::random::get_int(0, 7)) {
+                        _state = state::done;
+                    } else {
+                        _state = state::request_memory;
+                    }
+                } else {
+                    _current_resource_units.pop_front();
+                }
+                break;
+            case state::done:
+                _permit.reset();
+                break;
+        }
+    }
+    bool done() const { return _state == state::done; }
+    bool success() const { return _success; }
+    reader_resources resources() const { return _permit ? _permit->consumed_resources() : reader_resources{}; }
+    future<> close() {
+        if (_admission_fut) {
+            co_await std::move(_admission_fut).value();
+        }
+        co_await coroutine::parallel_for_each(_pending_resource_units.begin(), _pending_resource_units.end(), [this] (future<reader_permit::resource_units>& fut) {
+            return std::move(fut).then_wrapped([] (future<reader_permit::resource_units>&& fut) {
+                try {
+                    fut.get();
+                } catch (...) {
+                }
+            });
+        });
+        _current_resource_units.clear();
+        _permit.reset();
+    }
+};
+
+} //anonymous namespace
+
+SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_memory_limit) {
+    const auto initial_resources = reader_concurrency_semaphore::resources{4, 4 * 1024};
+    const auto serialize_multiplier = 2;
+    const auto kill_multiplier = 3;
+    reader_concurrency_semaphore semaphore(initial_resources.count, initial_resources.memory, get_name(), 100,
+            utils::updateable_value<uint32_t>(serialize_multiplier), utils::updateable_value<uint32_t>(kill_multiplier));
+    auto stop_sem = deferred_stop(semaphore);
+
+    const size_t reader_count_target = 6;
+    const size_t iteration_limit = 100;
+
+    std::list<allocating_reader> readers;
+
+    auto dump_stats = [&] (log_level lvl, bool with_diag = false) {
+        const auto& stats = semaphore.get_stats();
+        testlog.log(lvl, "stats = {{\n"
+            "\t.permit_based_evictions = {}\n"
+            "\t.time_based_evictions = {}\n"
+            "\t.oom_kills = {}\n"
+            "\t.inactive_reads = {}\n"
+            "\t.total_successful_reads = {}\n"
+            "\t.total_failed_reads = {}\n"
+            "\t.total_reads_shed_due_to_overload = {}\n"
+            "\t.reads_admitted = {}\n"
+            "\t.reads_enqueued_for_admission = {}\n"
+            "\t.reads_enqueued_for_memory = {}\n"
+            "\t.total_permits = {}\n"
+            "\t.current_permits = {}\n"
+            "\t.used_permits = {}\n"
+            "\t.blocked_permits = {}\n"
+            "}}{}",
+            stats.permit_based_evictions,
+            stats.time_based_evictions,
+            stats.oom_kills,
+            stats.inactive_reads,
+            stats.total_successful_reads,
+            stats.total_failed_reads,
+            stats.total_reads_shed_due_to_overload,
+            stats.reads_admitted,
+            stats.reads_enqueued_for_admission,
+            stats.reads_enqueued_for_memory,
+            stats.total_permits,
+            stats.current_permits,
+            stats.used_permits,
+            stats.blocked_permits,
+            with_diag ? format("\n{}", semaphore.dump_diagnostics()) : "");
+    };
+
+    size_t i = 0;
+    bool done = false;
+    sstring error = "";
+    while (!done) {
+        testlog.debug("iteration {}", i);
+
+        for (auto& rd : readers) {
+            rd();
+            reader_resources all_permit_res;
+            semaphore.foreach_permit([&all_permit_res] (const reader_permit& p) { all_permit_res += p.consumed_resources(); });
+            if (semaphore.consumed_resources() != all_permit_res) {
+                testlog.error("resource mismatch: semaphore.consumed_resources() ({}) != sum of resources in permits ({})", semaphore.consumed_resources(), all_permit_res);
+            }
+        }
+
+        if (readers.size() < reader_count_target) {
+            readers.emplace_back(semaphore);
+        }
+        done = std::all_of(readers.begin(), readers.end(), std::mem_fn(&allocating_reader::done));
+
+        dump_stats(log_level::debug, true);
+
+        reader_resources all_permit_res;
+        semaphore.foreach_permit([&all_permit_res] (const reader_permit& p) { all_permit_res += p.consumed_resources(); });
+
+        if (semaphore.consumed_resources().memory >= (semaphore.initial_resources().memory * kill_multiplier)) {
+            error = format("kill limit failed: semaphore.consumed_resources() ({}) >= kill limit ({})", semaphore.consumed_resources().memory, (semaphore.initial_resources().memory * kill_multiplier));
+        } else if (semaphore.consumed_resources() != all_permit_res) {
+            error = format("resource mismatch: semaphore.consumed_resources() ({}) != sum of resources in permits ({})", semaphore.consumed_resources(), all_permit_res);
+        } else if (i >= iteration_limit) {
+            error = format("test failed to finish in {} iterations", iteration_limit);
+        }
+
+        if (error.empty()) {
+            ++i;
+        } else {
+            testlog.error("stopping test at iteration {}: {}", i, error);
+            done = true;
+        }
+
+        seastar::thread::yield();
+    }
+    dump_stats(log_level::info, false);
+    parallel_for_each(readers.begin(), readers.end(), [] (allocating_reader& rd) {
+        return rd.close();
+    }).get();
+    if (!error.empty()) {
+        BOOST_FAIL(error);
+    }
+    const bool all_ok = std::all_of(readers.begin(), readers.end(), std::mem_fn(&allocating_reader::success));
+    BOOST_REQUIRE(all_ok);
 }
