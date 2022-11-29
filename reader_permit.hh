@@ -169,6 +169,8 @@ public:
 
     query::max_result_size max_result_size() const;
     void set_max_result_size(query::max_result_size);
+
+    uintptr_t id() { return reinterpret_cast<uintptr_t>(_impl.get()); }
 };
 
 using reader_permit_opt = optimized_optional<reader_permit>;
