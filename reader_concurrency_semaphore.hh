@@ -519,4 +519,6 @@ public:
     void set_max_queue_length(size_t size) {
         _max_queue_length = size;
     }
+
+    void foreach_permit(noncopyable_function<void(const reader_permit&)> func);
 };
