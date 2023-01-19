@@ -28,7 +28,7 @@
 
 #include <boost/range/algorithm/sort.hpp>
 
-const sstring KEYSPACE_NAME = "multishard_mutation_query_test";
+const sstring KEYSPACE_NAME = "ks";
 
 namespace {
 
@@ -145,14 +145,14 @@ static void require_eventually_empty_caches(distributed<replica::database>& db,
 
 // Best run with SMP>=2
 SEASTAR_THREAD_TEST_CASE(test_abandoned_read) {
-    do_with_cql_env_thread([] (cql_test_env& env) -> future<> {
+    do_with_cql_env_thread([this] (cql_test_env& env) -> future<> {
         using namespace std::chrono_literals;
 
         env.db().invoke_on_all([] (replica::database& db) {
             db.set_querier_cache_entry_ttl(1s);
         }).get();
 
-        auto [s, _] = test::create_test_table(env, KEYSPACE_NAME, "test_abandoned_read");
+        auto [s, _] = test::create_test_table(env, KEYSPACE_NAME, get_name());
         (void)_;
 
         auto cmd = query::read_command(
@@ -483,14 +483,14 @@ void check_results_are_equal(std::vector<mutation>& results1, std::vector<mutati
 
 // Best run with SMP>=2
 SEASTAR_THREAD_TEST_CASE(test_read_all) {
-    do_with_cql_env_thread([] (cql_test_env& env) -> future<> {
+    do_with_cql_env_thread([this] (cql_test_env& env) -> future<> {
         using namespace std::chrono_literals;
 
         env.db().invoke_on_all([] (replica::database& db) {
             db.set_querier_cache_entry_ttl(2s);
         }).get();
 
-        auto [s, pkeys] = test::create_test_table(env, KEYSPACE_NAME, "test_read_all");
+        auto [s, pkeys] = test::create_test_table(env, KEYSPACE_NAME, get_name());
 
         // First read all partition-by-partition (not paged).
         auto results1 = read_all_partitions_one_by_one(env.db(), s, pkeys);
@@ -524,14 +524,14 @@ SEASTAR_THREAD_TEST_CASE(test_read_all) {
 
 // Best run with SMP>=2
 SEASTAR_THREAD_TEST_CASE(test_read_all_multi_range) {
-    do_with_cql_env_thread([] (cql_test_env& env) -> future<> {
+    do_with_cql_env_thread([this] (cql_test_env& env) -> future<> {
         using namespace std::chrono_literals;
 
         env.db().invoke_on_all([] (replica::database& db) {
             db.set_querier_cache_entry_ttl(2s);
         }).get();
 
-        auto [s, pkeys] = test::create_test_table(env, KEYSPACE_NAME, "test_read_all");
+        auto [s, pkeys] = test::create_test_table(env, KEYSPACE_NAME, get_name());
 
         const auto limit = std::numeric_limits<uint64_t>::max();
 
@@ -625,14 +625,14 @@ SEASTAR_THREAD_TEST_CASE(test_read_with_partition_row_limits) {
 
 // Best run with SMP>=2
 SEASTAR_THREAD_TEST_CASE(test_evict_a_shard_reader_on_each_page) {
-    do_with_cql_env_thread([] (cql_test_env& env) -> future<> {
+    do_with_cql_env_thread([this] (cql_test_env& env) -> future<> {
         using namespace std::chrono_literals;
 
         env.db().invoke_on_all([] (replica::database& db) {
             db.set_querier_cache_entry_ttl(2s);
         }).get();
 
-        auto [s, pkeys] = test::create_test_table(env, KEYSPACE_NAME, "test_evict_a_shard_reader_on_each_page");
+        auto [s, pkeys] = test::create_test_table(env, KEYSPACE_NAME, get_name());
 
         // First read all partition-by-partition (not paged).
         auto results1 = read_all_partitions_one_by_one(env.db(), s, pkeys);
