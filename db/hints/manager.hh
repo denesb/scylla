@@ -91,7 +91,7 @@ private:
 public:
     class end_point_hints_manager {
     public:
-        using key_type = gms::inet_address;
+        using key_type = const locator::node*;
 
         class sender {
             // Important: clock::now() must be noexcept.
@@ -305,7 +305,7 @@ public:
             /// \return Ready, never exceptional, future when operation is complete.
             future<> flush_maybe() noexcept;
 
-            const key_type& end_point_key() const noexcept {
+            key_type end_point_key() const noexcept {
                 return _ep_key;
             }
 
