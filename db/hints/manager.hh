@@ -498,7 +498,7 @@ public:
 
 private:
     using ep_key_type = typename end_point_hints_manager::key_type;
-    using ep_managers_map_type = std::unordered_map<ep_key_type, end_point_hints_manager>;
+    using ep_managers_map_type = std::unordered_map<const locator::node*, end_point_hints_manager>;
 
 public:
     static const std::string FILENAME_PREFIX;
@@ -525,7 +525,7 @@ private:
     ep_managers_map_type _ep_managers;
     stats _stats;
     seastar::metrics::metric_groups _metrics;
-    std::unordered_set<ep_key_type> _eps_with_pending_hints;
+    std::unordered_set<const locator::node*> _eps_with_pending_hints;
     seastar::named_semaphore _drain_lock = {1, named_semaphore_exception_factory{"drain lock"}};
 
 public:
@@ -596,7 +596,7 @@ public:
     }
 
     void add_ep_with_pending_hints(const locator::node* node) {
-        _eps_with_pending_hints.insert(node->endpoint());
+        _eps_with_pending_hints.insert(node);
     }
 
     void clear_eps_with_pending_hints() {
@@ -605,7 +605,7 @@ public:
     }
 
     bool has_ep_with_pending_hints(const locator::node* node) const {
-        return _eps_with_pending_hints.contains(node->endpoint());
+        return _eps_with_pending_hints.contains(node);
     }
 
     size_t ep_managers_size() const {
@@ -786,11 +786,11 @@ private:
 
 public:
     ep_managers_map_type::iterator find_ep_manager(const locator::node* node) noexcept {
-        return _ep_managers.find(node->endpoint());
+        return _ep_managers.find(node);
     }
 
     ep_managers_map_type::const_iterator find_ep_manager(const locator::node* node) const noexcept {
-        return _ep_managers.find(node->endpoint());
+        return _ep_managers.find(node);
     }
 
     ep_managers_map_type::iterator ep_managers_end() noexcept {
