@@ -948,7 +948,7 @@ private:
     }
 
 public:
-    json_writer(const schema& s) : _writer(s)
+    json_writer(const schema& s) : _writer(s, tools::single_sstable_output::no)
     { }
     static int null_l(lua_State* l) {
         return invoke(l, __FUNCTION__, LUA_TNIL, [] (json_writer& w) {

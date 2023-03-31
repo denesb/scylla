@@ -486,11 +486,15 @@ void mutation_fragment_json_writer::write(const range_tombstone_change& rtc) {
 }
 
 void mutation_fragment_json_writer::start_stream() {
-    _writer.StartStream();
+    if (!_single) {
+        _writer.StartStream();
+    }
 }
 
 void mutation_fragment_json_writer::start_sstable(const sstables::sstable* const sst) {
-    _writer.SstableKey(sst);
+    if (!_single) {
+        _writer.SstableKey(sst);
+    }
     _writer.StartArray();
 }
 
@@ -544,7 +548,9 @@ void mutation_fragment_json_writer::end_sstable() {
 }
 
 void mutation_fragment_json_writer::end_stream() {
-    _writer.EndStream();
+    if (!_single) {
+        _writer.EndStream();
+    }
 }
 
 } // namespace tools
@@ -554,14 +560,19 @@ namespace {
 class dumping_consumer : public sstable_consumer {
     class text_dumper : public sstable_consumer {
         const schema& _schema;
+        tools::single_sstable_output _single;
     public:
-        explicit text_dumper(const schema& s) : _schema(s) { }
+        explicit text_dumper(const schema& s, tools::single_sstable_output single) : _schema(s), _single(single) { }
         virtual future<> consume_stream_start() override {
-            fmt::print("{{stream_start}}\n");
+            if (!_single) {
+                fmt::print("{{stream_start}}\n");
+            }
             return make_ready_future<>();
         }
         virtual future<stop_iteration> consume_sstable_start(const sstables::sstable* const sst) override {
-            fmt::print("{{sstable_start{}}}\n", sst ? fmt::format(": filename {}", sst->get_filename()) : "");
+            if (!_single) {
+                fmt::print("{{sstable_start{}}}\n", sst ? fmt::format(": filename {}", sst->get_filename()) : "");
+            }
             return make_ready_future<stop_iteration>(stop_iteration::no);
         }
         virtual future<stop_iteration> consume(partition_start&& ps) override {
@@ -585,18 +596,22 @@ class dumping_consumer : public sstable_consumer {
             return make_ready_future<stop_iteration>(stop_iteration::no);
         }
         virtual future<stop_iteration> consume_sstable_end() override {
-            fmt::print("{{sstable_end}}\n");
+            if (!_single) {
+                fmt::print("{{sstable_end}}\n");
+            }
             return make_ready_future<stop_iteration>(stop_iteration::no);
         }
         virtual future<> consume_stream_end() override {
-            fmt::print("{{stream_end}}\n");
+            if (!_single) {
+                fmt::print("{{stream_end}}\n");
+            }
             return make_ready_future<>();
         }
     };
     class json_dumper : public sstable_consumer {
         tools::mutation_fragment_json_writer _writer;
     public:
-        explicit json_dumper(const schema& s) : _writer(s) {}
+        explicit json_dumper(const schema& s, tools::single_sstable_output single) : _writer(s, single) {}
         virtual future<> consume_stream_start() override {
             _writer.start_stream();
             return make_ready_future<>();
@@ -641,13 +656,13 @@ private:
 
 public:
     explicit dumping_consumer(schema_ptr s, reader_permit, const bpo::variables_map& opts) : _schema(std::move(s)) {
-        _consumer = std::make_unique<text_dumper>(*_schema);
+        const tools::single_sstable_output single(bool(opts.count("single")));
         switch (get_output_format_from_options(opts, output_format::text)) {
             case output_format::text:
-                _consumer = std::make_unique<text_dumper>(*_schema);
+                _consumer = std::make_unique<text_dumper>(*_schema, single);
                 break;
             case output_format::json:
-                _consumer = std::make_unique<json_dumper>(*_schema);
+                _consumer = std::make_unique<json_dumper>(*_schema, single);
                 break;
         }
     }
@@ -957,18 +972,27 @@ void validate_operation(schema_ptr schema, reader_permit permit, const std::vect
 }
 
 void dump_index_operation(schema_ptr schema, reader_permit permit, const std::vector<sstables::shared_sstable>& sstables,
-        sstables::sstables_manager& sst_man, const bpo::variables_map&) {
+        sstables::sstables_manager& sst_man, const bpo::variables_map& opts) {
     if (sstables.empty()) {
         throw std::runtime_error("error: no sstables specified on the command line");
     }
+    const tools::single_sstable_output single(bool(opts.count("single")));
+
+    if (single && sstables.size() > 1) {
+        throw std::runtime_error("error: cannot use --single|-1 when multiple sstables are provided");
+    }
 
     json_writer writer;
-    writer.StartStream();
+    if (!single) {
+        writer.StartStream();
+    }
     for (auto& sst : sstables) {
         sstables::index_reader idx_reader(sst, permit, default_priority_class(), {}, sstables::use_caching::yes);
         auto close_idx_reader = deferred_close(idx_reader);
 
-        writer.SstableKey(*sst);
+        if (!single) {
+            writer.SstableKey(*sst);
+        }
         writer.StartArray();
 
         while (!idx_reader.eof()) {
@@ -987,7 +1011,9 @@ void dump_index_operation(schema_ptr schema, reader_permit permit, const std::ve
         }
         writer.EndArray();
     }
-    writer.EndStream();
+    if (!single) {
+        writer.EndStream();
+    }
 }
 
 template <typename Integer>
@@ -2557,6 +2583,7 @@ const std::vector<option> all_options {
     typed_option<sstring>("partitions-file", "file containing partition(s) to filter for, partitions are expected to be in the hex format"),
     typed_option<>("merge", "merge all sstables into a single mutation fragment stream (use a combining reader over all sstable readers)"),
     typed_option<>("no-skips", "don't use skips to skip to next partition when the partition filter rejects one, this is slower but works with corrupt index"),
+    typed_option<>("single,1", "output is of a single sstable"),
     typed_option<std::string>("bucket", "months", "the unit of time to use as bucket, one of (years, months, weeks, days, hours)"),
     typed_option<std::string>("output-format", "json", "the output-format, one of (text, json)"),
     typed_option<std::string>("input-file", "the file containing the input"),
@@ -2586,7 +2613,7 @@ printers, which are also used when logging mutation-related data structures.
 See https://docs.scylladb.com/operating-scylla/admin-tools/scylla-sstable#dump-data
 for more information on this operation, including the schema of the JSON output.
 )",
-            {"partition", "partitions-file", "merge", "no-skips", "output-format"},
+            {"partition", "partitions-file", "merge", "no-skips", "single,1", "output-format"},
             sstable_consumer_operation<dumping_consumer>},
 /* dump-index */
     {"dump-index",
@@ -2602,6 +2629,7 @@ data.
 See https://docs.scylladb.com/operating-scylla/admin-tools/scylla-sstable#dump-index
 for more information on this operation, including the schema of the JSON output.
 )",
+            {"single,1"},
             dump_index_operation},
 /* dump-compression-info */
     {"dump-compression-info",

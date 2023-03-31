@@ -85,8 +85,11 @@ public:
     }
 };
 
+using single_sstable_output = bool_class<class single_sstable_output_tag>;
+
 class mutation_fragment_json_writer {
     const schema& _schema;
+    single_sstable_output _single;
     json_writer _writer;
     bool _clustering_array_created;
 private:
@@ -102,7 +105,7 @@ private:
     void write(const clustering_row& cr);
     void write(const range_tombstone_change& rtc);
 public:
-    explicit mutation_fragment_json_writer(const schema& s) : _schema(s) {}
+    explicit mutation_fragment_json_writer(const schema& s, single_sstable_output single) : _schema(s), _single(single) {}
     json_writer& writer() { return _writer; }
     void start_stream();
     void start_sstable(const sstables::sstable* const sst);
