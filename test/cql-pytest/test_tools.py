@@ -547,7 +547,13 @@ def temp_workdir():
         yield workdir
 
 
-def test_scylla_sstable_schema_loading(cql, scylla_path, scylla_data_dir, temp_workdir):
+@pytest.fixture(scope="function")
+def no_system_schema_autocompaction(cql):
+    with nodetool.no_autocompaction_context(cql, "system_schema"):
+        yield
+
+
+def test_scylla_sstable_schema_loading(cql, scylla_path, scylla_data_dir, temp_workdir, no_system_schema_autocompaction):
     keyspace = "system"
     table = "scylla_local"
     workdir = temp_workdir
