@@ -556,12 +556,11 @@ def no_system_schema_autocompaction(cql):
 def test_scylla_sstable_schema_loading(cql, scylla_path, scylla_data_dir, temp_workdir, no_system_schema_autocompaction):
     keyspace = "system"
     table = "scylla_local"
-    workdir = temp_workdir
-    ext_data_dir = os.path.join(workdir, "data")
+    ext_data_dir = os.path.join(temp_workdir, "data")
     os.mkdir(ext_data_dir)
-    schema_file_dir = os.path.join(workdir, "schema_file_dir")
+    schema_file_dir = os.path.join(temp_workdir, "schema_file_dir")
     os.mkdir(schema_file_dir)
-    top_conf_dir = os.path.join(workdir, "conf_dir")
+    top_conf_dir = os.path.join(temp_workdir, "conf_dir")
     os.mkdir(top_conf_dir)
     conf_dir = os.path.join(top_conf_dir, "conf")
     os.mkdir(conf_dir)
