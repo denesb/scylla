@@ -107,3 +107,22 @@ def refreshsizeestimates(cql):
         pass
     else:
         run_nodetool(cql, "refreshsizeestimates")
+
+class no_autocompaction_context:
+    """Disable autocompaction for the enclosed scope
+    """
+    def __init__(self, cql, ks):
+        self._cql = cql
+        self._ks = ks
+
+    def __enter__(self):
+        if has_rest_api(self._cql):
+            requests.delete(f'{rest_api_url(self._cql)}/column_family/autocompaction/{self._ks}')
+        else:
+            run_nodetool(self._cql, "disableautocompaction", self._ks)
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+        if has_rest_api(self._cql):
+            requests.post(f'{rest_api_url(self._cql)}/column_family/autocompaction/{self._ks}')
+        else:
+            run_nodetool(self._cql, "enableautocompaction", self._ks)
