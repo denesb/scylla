@@ -139,6 +139,14 @@ future<> manager::compute_hints_dir_device_id() {
     });
 }
 
+const locator::node* manager::get_node_for_ep_dir(const sstring& ep_dir_name, const locator::topology& topo) {
+    if (ep_dir_name.find("-") == sstring::npos) {
+        return topo.find_node(locator::host_id(utils::UUID(ep_dir_name)));
+    } else {
+        return topo.find_node(gms::inet_address(ep_dir_name));
+    }
+}
+
 void manager::allow_hints() {
     boost::for_each(_ep_managers, [] (auto& pair) { pair.second.allow_hints(); });
 }
@@ -656,13 +664,10 @@ future<> manager::change_host_filter(host_filter filter) {
             // roll back in case of failure
             std::swap(_host_filter, filter);
 
-            const auto& topo = _proxy_anchor->get_token_metadata_ptr()->get_topology();
-
             // Iterate over existing hint directories and see if we can enable an endpoint manager
             // for some of them
-            return lister::scan_dir(_hints_dir, lister::dir_entry_types::of<directory_entry_type::directory>(), [this, &topo] (fs::path datadir, directory_entry de) {
-                const auto ep = gms::inet_address(de.name);
-                auto node = topo.find_node(ep);
+            return lister::scan_dir(_hints_dir, lister::dir_entry_types::of<directory_entry_type::directory>(), [this] (fs::path datadir, directory_entry de) {
+                auto node = get_node_for_ep_dir(de.name);
                 if (_ep_managers.contains(node) || !_host_filter.can_hint_for(node)) {
                     return make_ready_future<>();
                 }
@@ -1192,19 +1197,20 @@ static future<> scan_for_hints_dirs(const sstring& hints_directory, std::functio
 }
 
 // runs in seastar::async context
-manager::hints_segments_map manager::get_current_hints_segments(const sstring& hints_directory) {
+manager::hints_segments_map manager::get_current_hints_segments(const sstring& hints_directory, const locator::topology& topo) {
     hints_segments_map current_hints_segments;
 
     // shards level
-    scan_for_hints_dirs(hints_directory, [&current_hints_segments] (fs::path dir, directory_entry de, unsigned shard_id) {
+    scan_for_hints_dirs(hints_directory, [&current_hints_segments, &topo] (fs::path dir, directory_entry de, unsigned shard_id) {
         manager_logger.trace("shard_id = {}", shard_id);
-        // IPs level
-        return lister::scan_dir(dir / de.name.c_str(), lister::dir_entry_types::of<directory_entry_type::directory>(), [&current_hints_segments, shard_id] (fs::path dir, directory_entry de) {
-            manager_logger.trace("\tIP: {}", de.name);
+        // Hosts level
+        return lister::scan_dir(dir / de.name.c_str(), lister::dir_entry_types::of<directory_entry_type::directory>(), [&current_hints_segments, &topo, shard_id] (fs::path dir, directory_entry de) {
+            manager_logger.trace("\tHost: {}", de.name);
             // hints files
-            return lister::scan_dir(dir / de.name.c_str(), lister::dir_entry_types::of<directory_entry_type::regular>(), [&current_hints_segments, shard_id, ep_addr = de.name] (fs::path dir, directory_entry de) {
+            auto node = get_node_for_ep_dir(de.name, topo);
+            return lister::scan_dir(dir / de.name.c_str(), lister::dir_entry_types::of<directory_entry_type::regular>(), [&current_hints_segments, shard_id, node] (fs::path dir, directory_entry de) {
                 manager_logger.trace("\t\tfile: {}", de.name);
-                current_hints_segments[ep_addr][shard_id].emplace_back(dir / de.name.c_str());
+                current_hints_segments[node->host_id()][shard_id].emplace_back(dir / de.name.c_str());
                 return make_ready_future<>();
             });
         });
@@ -1216,7 +1222,7 @@ manager::hints_segments_map manager::get_current_hints_segments(const sstring& h
 // runs in seastar::async context
 void manager::rebalance_segments(const sstring& hints_directory, hints_segments_map& segments_map) {
     // Count how many hints segments to each destination we have.
-    std::unordered_map<sstring, size_t> per_ep_hints;
+    std::unordered_map<locator::host_id, size_t> per_ep_hints;
     for (auto& ep_info : segments_map) {
         per_ep_hints[ep_info.first] = boost::accumulate(ep_info.second | boost::adaptors::map_values | boost::adaptors::transformed(std::mem_fn(&std::list<fs::path>::size)), 0);
         manager_logger.trace("{}: total files: {}", ep_info.first, per_ep_hints[ep_info.first]);
@@ -1225,7 +1231,7 @@ void manager::rebalance_segments(const sstring& hints_directory, hints_segments_
     // Create a map of lists of segments that we will move (for each destination end point): if a shard has segments
     // then we will NOT move q = int(N/S) segments out of them, where N is a total number of segments to the current
     // destination and S is a current number of shards.
-    std::unordered_map<sstring, std::list<fs::path>> segments_to_move;
+    std::unordered_map<locator::host_id, std::list<fs::path>> segments_to_move;
     for (auto& [ep, ep_segments] : segments_map) {
         size_t q = per_ep_hints[ep] / smp::count;
         auto& current_segments_to_move = segments_to_move[ep];
@@ -1274,7 +1280,7 @@ void manager::rebalance_segments(const sstring& hints_directory, hints_segments_
 
 // runs in seastar::async context
 void manager::rebalance_segments_for(
-        const sstring& ep,
+        locator::host_id ep,
         size_t segments_per_shard,
         const sstring& hints_directory,
         hints_ep_segments_map& ep_segments,
@@ -1288,7 +1294,7 @@ void manager::rebalance_segments_for(
     }
 
     for (unsigned i = 0; i < smp::count && !segments_to_move.empty(); ++i) {
-        fs::path shard_path_dir(fs::path(hints_directory.c_str()) / seastar::format("{:d}", i).c_str() / ep.c_str());
+        fs::path shard_path_dir(fs::path(hints_directory.c_str()) / seastar::format("{:d}", i).c_str() / fmt::to_string(ep));
         std::list<fs::path>& current_shard_segments = ep_segments[i];
 
         // Make sure that the shard_path_dir exists and if not - create it
@@ -1326,10 +1332,10 @@ void manager::remove_irrelevant_shards_directories(const sstring& hints_director
     }).get();
 }
 
-future<> manager::rebalance(sstring hints_directory) {
+future<> manager::rebalance(sstring hints_directory, const locator::topology& topo) {
     return seastar::async([hints_directory = std::move(hints_directory)] {
         // Scan currently present hints segments.
-        hints_segments_map current_hints_segments = get_current_hints_segments(hints_directory);
+        hints_segments_map current_hints_segments = get_current_hints_segments(hints_directory, topo);
 
         // Move segments to achieve an even distribution of files among all present shards.
         rebalance_segments(hints_directory, current_hints_segments);

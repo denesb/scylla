@@ -80,8 +80,8 @@ private:
 
     // map: shard -> segments
     using hints_ep_segments_map = std::unordered_map<unsigned, std::list<fs::path>>;
-    // map: IP -> map: shard -> segments
-    using hints_segments_map = std::unordered_map<sstring, hints_ep_segments_map>;
+    // map: host_id -> map: shard -> segments
+    using hints_segments_map = std::unordered_map<locator::host_id, hints_ep_segments_map>;
 
     class drain_tag {};
     using drain = seastar::bool_class<drain_tag>;
@@ -624,6 +624,11 @@ public:
         return _drain_lock;
     }
 
+    static const locator::node* get_node_for_ep_dir(const sstring& ep_dir_name, const locator::topology& topo);
+    const locator::node* get_node_for_ep_dir(const sstring& ep_dir_name) {
+        return get_node_for_ep_dir(ep_dir_name, get_topology());
+    }
+
     void allow_hints();
     void forbid_hints();
     void forbid_hints_for_eps_with_pending_hints();
@@ -657,7 +662,7 @@ public:
     ///
     /// \param hints_directory A hints directory to rebalance
     /// \return A future that resolves when the operation is complete.
-    static future<> rebalance(sstring hints_directory);
+    static future<> rebalance(sstring hints_directory, const locator::topology& topo);
 
 private:
     future<> compute_hints_dir_device_id();
@@ -670,8 +675,9 @@ private:
     /// \note Should be called from a seastar::thread context.
     ///
     /// \param hints_directory directory to scan
+    /// \param topology the topology instance used to resolve host ids and ips
     /// \return a map: ep -> map: shard -> segments (full paths)
-    static hints_segments_map get_current_hints_segments(const sstring& hints_directory);
+    static hints_segments_map get_current_hints_segments(const sstring& hints_directory, const locator::topology& topo);
 
     /// \brief Rebalance hints segments for a given (destination) end point
     ///
@@ -693,7 +699,7 @@ private:
     /// \param ep_segments a map that was originally built by get_current_hints_segments() for this end point
     /// \param segments_to_move a list of segments we are allowed to move
     static void rebalance_segments_for(
-            const sstring& ep,
+            locator::host_id ep,
             size_t segments_per_shard,
             const sstring& hints_directory,
             hints_ep_segments_map& ep_segments,
