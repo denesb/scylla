@@ -358,6 +358,17 @@ flat_mutation_reader_v2 table::make_cache_reader(schema_ptr schema, reader_permi
     return _cache.make_nonpopulating_reader(std::move(schema), std::move(permit), range, slice, std::move(ts));
 }
 
+flat_mutation_reader_v2 table::make_sstable_reader(
+        schema_ptr schema,
+        reader_permit permit,
+        const dht::partition_range& range,
+        const query::partition_slice& slice,
+        tracing::trace_state_ptr ts,
+        streamed_mutation::forwarding fwd_sm,
+        mutation_reader::forwarding fwd) {
+    return make_sstable_reader(std::move(schema), std::move(permit), _sstables, range, slice, std::move(ts), fwd_sm, fwd);
+}
+
 future<std::vector<locked_cell>> table::lock_counter_cells(const mutation& m, db::timeout_clock::time_point timeout) {
     assert(m.schema() == _counter_cell_locks->schema());
     return _counter_cell_locks->lock_cells(m.decorated_key(), partition_cells_range(m.partition()), timeout);
