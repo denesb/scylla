@@ -7,6 +7,8 @@ import pytest
 import util
 import nodetool
 import json
+import requests
+import cassandra.protocol
 
 def test_snapshots_table(scylla_only, cql, test_keyspace):
     with util.new_test_table(cql, test_keyspace, 'pk int PRIMARY KEY, v int') as table:
@@ -85,3 +87,82 @@ def test_system_config_read(scylla_only, cql):
     obj = json.loads(values['restrict_replication_simplestrategy'])
     assert isinstance(obj, str)
     assert obj and obj.isascii() and obj.isprintable()
+
+
+@pytest.fixture(scope="module")
+def mutation_dump_table1(cql, test_keyspace):
+    """ Prepares a table for the data source table tests to work with."""
+    with util.new_test_table(cql, test_keyspace, 'pk1 int, pk2 int, ck1 int, ck2 int, v text, PRIMARY KEY ((pk1, pk2), ck1, ck2)') as table:
+        #stmt = cql.prepare(f"INSERT INTO {table} (pk1, pk2, ck1, ck2, v) VALUES (?, ?, ?, ?, ?)")
+        #for ck1 in range(0, 10):
+        #    for ck2 in range(0, 10):
+        #        cql.execute(stmt, (0, 0, ck1, ck2, f"v{ck1}{ck2}"))
+        yield table.split('.')
+
+
+def test_mutation_dump_source(cql, mutation_dump_table1):
+    ks, table = mutation_dump_table1
+
+    def expect_sources(*expected_sources):
+        for src in ('memtable', 'row-cache', 'sstable'):
+            rows = list(cql.execute(f"SELECT * FROM system.mutation_dump WHERE keyspace_name = '{ks}' AND table_name = '{table}' AND partition_key = ['{pk1}', '{pk2}'] AND source = '{src}'"))
+            if src in expected_sources:
+                assert len(rows) == 3 # partition-start, clustering-row, partition-end
+            else:
+                assert len(rows) == 0
+
+    pk1 = util.unique_key_int()
+    pk2 = util.unique_key_int()
+    cql.execute(f"INSERT INTO {ks}.{table} (pk1, pk2, ck1, ck2, v) VALUES ({pk1}, {pk2}, 0, 0, 'vv')")
+    expect_sources('memtable')
+
+    nodetool.flush(cql, f"{ks}.{table}")
+    expect_sources('row-cache', 'sstable')
+
+    requests.post(f'{nodetool.rest_api_url(cql)}/system/drop_sstable_caches')
+    expect_sources('sstable')
+
+    assert list(cql.execute(f"SELECT v FROM {ks}.{table} WHERE pk1={pk1} AND pk2={pk2} BYPASS CACHE"))[0].v == 'vv'
+    expect_sources('sstable')
+
+    assert list(cql.execute(f"SELECT v FROM {ks}.{table} WHERE pk1={pk1} AND pk2={pk2}"))[0].v == 'vv'
+    expect_sources('row-cache', 'sstable')
+
+    cql.execute(f"INSERT INTO {ks}.{table} (pk1, pk2, ck1, ck2, v) VALUES ({pk1}, {pk2}, 0, 0, 'vv')")
+    expect_sources('memtable', 'row-cache', 'sstable')
+
+
+def test_mutation_dump_scan(cql):
+    with pytest.raises(cassandra.protocol.ReadFailure):
+        cql.execute("SELECT * FROM system.mutation_dump")
+
+
+def test_mutation_dump_reverse_read(cql, mutation_dump_table1):
+    ks, table = mutation_dump_table1
+
+    pk1 = util.unique_key_int()
+    pk2 = util.unique_key_int()
+    cql.execute(f"INSERT INTO {ks}.{table} (pk1, pk2, ck1, ck2, v) VALUES ({pk1}, {pk2}, 0, 0, 'vv')")
+
+    with pytest.raises(cassandra.protocol.ReadFailure):
+        cql.execute(f"SELECT * FROM system.mutation_dump WHERE keyspace_name = '{ks}' AND table_name = '{table}' AND partition_key = ['{pk1}', '{pk2}'] ORDER BY source DESC")
+
+
+def test_mutation_dump_range_tombstone_changes(cql, mutation_dump_table1):
+    ks, table = mutation_dump_table1
+
+    pk1 = util.unique_key_int()
+    pk2 = util.unique_key_int()
+    cql.execute(f"INSERT INTO {ks}.{table} (pk1, pk2, ck1, ck2, v) VALUES ({pk1}, {pk2}, 0, 0, 'vv')")
+
+    rts = 4
+
+    with nodetool.no_autocompaction_context(cql, ks):
+        for ck in range(44, 44 - rts, -1):
+            cql.execute(f"DELETE FROM {ks}.{table} WHERE pk1={pk1} AND pk2={pk2} AND ck1=0 AND ck2>30 AND ck2<{ck}")
+            nodetool.flush(cql, f"{ks}.{table}")
+
+        res = list(cql.execute(f"SELECT * FROM system.mutation_dump WHERE keyspace_name = '{ks}' AND table_name = '{table}' AND partition_key = ['{pk1}', '{pk2}'] AND source = 'sstable'"))
+        # partition-start,partition-end + row + rts*range-tombstone-change + 1 closing range-tombstone-change
+        expected = 2 + 1 + rts + 1
+        assert len(res) == 2 + 1 + rts + 1
