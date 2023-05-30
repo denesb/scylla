@@ -350,6 +350,14 @@ flat_mutation_reader_v2 table::make_memtable_reader(schema_ptr schema, reader_pe
     return make_combined_reader(std::move(schema), std::move(permit), std::move(readers), streamed_mutation::forwarding::no, mutation_reader::forwarding::no);
 }
 
+flat_mutation_reader_v2 table::make_cache_reader(schema_ptr schema, reader_permit permit, const dht::partition_range& range,
+        const query::partition_slice& slice, tracing::trace_state_ptr ts) {
+    if (!range.is_singular()) {
+        throw std::runtime_error("table::make_cache_reader(): only singular ranges are supported");
+    }
+    return _cache.make_nonpopulating_reader(std::move(schema), std::move(permit), range, slice, std::move(ts));
+}
+
 future<std::vector<locked_cell>> table::lock_counter_cells(const mutation& m, db::timeout_clock::time_point timeout) {
     assert(m.schema() == _counter_cell_locks->schema());
     return _counter_cell_locks->lock_cells(m.decorated_key(), partition_cells_range(m.partition()), timeout);
