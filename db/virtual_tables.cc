@@ -22,6 +22,7 @@
 #include "db/view/build_progress_virtual_reader.hh"
 #include "index/built_indexes_virtual_reader.hh"
 #include "gms/gossiper.hh"
+#include "partition_slice_builder.hh"
 #include "protocol_server.hh"
 #include "release.hh"
 #include "replica/database.hh"
@@ -1060,32 +1061,28 @@ private:
             const auto& ranges = _ps.row_ranges(*_schema, _dk.key());
             const auto& ck_types = _underlying_schema->clustering_key_type()->types();
             for (const auto& range : ranges) {
-                if ((!range.start() || range.start()->value().explode(*_schema).size() < 2) &&
-                        (!range.end() || range.end()->value().explode(*_schema).size() < 2)) {
+                if ((!range.start() || range.start()->value().explode(*_schema).size() < 3) &&
+                        (!range.end() || range.end()->value().explode(*_schema).size() < 3)) {
                     continue; // doesn't contain any restriction to underlying
                 }
                 builder.with_range(range.transform([&] (const clustering_key& ck) {
                     auto exploded_ck = ck.explode(*_schema);
-                    if (exploded_ck.size() < 2) {
+                    if (exploded_ck.size() < 3) {
                         return clustering_key::make_empty();
                     }
                     return clustering_key::from_exploded(unserialize_underlying_key(exploded_ck.at(2), ck_types, allow_prefixes::yes));
                 }));
             }
-            return builder.build();
+            auto ret = builder.build();
+            return ret;
         }
 
         // Runs on _shard
         static bool
         is_source_included(const char* source, const ::schema& output_schema, const dht::decorated_key& dk, const query::partition_slice& ps) {
             const auto& ranges = ps.row_ranges(output_schema, dk.key());
-            const auto& types = output_schema.clustering_key_type()->types();
             std::vector<data_value> ck_exploded;
-            ck_exploded.reserve(types.size());
             ck_exploded.push_back(data_value(source));
-            for (unsigned i = 1; i < types.size(); ++i) {
-                ck_exploded.push_back(data_value::make_null(types[i]));
-            }
             auto ck = clustering_key::from_deeply_exploded(output_schema, ck_exploded);
             auto cmp = clustering_key::prefix_equal_tri_compare(output_schema);
             const auto res = std::ranges::any_of(ranges, [&] (const query::clustering_range& cr) {
@@ -1107,7 +1104,6 @@ private:
                         reader_permit permit,
                         const dht::partition_range& pr,
                         const query::partition_slice& ps,
-                        const io_priority_class&,
                         tracing::trace_state_ptr ts,
                         streamed_mutation::forwarding,
                         mutation_reader::forwarding) {
@@ -1120,7 +1116,6 @@ private:
                         reader_permit permit,
                         const dht::partition_range& pr,
                         const query::partition_slice& ps,
-                        const io_priority_class&,
                         tracing::trace_state_ptr ts,
                         streamed_mutation::forwarding,
                         mutation_reader::forwarding) {
@@ -1133,11 +1128,10 @@ private:
                         reader_permit permit,
                         const dht::partition_range& pr,
                         const query::partition_slice& ps,
-                        const io_priority_class& pc,
                         tracing::trace_state_ptr ts,
                         streamed_mutation::forwarding fwd_sm,
                         mutation_reader::forwarding fwd) {
-                    return tbl.make_sstable_reader(std::move(schema), std::move(permit), pr, ps, pc, std::move(ts), fwd_sm, fwd);
+                    return tbl.make_sstable_reader(std::move(schema), std::move(permit), pr, ps, std::move(ts), fwd_sm, fwd);
                 }));
             }
             return make_foreign(std::move(rs));
@@ -1195,13 +1189,13 @@ private:
         }
 
         // Runs on _shard
-        static future<> fill_remote_buffer(remote_state& rs, size_t max_buffer_size_in_bytes, const dht::partition_range& pr) {
+        static future<> fill_remote_buffer(remote_state& rs, size_t max_buffer_size_in_bytes, const dht::partition_range& pr, const query::partition_slice& ps) {
             rs.buf.clear();
             size_t size = 0;
             while (size < max_buffer_size_in_bytes && !rs.mutation_sources.empty()) {
                 if (!rs.reader) {
-                    rs.reader = rs.mutation_sources.begin()->second.make_reader_v2(rs.underlying_schema, rs.permit, pr, rs.underlying_schema->full_slice(),
-                            default_priority_class(), rs.ts, streamed_mutation::forwarding::no, mutation_reader::forwarding::no);
+                    rs.reader = rs.mutation_sources.begin()->second.make_reader_v2(rs.underlying_schema, rs.permit, pr, ps,
+                            rs.ts, streamed_mutation::forwarding::no, mutation_reader::forwarding::no);
                 }
                 auto mf_opt = co_await (*rs.reader)();
                 if (!mf_opt) {
@@ -1227,11 +1221,7 @@ private:
             , _underlying_pr(extract_underlying_pr())
             , _underlying_ps(extract_underlying_ps())
             , _shard(dht::shard_of(*_underlying_schema, _underlying_pr.start()->value().token()))
-        {
-            for (const auto& cr : _ps.row_ranges(*_schema, _dk.key())) {
-                _pos_ranges.emplace_back(position_range::from_range(cr));
-            }
-        }
+        { }
 
         virtual future<> fill_buffer() override {
             if (!is_buffer_empty()) {
@@ -1261,14 +1251,14 @@ private:
                 _partition_start_emitted = true;
             }
             co_await _db.invoke_on(_shard, [this] (replica::database&) {
-                return fill_remote_buffer(*_remote_state, max_buffer_size_in_bytes, _underlying_pr);
+                return fill_remote_buffer(*_remote_state, max_buffer_size_in_bytes, _underlying_pr, _underlying_ps);
             });
+            auto cmp = clustering_key::prefix_equal_tri_compare(*_schema);
             for (const auto& remote_mf : _remote_state->buf) {
-                if (remote_mf.position().region() != partition_region::clustered) {
+                if (!remote_mf.is_clustering_row()) {
                     push_mutation_fragment(*_schema, _permit, remote_mf);
-                }
-                // Translating the row ranges is best-effort, so we have a post-filtering stage here to drop any excess rows.
-                if (std::ranges::any_of(_pos_ranges, [&] (const position_range& pr) { return pr.contains(*_schema, remote_mf.position()); })) {
+                } else if (std::ranges::any_of(_ps.row_ranges(*_schema, _dk.key()), [&] (const query::clustering_range& cr) { return cr.contains(remote_mf.position().key(), cmp); })) {
+                    // Translating the row ranges is best-effort, so we have a post-filtering stage here to drop any excess rows.
                     push_mutation_fragment(*_schema, _permit, remote_mf);
                 }
             }
@@ -1323,7 +1313,6 @@ private:
                     reader_permit permit,
                     const dht::partition_range& pr,
                     const query::partition_slice& slice,
-                    const io_priority_class&,
                     tracing::trace_state_ptr ts,
                     streamed_mutation::forwarding,
                     mutation_reader::forwarding) {

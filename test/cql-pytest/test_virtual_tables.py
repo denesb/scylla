@@ -92,12 +92,24 @@ def test_system_config_read(scylla_only, cql):
 @pytest.fixture(scope="module")
 def mutation_dump_table1(cql, test_keyspace):
     """ Prepares a table for the data source table tests to work with."""
-    with util.new_test_table(cql, test_keyspace, 'pk1 int, pk2 int, ck1 int, ck2 int, v text, PRIMARY KEY ((pk1, pk2), ck1, ck2)') as table:
-        #stmt = cql.prepare(f"INSERT INTO {table} (pk1, pk2, ck1, ck2, v) VALUES (?, ?, ?, ?, ?)")
-        #for ck1 in range(0, 10):
-        #    for ck2 in range(0, 10):
-        #        cql.execute(stmt, (0, 0, ck1, ck2, f"v{ck1}{ck2}"))
+    with util.new_test_table(cql, test_keyspace, 'pk1 int, pk2 int, ck1 int, ck2 int, v text, s text static, PRIMARY KEY ((pk1, pk2), ck1, ck2)') as table:
         yield table.split('.')
+
+
+def test_mutation_dump_scan(cql):
+    with pytest.raises(cassandra.protocol.ReadFailure):
+        cql.execute("SELECT * FROM system.mutation_dump")
+
+
+def test_mutation_dump_reverse_read(cql, mutation_dump_table1):
+    ks, table = mutation_dump_table1
+
+    pk1 = util.unique_key_int()
+    pk2 = util.unique_key_int()
+    cql.execute(f"INSERT INTO {ks}.{table} (pk1, pk2, ck1, ck2, v) VALUES ({pk1}, {pk2}, 0, 0, 'vv')")
+
+    with pytest.raises(cassandra.protocol.ReadFailure):
+        cql.execute(f"SELECT * FROM system.mutation_dump WHERE keyspace_name = '{ks}' AND table_name = '{table}' AND partition_key = ['{pk1}', '{pk2}'] ORDER BY source DESC")
 
 
 def test_mutation_dump_source(cql, mutation_dump_table1):
@@ -132,20 +144,53 @@ def test_mutation_dump_source(cql, mutation_dump_table1):
     expect_sources('memtable', 'row-cache', 'sstable')
 
 
-def test_mutation_dump_scan(cql):
-    with pytest.raises(cassandra.protocol.ReadFailure):
-        cql.execute("SELECT * FROM system.mutation_dump")
-
-
-def test_mutation_dump_reverse_read(cql, mutation_dump_table1):
+def test_mutation_dump_partition_region(cql, mutation_dump_table1):
     ks, table = mutation_dump_table1
 
     pk1 = util.unique_key_int()
     pk2 = util.unique_key_int()
-    cql.execute(f"INSERT INTO {ks}.{table} (pk1, pk2, ck1, ck2, v) VALUES ({pk1}, {pk2}, 0, 0, 'vv')")
 
-    with pytest.raises(cassandra.protocol.ReadFailure):
-        cql.execute(f"SELECT * FROM system.mutation_dump WHERE keyspace_name = '{ks}' AND table_name = '{table}' AND partition_key = ['{pk1}', '{pk2}'] ORDER BY source DESC")
+    cql.execute(f"INSERT INTO {ks}.{table} (pk1, pk2, ck1, ck2, v) VALUES ({pk1}, {pk2}, 0, 0, 'vv')")
+    cql.execute(f"DELETE FROM {ks}.{table} WHERE pk1={pk1} AND pk2={pk2} AND ck1=0 AND ck2>30 AND ck2<100")
+
+    def check_single_region(region, expected_rows):
+        res = cql.execute(f"""SELECT * FROM system.mutation_dump
+            WHERE
+                keyspace_name = '{ks}' AND
+                table_name = '{table}' AND
+                partition_key = ['{pk1}', '{pk2}'] AND
+                source = 'memtable' AND
+                partition_region = {region}""")
+        for r in res:
+            assert r.partition_region == region
+
+
+    check_single_region(0, 1) # partition_start
+    check_single_region(1, 1) # static_row
+    check_single_region(2, 3) # clustered (1 row + 2 rtc)
+    check_single_region(2, 1) # partition_end
+
+    def check_region_range(region_from_inclusive, region_to_exlusive, expected_rows):
+        res = cql.execute(f"""SELECT * FROM system.mutation_dump
+            WHERE
+                keyspace_name = '{ks}' AND
+                table_name = '{table}' AND
+                partition_key = ['{pk1}', '{pk2}'] AND
+                source = 'memtable' AND
+                partition_region >= {region_from_inclusive} AND
+                partition_region < {region_to_exlusive}""")
+        for r in res:
+            assert r.partition_region >= region_from_inclusive
+            assert r.partition_region < region_from_exclusive
+
+    check_region_range(0, 1, 1) # partition_start
+    check_region_range(0, 2, 2) # partition_start, static_row
+    check_region_range(0, 3, 5) # partition_start, static_row, 3 clustered (1 row + 2 rtc)
+    check_region_range(0, 4, 6) # partition_start, static_row, 3 clustered (1 row + 2 rtc), partition_end
+
+    check_region_range(1, 2, 1) # static_row
+    check_region_range(2, 3, 3) # 3 clustered (1 row + 2 rtc)
+    check_region_range(1, 3, 4) # static_row, 3 clustered (1 row + 2 rtc)
 
 
 def test_mutation_dump_range_tombstone_changes(cql, mutation_dump_table1):
@@ -166,3 +211,27 @@ def test_mutation_dump_range_tombstone_changes(cql, mutation_dump_table1):
         # partition-start,partition-end + row + rts*range-tombstone-change + 1 closing range-tombstone-change
         expected = 2 + 1 + rts + 1
         assert len(res) == 2 + 1 + rts + 1
+
+
+def test_mutation_dump_slicing(cql, mutation_dump_table1):
+    ks, table = mutation_dump_table1
+
+    pk1 = util.unique_key_int()
+    pk2 = util.unique_key_int()
+
+    cql.execute(f"INSERT INTO {ks}.{table} (pk1, pk2, ck1, ck2, v) VALUES ({pk1}, {pk2}, 0, 0, 'vv')")
+    cql.execute(f"DELETE FROM {ks}.{table} WHERE pk1={pk1} AND pk2={pk2} AND ck1=0 AND ck2>10 AND ck2<20")
+    cql.execute(f"INSERT INTO {ks}.{table} (pk1, pk2, ck1, ck2, v) VALUES ({pk1}, {pk2}, 0, 20, 'vv')")
+    cql.execute(f"INSERT INTO {ks}.{table} (pk1, pk2, ck1, ck2, v) VALUES ({pk1}, {pk2}, 1, 20, 'vv')")
+
+    res = cql.execute(f"""SELECT * FROM system.mutation_dump
+        WHERE
+            keyspace_name = '{ks}' AND
+            table_name = '{table}' AND
+            partition_key = ['{pk1}', '{pk2}'] AND
+            source = 'memtable' AND
+            partition_region = 2 AND
+            clustering_key >= ['0', '0']
+        """)
+    for r in res:
+        assert r.partition_region == 0
