@@ -3105,32 +3105,32 @@ repair_service::insert_repair_meta(
         streaming::stream_reason reason,
         abort_source& as) {
     auto s = co_await get_migration_manager().get_schema_for_write(schema_version, {from, src_cpu_id}, get_messaging(), &as);
-        auto& db = get_db();
-        auto& cf = db.local().find_column_family(s->id());
-        auto permit = co_await db.local().obtain_reader_permit(cf, "repair-meta", db::no_timeout, {});
-        node_repair_meta_id id{from, repair_meta_id};
-        auto rm = make_shared<repair_meta>(*this,
-                cf,
-                s,
-                std::move(permit),
-                range,
-                algo,
-                max_row_buf_size,
-                seed,
-                repair_master::no,
-                repair_meta_id,
-                reason,
-                std::move(master_node_shard_config),
-                inet_address_vector_replica_set{from});
-        rm->set_repair_state_for_local_node(repair_state::row_level_start_started);
-        bool insertion = repair_meta_map().emplace(id, rm).second;
-        if (!insertion) {
-            rlogger.warn("insert_repair_meta: repair_meta_id {} for node {} already exists, replace existing one", id.repair_meta_id, id.ip);
-            repair_meta_map()[id] = rm;
-            rm->set_repair_state_for_local_node(repair_state::row_level_start_finished);
-        } else {
-            rlogger.debug("insert_repair_meta: Inserted repair_meta_id {} for node {}", id.repair_meta_id, id.ip);
-        }
+    auto& db = get_db();
+    auto& cf = db.local().find_column_family(s->id());
+    auto permit = co_await db.local().obtain_reader_permit(cf, "repair-meta", db::no_timeout, {});
+    node_repair_meta_id id{from, repair_meta_id};
+    auto rm = make_shared<repair_meta>(*this,
+            cf,
+            s,
+            std::move(permit),
+            range,
+            algo,
+            max_row_buf_size,
+            seed,
+            repair_master::no,
+            repair_meta_id,
+            reason,
+            std::move(master_node_shard_config),
+            inet_address_vector_replica_set{from});
+    rm->set_repair_state_for_local_node(repair_state::row_level_start_started);
+    bool insertion = repair_meta_map().emplace(id, rm).second;
+    if (!insertion) {
+        rlogger.warn("insert_repair_meta: repair_meta_id {} for node {} already exists, replace existing one", id.repair_meta_id, id.ip);
+        repair_meta_map()[id] = rm;
+        rm->set_repair_state_for_local_node(repair_state::row_level_start_finished);
+    } else {
+        rlogger.debug("insert_repair_meta: Inserted repair_meta_id {} for node {}", id.repair_meta_id, id.ip);
+    }
 }
 
 future<>
