@@ -76,6 +76,69 @@ public:
 
 using operation_func = void(*)(scylla_rest_client&, const bpo::variables_map&);
 
+enum class json_type {
+    null, boolean, object, array, string, number
+};
+
+const rjson::value& check_json_type(const rjson::value& value, json_type type) {
+    bool ok = false;
+    sstring type_name = "unknown";
+    switch (type) {
+        case json_type::null:
+            ok = value.IsNull();
+            type_name = "null";
+            break;
+        case json_type::boolean:
+            ok = value.IsBool();
+            type_name = "bool";
+            break;
+        case json_type::object:
+            ok = value.IsObject();
+            type_name = "object";
+            break;
+        case json_type::array:
+            ok = value.IsArray();
+            type_name = "array";
+            break;
+        case json_type::string:
+            ok = value.IsString();
+            type_name = "string";
+            break;
+        case json_type::number:
+            ok = value.IsNumber();
+            type_name = "number";
+            break;
+        default:
+            throw std::runtime_error(fmt::format("check_json_type(): unknown type: {}", static_cast<int>(type)));
+    }
+    if (!ok) {
+        throw std::runtime_error(fmt::format("check_json_type(): json value is not of the expected type: {}", type_name));
+    }
+    return value;
+}
+
+void compact_operation(scylla_rest_client& client, const bpo::variables_map& vm) {
+    if (vm.count("user-defined")) {
+        throw std::invalid_argument("--user-defined flag is unsupported");
+    }
+
+    if (vm.count("compaction_arg")) {
+        auto args = vm["compaction_arg"].as<std::vector<sstring>>();
+        std::unordered_map<sstring, sstring> params;
+        const auto keyspace = args[0];
+        if (args.size() > 1) {
+            params["cf"] = fmt::to_string(fmt::join(args.begin() + 1, args.end(), ","));
+        }
+        client.post(format("/storage_service/keyspace_compaction/{}", keyspace), std::move(params));
+    } else {
+        auto keyspaces_json = client.get("/storage_service/keyspaces", {{"type", "all"}});
+        for (const auto& keyspace_json : check_json_type(keyspaces_json, json_type::array).GetArray()) {
+            const auto keyspace = rjson::to_string_view(check_json_type(keyspace_json, json_type::string));
+            client.post(format("/storage_service/keyspace_compaction/{}", keyspace));
+        }
+    }
+}
+
 const std::vector<operation_option> global_options{
     typed_option<sstring>("host,h", "localhost", "the hostname or ip address of the ScyllaDB node"),
     typed_option<uint16_t>("port,p", 10000, "the port of the REST API of the ScyllaDB node"),
@@ -90,9 +153,36 @@ const std::map<std::string_view, std::string_view> option_substitutions{
     {"-pw", "--password"},
     {"-pwf", "--password-file"},
     {"-pp", "--print-port"},
+    {"-st", "--start-token"},
+    {"-et", "--end-token"},
 };
 
 const std::map<operation, operation_func> operations_with_func{
+    {{"compact",
+            "Force a (major) compaction on one or more tables",
+R"(
+Forces a (major) compaction on one or more tables. Compaction is an optimization
+that reduces the cost of IO and CPU over time by merging rows in the background.
+
+By default, major compaction runs on all the keyspaces and tables. Major
+compactions will take all the SSTables for a column family and merge them into a
+single SSTable per shard. If a keyspace is provided, the compaction will run on
+all of the tables within that keyspace. If one or more tables are provided as
+command-line arguments, the compaction will run on all tables.
+
+Fore more information, see: https://opensource.docs.scylladb.com/stable/operating-scylla/nodetool-commands/compact.html
+)",
+            {
+                    typed_option<>("split-output,s", "Don't create a single big file (unused)"),
+                    typed_option<>("user-defined", "Submit listed SStable files for user-defined compaction (unused)"),
+                    typed_option<int64_t>("start-token", "Specify a token at which the compaction range starts (unused)"),
+                    typed_option<int64_t>("end-token", "Specify a token at which the compaction range end (unused)"),
+                    typed_option<sstring>("partition", "String representation of the partition key to compact (unused)"),
+            },
+            {
+                    {"compaction_arg", bpo::value<std::vector<sstring>>(), "[<keyspace> <tables>...] or [<SStable files>...] ", -1},
+            }},
+            compact_operation},
 };
 
 // boost::program_options doesn't allow multi-char option short-form,
