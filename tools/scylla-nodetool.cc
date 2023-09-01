@@ -31,6 +31,7 @@ class scylla_rest_client {
     sstring _host;
     uint16_t _port;
     sstring _host_name;
+    http::experimental::client _api_client;
 
     rjson::value do_request(sstring type, sstring path, std::unordered_map<sstring, sstring> params) {
         auto req = http::request::make(type, _host_name, path);
@@ -40,16 +41,9 @@ class scylla_rest_client {
 
         sstring res;
 
-        http::experimental::client api_client(std::make_unique<utils::http::dns_connection_factory>(_host, _port, false, nlog), 1);
-        try {
-            api_client.make_request(std::move(req), seastar::coroutine::lambda([&] (const http::reply&, input_stream<char> body) -> future<> {
-                res = co_await util::read_entire_stream_contiguous(body);
-            })).get();
-        } catch (...) {
-            api_client.close().get();
-            throw;
-        }
-        api_client.close().get();
+        _api_client.make_request(std::move(req), seastar::coroutine::lambda([&] (const http::reply&, input_stream<char> body) -> future<> {
+            res = co_await util::read_entire_stream_contiguous(body);
+        })).get();
 
         if (res.empty()) {
             return rjson::null_value();
@@ -63,7 +57,12 @@ public:
         : _host(std::move(host))
         , _port(port)
         , _host_name(format("{}:{}", _host, _port))
+        , _api_client(std::make_unique<utils::http::dns_connection_factory>(_host, _port, false, nlog), 1)
     { }
+
+    ~scylla_rest_client() {
+        _api_client.close().get();
+    }
 
     rjson::value post(sstring path, std::unordered_map<sstring, sstring> params = {}) {
         return do_request("POST", std::move(path), std::move(params));

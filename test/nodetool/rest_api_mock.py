@@ -39,6 +39,8 @@ class response_handler(http.server.BaseHTTPRequestHandler):
     expected_requests = []
 
     def set_headers(self, content_length):
+        self.protocol_version = "HTTP/1.1"
+        self.send_response(200)
         self.send_header("Content-Length", str(content_length))
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -55,8 +57,6 @@ class response_handler(http.server.BaseHTTPRequestHandler):
             self.send_error(500, message="Unexpected request", explain=f"Expected {expected_req}, got: {this_req}")
             return
 
-        self.send_response(200)
-
         if expected_req.response is None:
             self.log_message(f"expected_request: {expected_req}, no response")
             self.set_headers(0)
@@ -70,7 +70,6 @@ class response_handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == response_handler.EXPECTED_REQUESTS_PATH:
-            self.send_response(200)
             payload = json.dumps([r.as_json() for r in response_handler.expected_requests])
             payload = payload.encode()
             self.set_headers(len(payload))
@@ -86,7 +85,6 @@ class response_handler(http.server.BaseHTTPRequestHandler):
             self.log_message(f"expected_requests: {payload}")
             payload = json.loads(payload)
             response_handler.expected_requests = list(map(_make_request, payload))
-            self.send_response(200)
             self.set_headers(len(payload))
             return
 
@@ -95,7 +93,6 @@ class response_handler(http.server.BaseHTTPRequestHandler):
     def do_DELETE(self):
         if self.path == response_handler.EXPECTED_REQUESTS_PATH:
             response_handler.expected_requests = []
-            self.send_response(200)
             self.set_headers(0)
             return
 
