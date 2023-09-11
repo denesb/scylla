@@ -58,10 +58,10 @@ class response_handler(http.server.BaseHTTPRequestHandler):
             return
 
         if expected_req.response is None:
-            self.log_message(f"expected_request: {expected_req}, no response")
+            self.log_message("expected_request: %s, no response", expected_req)
             self.set_headers(0)
         else:
-            self.log_message(f"expected_request: {expected_req}, response: {expected_req.response}")
+            self.log_message("expected_request: %s, response: %s", expected_req, expected_req.response)
             payload = expected_req.response.encode()
             self.set_headers(len(payload))
             self.wfile.write(payload)
@@ -69,6 +69,7 @@ class response_handler(http.server.BaseHTTPRequestHandler):
         del response_handler.expected_requests[0]
 
     def do_GET(self):
+        self.close_connection = False
         if self.path == response_handler.EXPECTED_REQUESTS_PATH:
             payload = json.dumps([r.as_json() for r in response_handler.expected_requests])
             payload = payload.encode()
@@ -82,7 +83,7 @@ class response_handler(http.server.BaseHTTPRequestHandler):
         if self.path == response_handler.EXPECTED_REQUESTS_PATH:
             content_len = int(self.headers["Content-Length"])
             payload = self.rfile.read(content_len).decode()
-            self.log_message(f"expected_requests: {payload}")
+            self.log_message("expected_requests: %s", payload)
             payload = json.loads(payload)
             response_handler.expected_requests = list(map(_make_request, payload))
             self.set_headers(len(payload))

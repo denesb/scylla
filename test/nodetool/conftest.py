@@ -15,7 +15,7 @@ import sys
 
 def pytest_addoption(parser):
     parser.addoption('--mode', action='store', default='dev',
-        help='Scylla build mode to use')
+                     help='Scylla build mode to use')
 
 
 @pytest.fixture(scope="module")
@@ -37,25 +37,29 @@ def rest_api_mock_server():
         server_process.join()
 
 
-@pytest.fixture(scope="function")
-def server_context(rest_api_mock_server):
-    """Clean the expected requests before and after the test"""
-    rest_api_mock.clear_expected_requests(rest_api_mock_server)
-    yield rest_api_mock_server
-    unconsumed_expected_requests = rest_api_mock.get_expected_requests(rest_api_mock_server)
-    # Clear up any unconsumed requests, so the next test starts with a clean slate
-    rest_api_mock.clear_expected_requests(rest_api_mock_server)
-    assert len(unconsumed_expected_requests) == 0
-
-
 @pytest.fixture(scope="module")
 def nodetool(scylla_path, rest_api_mock_server):
-    def invoker(method, *args):
+    def invoker(method, *args, expected_requests=None):
+        if expected_requests is not None:
+            rest_api_mock.set_expected_requests(rest_api_mock_server, expected_requests)
+
         ip, port = rest_api_mock_server
-        cmd = [scylla_path, "nodetool", method, "--logger-log-level", "scylla-nodetool=trace", "-h", ip, "-p", str(port)] + list(args)
+        cmd = [
+                scylla_path, "nodetool", method,
+                "--logger-log-level", "scylla-nodetool=trace",
+                "-h", ip,
+                "-p", str(port)]
+        cmd += list(args)
         res = subprocess.run(cmd, capture_output=True, text=True)
         sys.stdout.write(res.stdout)
         sys.stderr.write(res.stderr)
+
+        unconsumed_expected_requests = rest_api_mock.get_expected_requests(rest_api_mock_server)
+        # Clear up any unconsumed requests, so the next test starts with a clean slate
+        rest_api_mock.clear_expected_requests(rest_api_mock_server)
+
+        # Check the return-code first, if the command failed probably not all requests were consumed
         res.check_returncode()
+        assert len(unconsumed_expected_requests) == 0
 
     return invoker
