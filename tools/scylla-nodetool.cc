@@ -167,7 +167,7 @@ By default, major compaction runs on all the keyspaces and tables. Major
 compactions will take all the SSTables for a column family and merge them into a
 single SSTable per shard. If a keyspace is provided, the compaction will run on
 all of the tables within that keyspace. If one or more tables are provided as
-command-line arguments, the compaction will run on all tables.
+command-line arguments, the compaction will run on these tables.
 
 Fore more information, see: https://opensource.docs.scylladb.com/stable/operating-scylla/nodetool-commands/compact.html
 )",
