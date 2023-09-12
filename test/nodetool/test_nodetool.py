@@ -13,7 +13,9 @@ def test_jmx_compatibility_args(nodetool, scylla_only):
     These arguments are unused in the scylla-native nodetool and should be
     silently ignored.
     """
-    dummy_request = [expected_request("POST", "/storage_service/keyspace_compaction/system_schema")]
+    dummy_request = [
+            expected_request("GET", "/storage_service/keyspaces", multiple=True, response=["system", "system_schema"]),
+            expected_request("POST", "/storage_service/keyspace_compaction/system_schema")]
 
     nodetool("compact", "system_schema", "-u", "us3r", "-pw", "secr3t",
              expected_requests=dummy_request)

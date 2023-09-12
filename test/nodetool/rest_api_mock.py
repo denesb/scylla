@@ -28,6 +28,8 @@ class expected_request:
         self.multiple = multiple
         self.response = response
 
+        self.hit = 0
+
     def as_json(self):
         return {
                 "method": self.method,
@@ -126,7 +128,8 @@ class rest_server(aiohttp.abc.AbstractRouter):
 
         expected_req = self.expected_requests[0]
         if this_req != expected_req:
-            if expected_req.multiple and len(self.expected_requests) > 1 and self.expected_requests[1] == this_req:
+            if expected_req.multiple and expected_req.hit > 0 and \
+                    len(self.expected_requests) > 1 and self.expected_requests[1] == this_req:
                 del self.expected_requests[0]
                 expected_req = self.expected_requests[0]
             else:
@@ -135,6 +138,8 @@ class rest_server(aiohttp.abc.AbstractRouter):
 
         if not expected_req.multiple:
             del self.expected_requests[0]
+
+        expected_req.hit += 1
 
         if expected_req.response is None:
             logger.info(f"expected_request: {expected_req}, no response")

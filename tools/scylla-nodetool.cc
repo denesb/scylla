@@ -121,18 +121,26 @@ void compact_operation(scylla_rest_client& client, const bpo::variables_map& vm)
         throw std::invalid_argument("--user-defined flag is unsupported");
     }
 
+    auto keyspaces_json = client.get("/storage_service/keyspaces", {});
+    std::vector<sstring> all_keyspaces;
+    for (const auto& keyspace_json : check_json_type(keyspaces_json, json_type::array).GetArray()) {
+        all_keyspaces.emplace_back(rjson::to_string_view(check_json_type(keyspace_json, json_type::string)));
+    }
+
     if (vm.count("compaction_arg")) {
         auto args = vm["compaction_arg"].as<std::vector<sstring>>();
         std::unordered_map<sstring, sstring> params;
         const auto keyspace = args[0];
+        if (std::ranges::find(all_keyspaces, keyspace) == all_keyspaces.end()) {
+            throw std::invalid_argument(fmt::format("keyspace {} does not exist", keyspace));
+        }
+
         if (args.size() > 1) {
             params["cf"] = fmt::to_string(fmt::join(args.begin() + 1, args.end(), ","));
         }
         client.post(format("/storage_service/keyspace_compaction/{}", keyspace), std::move(params));
     } else {
-        auto keyspaces_json = client.get("/storage_service/keyspaces", {});
-        for (const auto& keyspace_json : check_json_type(keyspaces_json, json_type::array).GetArray()) {
-            const auto keyspace = rjson::to_string_view(check_json_type(keyspace_json, json_type::string));
+        for (const auto& keyspace : all_keyspaces) {
             client.post(format("/storage_service/keyspace_compaction/{}", keyspace));
         }
     }
