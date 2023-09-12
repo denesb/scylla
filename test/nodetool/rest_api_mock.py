@@ -20,26 +20,32 @@ logger = logging.getLogger(__name__)
 
 
 class expected_request:
-    def __init__(self, method, path, response=None):
+    def __init__(self, method: str, path: str, params: dict = {}, response: Dict[str, Any] = None):
         self.method = method
         self.path = path
+        self.params = {}
         self.response = response
 
     def as_json(self):
-        res = {"method": self.method, "path": self.path}
-        if self.response is not None:
-            res["response"] = self.response
-        return res
+        return {
+                "method": self.method,
+                "path": self.path,
+                "params": self.params,
+                "response": self.response}
 
     def __eq__(self, o):
-        return self.method == o.method and self.path == o.path
+        return self.method == o.method and self.path == o.path and self.params == o.params
 
     def __str__(self):
         return json.dumps(self.as_json())
 
 
 def _make_expected_request(req_json):
-    return expected_request(req_json["method"], req_json["path"], req_json.get("response"))
+    return expected_request(
+            req_json["method"],
+            req_json["path"],
+            req_json.get("params", dict()),
+            req_json.get("response"))
 
 
 class handler_match_info(aiohttp.abc.AbstractMatchInfo):
@@ -108,7 +114,7 @@ class rest_server(aiohttp.abc.AbstractRouter):
         return aiohttp.web.json_response({})
 
     async def handle_generic_request(self, request: aiohttp.web.Request) -> aiohttp.web.Response:
-        this_req = expected_request(request.method, request.path)
+        this_req = expected_request(request.method, request.path, params=dict(request.query))
 
         if len(self.expected_requests) == 0:
             logger.error(f"unexpected request, expected no request, got {this_req}")

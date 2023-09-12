@@ -35,7 +35,7 @@ def test_jmx_compatibility_args(nodetool, scylla_only):
 
 def test_compact_all_keyspaces(nodetool):
     nodetool("compact", expected_requests=[
-        expected_request("GET", "/storage_service/keyspaces?type=all", json.dumps(["system", "system_schema"])),
+        expected_request("GET", "/storage_service/keyspaces", response=["system", "system_schema"]),
         expected_request("POST", "/storage_service/keyspace_compaction/system"),
         expected_request("POST", "/storage_service/keyspace_compaction/system_schema")])
 
@@ -47,11 +47,11 @@ def test_compact_keyspace(nodetool):
 
 def test_compact_table(nodetool):
     nodetool("compact", "system_schema", "columns", expected_requests=[
-        expected_request("POST", "/storage_service/keyspace_compaction/system_schema?cf=columns")])
+        expected_request("POST", "/storage_service/keyspace_compaction/system_schema", params={"cf": "columns"})])
 
     nodetool("compact", "system_schema", "columns", "computed_columns", expected_requests=[
         expected_request("POST",
-                         "/storage_service/keyspace_compaction/system_schema?cf=columns%2Ccomputed_columns")])
+                         "/storage_service/keyspace_compaction/system_schema", params={"cf": "columns,computed_columns"})])
 
 
 def test_compact_split_output_compatibility_argument(nodetool):

@@ -130,7 +130,7 @@ void compact_operation(scylla_rest_client& client, const bpo::variables_map& vm)
         }
         client.post(format("/storage_service/keyspace_compaction/{}", keyspace), std::move(params));
     } else {
-        auto keyspaces_json = client.get("/storage_service/keyspaces", {{"type", "all"}});
+        auto keyspaces_json = client.get("/storage_service/keyspaces", {});
         for (const auto& keyspace_json : check_json_type(keyspaces_json, json_type::array).GetArray()) {
             const auto keyspace = rjson::to_string_view(check_json_type(keyspace_json, json_type::string));
             client.post(format("/storage_service/keyspace_compaction/{}", keyspace));
