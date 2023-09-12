@@ -4,6 +4,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 
+import json
 import multiprocessing
 import os
 import pytest
@@ -59,7 +60,16 @@ def jmx(jmx_path, rest_api_mock_server):
     else:
         workdir = os.path.join(os.path.dirname(jmx_path), "..")
         ip, port = rest_api_mock_server
-        jmx_process = subprocess.Popen([jmx_path, "-a", ip, "-p", port], cwd=workdir, text=True)
+        expected_requests = [rest_api_mock.request("GET", "/column_family/",
+                                                   json.dumps([{"ks": "system_schema",
+                                                                "cf": "columns",
+                                                                "type": "ColumnFamilies"},
+                                                               {"ks": "system_schema",
+                                                                "cf": "computed_columns",
+                                                                "type": "ColumnFamilies"}])),
+                             rest_api_mock.request("GET", "/stream_manager/", json.dumps([]))]
+        rest_api_mock.set_expected_requests(rest_api_mock_server, expected_requests)
+        jmx_process = subprocess.Popen([jmx_path, "-a", ip, "-p", str(port)], cwd=workdir, text=True)
         yield
         jmx_process.terminate()
         jmx_process.wait()
@@ -75,7 +85,13 @@ def nodetool_path(request):
     if path is not None:
         return os.path.abspath(path)
 
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "tools", "java", "nodetool"))
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "tools", "java", "bin", "nodetool"))
+
+
+@pytest.fixture(scope="function")
+def scylla_only(request):
+    if request.config.getoption("nodetool") != "scylla":
+        pytest.skip('Scylla-only test skipped')
 
 
 @pytest.fixture(scope="module")

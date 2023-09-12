@@ -4,11 +4,18 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 
-import http.server
 import json
 import requests
-import socketserver
 import sys
+import aiohttp
+import traceback
+import aiohttp.web
+import logging
+import asyncio
+from typing import Any, Dict, Tuple
+
+
+logger = logging.getLogger(__name__)
 
 
 class request:
@@ -34,75 +41,114 @@ def _make_request(req_json):
     return request(req_json["method"], req_json["path"], req_json.get("response"))
 
 
-class response_handler(http.server.BaseHTTPRequestHandler):
-    EXPECTED_REQUESTS_PATH = "/__expected_requests__"
-    expected_requests = []
+class handler_match_info(aiohttp.abc.AbstractMatchInfo):
+    def __init__(self, handler):
+        self.handler = handler
+        self._apps = list()
 
-    def set_headers(self, content_length):
-        self.protocol_version = "HTTP/1.1"
-        self.send_response(200)
-        self.send_header("Content-Length", str(content_length))
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
+    async def handler(self, request: aiohttp.web.Request) -> aiohttp.web.Response:
+        """Catch all exceptions and return them to the client.
+           Without this, the client would get an 'Internal server error' message
+           without any details. Thanks to this the test log shows the actual error.
+        """
+        try:
+            return await self.handler(request)
+        except Exception as e:
+            tb = traceback.format_exc()
+            logger.error(f'Exception when executing {self.handler.__name__}: {e}\n{tb}')
+            return aiohttp.web.Response(status=500, text=str(e))
 
-    def do_handle(self, method):
-        this_req = request(method, self.path)
+    async def expect_handler(self) -> None:
+        return None
 
-        if len(response_handler.expected_requests) == 0:
-            self.send_error(500, message="Unexpected request", explain=f"Expected no requests, got: {this_req}")
-            return
+    async def http_exception(self) -> None:
+        return None
 
-        expected_req = response_handler.expected_requests[0]
+    def get_info(self) -> Dict[str, Any]:
+        return {}
+
+    def apps(self) -> Tuple[aiohttp.web.Application, ...]:
+        return tuple(self._apps)
+
+    def add_app(self, app: aiohttp.web.Application):
+        self._apps.append(app)
+
+    def freeze(self) -> None:
+        pass
+
+
+class rest_server(aiohttp.abc.AbstractRouter):
+    EXPECTED_REQUESTS_PATH = "__expected_requests__"
+
+    def __init__(self):
+        self.expected_requests = []
+
+    async def resolve(self, request: aiohttp.web.Request) -> aiohttp.abc.AbstractMatchInfo:
+        if request.path == f"/{self.EXPECTED_REQUESTS_PATH}":
+            return handler_match_info(getattr(self, f"{request.method.lower()}_expected_requests"))
+        raise aiohttp.web.HTTPNotFound()
+
+    async def get_expected_requests(self, request: aiohttp.web.Request) -> aiohttp.web.Response:
+        return aiohttp.web.json_response([r.as_json() for r in self.expected_requests])
+
+    async def post_expected_requests(self, request: aiohttp.web.Request) -> aiohttp.web.Response:
+        payload = await request.json()
+        self.expected_requests = list(map(_make_request, payload))
+        logger.info(f"expected_requests: {list(map(str, self.expected_requests))}")
+        return aiohttp.web.json_response({})
+
+    async def delete_expected_requests(self, request: aiohttp.web.Request) -> aiohttp.web.Response:
+        self.expected_requests = []
+        return aiohttp.web.json_response({})
+
+    async def handle_generic_request(self, request: aiohttp.web.Request) -> aiohttp.web.Response:
+        this_req = request(request.method, request.path)
+
+        if len(self.expected_requests) == 0:
+            logger.error(f"unexpected request, expected no request, got {this_req}")
+            return aiohttp.web.Response(status=500, text="Expected no requests, got {this_req}")
+
+        expected_req = self.expected_requests[0]
         if this_req != expected_req:
-            self.send_error(500, message="Unexpected request", explain=f"Expected {expected_req}, got: {this_req}")
-            return
+            logger.error(f"unexpected request, expected {expected_req}, got {this_req}")
+            return aiohttp.web.Response(status=500, text="Expected {expected_req}, got {this_req}")
+
+        del self.expected_requests[0]
 
         if expected_req.response is None:
-            self.log_message("expected_request: %s, no response", expected_req)
-            self.set_headers(0)
+            logger.info(f"expected_request: {expected_req}, no response")
+            return aiohttp.web.json_response({})
         else:
-            self.log_message("expected_request: %s, response: %s", expected_req, expected_req.response)
-            payload = expected_req.response.encode()
-            self.set_headers(len(payload))
-            self.wfile.write(payload)
-
-        del response_handler.expected_requests[0]
-
-    def do_GET(self):
-        self.close_connection = False
-        if self.path == response_handler.EXPECTED_REQUESTS_PATH:
-            payload = json.dumps([r.as_json() for r in response_handler.expected_requests])
-            payload = payload.encode()
-            self.set_headers(len(payload))
-            self.wfile.write(payload)
-            return
-
-        self.do_handle("GET")
-
-    def do_POST(self):
-        if self.path == response_handler.EXPECTED_REQUESTS_PATH:
-            content_len = int(self.headers["Content-Length"])
-            payload = self.rfile.read(content_len).decode()
-            self.log_message("expected_requests: %s", payload)
-            payload = json.loads(payload)
-            response_handler.expected_requests = list(map(_make_request, payload))
-            self.set_headers(len(payload))
-            return
-
-        self.do_handle("POST")
-
-    def do_DELETE(self):
-        if self.path == response_handler.EXPECTED_REQUESTS_PATH:
-            response_handler.expected_requests = []
-            self.set_headers(0)
-            return
-
-        self.do_handle("DELETE")
+            logger.info(f"expected_request: {expected_req}, response: {expected_req.response}")
+            return aiohttp.web.json_response(expected_req.response)
 
 
-def run_server(ip, port):
-    with socketserver.TCPServer((ip, port), response_handler) as httpd:
-        httpd.serve_forever()
+async def run_server(ip, port):
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    server = rest_server()
+    app = aiohttp.web.Application(router=server)
+
+    logger.info("start serving")
+
+    runner = aiohttp.web.AppRunner(app)
+    await runner.setup()
+    site = aiohttp.web.TCPSite(runner, ip, port)
+    await site.start()
+
+    try:
+        while True:
+            await asyncio.sleep(3600)  # sleep forever
+    except asyncio.exceptions.CancelledError:
+        pass
+
+    logger.info("stopping")
+
+    await runner.cleanup()
 
 
 def get_expected_requests(server):
@@ -115,7 +161,7 @@ def get_expected_requests(server):
     * server - resolved `rest_api_mock_server` fixture (see conftest.py).
     """
     ip, port = server
-    r = requests.get(f"http://{ip}:{port}{response_handler.EXPECTED_REQUESTS_PATH}")
+    r = requests.get(f"http://{ip}:{port}/{rest_server.EXPECTED_REQUESTS_PATH}")
     r.raise_for_status()
     return [_make_request(r) for r in r.json()]
 
@@ -127,7 +173,7 @@ def clear_expected_requests(server):
     * server - resolved `rest_api_mock_server` fixture (see conftest.py).
     """
     ip, port = server
-    r = requests.delete(f"http://{ip}:{port}{response_handler.EXPECTED_REQUESTS_PATH}")
+    r = requests.delete(f"http://{ip}:{port}/{rest_server.EXPECTED_REQUESTS_PATH}")
     r.raise_for_status()
 
 
@@ -140,9 +186,9 @@ def set_expected_requests(server, expected_requests):
     """
     ip, port = server
     payload = json.dumps([r.as_json() for r in expected_requests])
-    r = requests.post(f"http://{ip}:{port}{response_handler.EXPECTED_REQUESTS_PATH}", data=payload)
+    r = requests.post(f"http://{ip}:{port}/{rest_server.EXPECTED_REQUESTS_PATH}", data=payload)
     r.raise_for_status()
 
 
 if __name__ == '__main__':
-    run_server(sys.argv[1], int(sys.argv[2]))
+    sys.exit(asyncio.run(run_server(sys.argv[1], int(sys.argv[2]))))

@@ -10,7 +10,7 @@ import json
 import subprocess
 
 
-def test_jmx_compatibility_args(nodetool):
+def test_jmx_compatibility_args(nodetool, scylla_only):
     """Check that all JMX arguments inherited to nodetool are ignored.
 
     These arguments are unused in the scylla-native nodetool and should be
@@ -73,7 +73,7 @@ def test_compact_partition_compatibility_argument(nodetool):
     nodetool("compact", "system_schema", "--partition", "0", expected_requests=dummy_request)
 
 
-def test_compact_user_defined(nodetool):
+def test_compact_user_defined(nodetool, scylla_only):
     with pytest.raises(subprocess.CalledProcessError) as e:
         nodetool("compact", "--user-defined", "/var/lib/scylla/data/system/local-7ad54392bcdd35a684174e047860b377/"
                  "me-3g8w_11cg_4317k2ppfb6d5vgp0w-big-Data.db")
