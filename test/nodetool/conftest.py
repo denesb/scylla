@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 
-import json
 import os
 import pytest
 import random
@@ -75,18 +74,50 @@ def jmx(request, rest_api_mock_server):
         jmx_path = os.path.abspath(jmx_path)
 
     workdir = os.path.join(os.path.dirname(jmx_path), "..")
-    ip, port = rest_api_mock_server
-    expected_requests = [expected_request("GET", "/column_family/",
-                                               json.dumps([{"ks": "system_schema",
-                                                            "cf": "columns",
-                                                            "type": "ColumnFamilies"},
-                                                           {"ks": "system_schema",
-                                                            "cf": "computed_columns",
-                                                            "type": "ColumnFamilies"}])),
-                         expected_request("GET", "/stream_manager/", json.dumps([]))]
+    ip, api_port = rest_api_mock_server
+    expected_requests = [
+            expected_request(
+                "GET",
+                "/column_family/",
+                response=[{"ks": "system_schema",
+                           "cf": "columns",
+                           "type": "ColumnFamilies"},
+                          {"ks": "system_schema",
+                           "cf": "computed_columns",
+                           "type": "ColumnFamilies"}]),
+            expected_request(
+                "GET",
+                "/stream_manager/",
+                response=[])]
     rest_api_mock.set_expected_requests(rest_api_mock_server, expected_requests)
-    jmx_process = subprocess.Popen([jmx_path, "-a", ip, "-p", str(port)], cwd=workdir, text=True)
-    yield
+
+    # Our nodetool launcher script ignores the host param, so this has to be 127.0.0.1, matching the internal default.
+    jmx_ip = "127.0.0.1"
+    jmx_port = random.randint(10000, 65535)
+    while jmx_port == api_port:
+        jmx_port = random.randint(10000, 65535)
+
+    jmx_process = subprocess.Popen(
+            [
+                jmx_path,
+                "-a", ip,
+                "-p", str(api_port),
+                "-ja", jmx_ip,
+                "-jp", str(jmx_port),
+            ],
+            cwd=workdir, text=True)
+
+    # Wait until jmx starts up
+    # We rely on the expected requests being consumed for this
+    i = 0
+    while len(rest_api_mock.get_expected_requests(rest_api_mock_server)) > 0:
+        if i == 50:  # 5 seconds
+            raise RuntimeError("timed out waiting for JMX to start")
+        time.sleep(0.1)
+        i += 1
+
+    yield jmx_ip, jmx_port
+
     jmx_process.terminate()
     jmx_process.wait()
 
@@ -116,12 +147,15 @@ def nodetool(request, jmx, nodetool_path, rest_api_mock_server):
         if expected_requests is not None:
             rest_api_mock.set_expected_requests(rest_api_mock_server, expected_requests)
 
-        ip, port = rest_api_mock_server
         if request.config.getoption("nodetool") == "scylla":
-            cmd = [nodetool_path, "nodetool", method, "--logger-log-level", "scylla-nodetool=trace"]
+            api_ip, api_port = rest_api_mock_server
+            cmd = [nodetool_path, "nodetool", method,
+                   "--logger-log-level", "scylla-nodetool=trace",
+                   "-h", api_ip,
+                   "-p", str(api_port)]
         else:
-            cmd = [nodetool_path, method]
-        cmd += ["-h", ip, "-p", str(port)]
+            jmx_ip, jmx_port = jmx
+            cmd = [nodetool_path, "-h", jmx_ip, "-p", str(jmx_port), method]
         cmd += list(args)
         res = subprocess.run(cmd, capture_output=True, text=True)
         sys.stdout.write(res.stdout)
