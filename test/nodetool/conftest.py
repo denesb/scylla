@@ -5,13 +5,16 @@
 #
 
 import json
-import multiprocessing
 import os
 import pytest
 import random
 import rest_api_mock
 import subprocess
 import sys
+import requests.exceptions
+import time
+
+from rest_api_mock import expected_request
 
 
 def pytest_addoption(parser):
@@ -31,48 +34,61 @@ def pytest_addoption(parser):
 def rest_api_mock_server():
     ip = f"127.{random.randint(0, 255)}.{random.randint(0, 255)}.{random.randint(0, 255)}"
     port = random.randint(10000, 65535)
-    server_process = multiprocessing.Process(target=rest_api_mock.run_server, args=(ip, port))
-    server_process.start()
+
+    server_process = subprocess.Popen([
+        sys.executable,
+        os.path.join(os.path.dirname(__file__), "rest_api_mock.py"),
+        ip,
+        str(port)])
+
+    server = (ip, port)
+
+    i = 0
+    while True:
+        try:
+            rest_api_mock.get_expected_requests(server)
+            break
+        except requests.exceptions.ConnectionError:
+            if i == 50:  # 5 seconds
+                raise
+            time.sleep(0.1)
+            i += 1
+
     try:
-        yield (ip, port)
+        yield server
     finally:
         server_process.terminate()
-        server_process.join()
+        server_process.wait()
 
 
 @pytest.fixture(scope="session")
-def jmx_path(request):
+def jmx(request, rest_api_mock_server):
     if request.config.getoption("nodetool") == "scylla":
-        return None
+        yield
+        return
 
-    path = request.config.getoption("jmx_path")
-    if path is not None:
-        return os.path.abspath(path)
-
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "scylla-jmx", "scripts",
-                                        "scylla-jmx"))
-
-
-@pytest.fixture(scope="session")
-def jmx(jmx_path, rest_api_mock_server):
+    jmx_path = request.config.getoption("jmx_path")
     if jmx_path is None:
-        yield
+        jmx_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "scylla-jmx", "scripts",
+                                                "scylla-jmx"))
     else:
-        workdir = os.path.join(os.path.dirname(jmx_path), "..")
-        ip, port = rest_api_mock_server
-        expected_requests = [rest_api_mock.request("GET", "/column_family/",
-                                                   json.dumps([{"ks": "system_schema",
-                                                                "cf": "columns",
-                                                                "type": "ColumnFamilies"},
-                                                               {"ks": "system_schema",
-                                                                "cf": "computed_columns",
-                                                                "type": "ColumnFamilies"}])),
-                             rest_api_mock.request("GET", "/stream_manager/", json.dumps([]))]
-        rest_api_mock.set_expected_requests(rest_api_mock_server, expected_requests)
-        jmx_process = subprocess.Popen([jmx_path, "-a", ip, "-p", str(port)], cwd=workdir, text=True)
-        yield
-        jmx_process.terminate()
-        jmx_process.wait()
+        jmx_path = os.path.abspath(jmx_path)
+
+    workdir = os.path.join(os.path.dirname(jmx_path), "..")
+    ip, port = rest_api_mock_server
+    expected_requests = [expected_request("GET", "/column_family/",
+                                               json.dumps([{"ks": "system_schema",
+                                                            "cf": "columns",
+                                                            "type": "ColumnFamilies"},
+                                                           {"ks": "system_schema",
+                                                            "cf": "computed_columns",
+                                                            "type": "ColumnFamilies"}])),
+                         expected_request("GET", "/stream_manager/", json.dumps([]))]
+    rest_api_mock.set_expected_requests(rest_api_mock_server, expected_requests)
+    jmx_process = subprocess.Popen([jmx_path, "-a", ip, "-p", str(port)], cwd=workdir, text=True)
+    yield
+    jmx_process.terminate()
+    jmx_process.wait()
 
 
 @pytest.fixture(scope="session")

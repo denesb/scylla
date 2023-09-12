@@ -4,21 +4,22 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 
+import aiohttp
+import aiohttp.web
+import asyncio
 import json
+import logging
 import requests
 import sys
-import aiohttp
 import traceback
-import aiohttp.web
-import logging
-import asyncio
+
 from typing import Any, Dict, Tuple
 
 
 logger = logging.getLogger(__name__)
 
 
-class request:
+class expected_request:
     def __init__(self, method, path, response=None):
         self.method = method
         self.path = path
@@ -37,8 +38,8 @@ class request:
         return json.dumps(self.as_json())
 
 
-def _make_request(req_json):
-    return request(req_json["method"], req_json["path"], req_json.get("response"))
+def _make_expected_request(req_json):
+    return expected_request(req_json["method"], req_json["path"], req_json.get("response"))
 
 
 class handler_match_info(aiohttp.abc.AbstractMatchInfo):
@@ -86,6 +87,11 @@ class rest_server(aiohttp.abc.AbstractRouter):
     async def resolve(self, request: aiohttp.web.Request) -> aiohttp.abc.AbstractMatchInfo:
         if request.path == f"/{self.EXPECTED_REQUESTS_PATH}":
             return handler_match_info(getattr(self, f"{request.method.lower()}_expected_requests"))
+
+        for req in self.expected_requests:
+            if req.path == request.path and req.method == request.method:
+                return handler_match_info(self.handle_generic_request)
+
         raise aiohttp.web.HTTPNotFound()
 
     async def get_expected_requests(self, request: aiohttp.web.Request) -> aiohttp.web.Response:
@@ -93,7 +99,7 @@ class rest_server(aiohttp.abc.AbstractRouter):
 
     async def post_expected_requests(self, request: aiohttp.web.Request) -> aiohttp.web.Response:
         payload = await request.json()
-        self.expected_requests = list(map(_make_request, payload))
+        self.expected_requests = list(map(_make_expected_request, payload))
         logger.info(f"expected_requests: {list(map(str, self.expected_requests))}")
         return aiohttp.web.json_response({})
 
@@ -102,7 +108,7 @@ class rest_server(aiohttp.abc.AbstractRouter):
         return aiohttp.web.json_response({})
 
     async def handle_generic_request(self, request: aiohttp.web.Request) -> aiohttp.web.Response:
-        this_req = request(request.method, request.path)
+        this_req = expected_request(request.method, request.path)
 
         if len(self.expected_requests) == 0:
             logger.error(f"unexpected request, expected no request, got {this_req}")
@@ -163,7 +169,7 @@ def get_expected_requests(server):
     ip, port = server
     r = requests.get(f"http://{ip}:{port}/{rest_server.EXPECTED_REQUESTS_PATH}")
     r.raise_for_status()
-    return [_make_request(r) for r in r.json()]
+    return [_make_expected_request(r) for r in r.json()]
 
 
 def clear_expected_requests(server):
