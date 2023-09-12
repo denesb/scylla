@@ -16,15 +16,17 @@ import sys
 def pytest_addoption(parser):
     parser.addoption('--mode', action='store', default='dev',
                      help='Scylla build mode to use')
+    parser.addoption('--nodetool', action='store', choices=["scylla", "cassandra"], default="scylla",
+                     help="Which nodetool implementation to run the tests against")
+    parser.addoption('--nodetool-path', action='store', default=None,
+                     help="Path to the nodetool binary,"
+                     " with --nodetool=scylla, this should be the scylla binary,"
+                     " with --nodetool=cassandra, this should be the nodetool binary")
+    parser.addoption('--jmx-path', action='store', default=None,
+                     help="Path to the jmx binary, only used with --nodetool=cassandra")
 
 
-@pytest.fixture(scope="module")
-def scylla_path(request):
-    mode = request.config.getoption("mode")
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "build", mode, "scylla"))
-
-
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def rest_api_mock_server():
     ip = f"127.{random.randint(0, 255)}.{random.randint(0, 255)}.{random.randint(0, 255)}"
     port = random.randint(10000, 65535)
@@ -37,18 +39,57 @@ def rest_api_mock_server():
         server_process.join()
 
 
+@pytest.fixture(scope="session")
+def jmx_path(request):
+    if request.config.getoption("nodetool") == "scylla":
+        return None
+
+    path = request.config.getoption("jmx_path")
+    if path is not None:
+        return os.path.abspath(path)
+
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "scylla-jmx", "scripts",
+                                        "scylla-jmx"))
+
+
+@pytest.fixture(scope="session")
+def jmx(jmx_path, rest_api_mock_server):
+    if jmx_path is None:
+        yield
+    else:
+        workdir = os.path.join(os.path.dirname(jmx_path), "..")
+        ip, port = rest_api_mock_server
+        jmx_process = subprocess.Popen([jmx_path, "-a", ip, "-p", port], cwd=workdir, text=True)
+        yield
+        jmx_process.terminate()
+        jmx_process.wait()
+
+
+@pytest.fixture(scope="session")
+def nodetool_path(request):
+    if request.config.getoption("nodetool") == "scylla":
+        mode = request.config.getoption("mode")
+        return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "build", mode, "scylla"))
+
+    path = request.config.getoption("nodetool_path")
+    if path is not None:
+        return os.path.abspath(path)
+
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "tools", "java", "nodetool"))
+
+
 @pytest.fixture(scope="module")
-def nodetool(scylla_path, rest_api_mock_server):
+def nodetool(request, jmx, nodetool_path, rest_api_mock_server):
     def invoker(method, *args, expected_requests=None):
         if expected_requests is not None:
             rest_api_mock.set_expected_requests(rest_api_mock_server, expected_requests)
 
         ip, port = rest_api_mock_server
-        cmd = [
-                scylla_path, "nodetool", method,
-                "--logger-log-level", "scylla-nodetool=trace",
-                "-h", ip,
-                "-p", str(port)]
+        if request.config.getoption("nodetool") == "scylla":
+            cmd = [nodetool_path, "nodetool", method, "--logger-log-level", "scylla-nodetool=trace"]
+        else:
+            cmd = [nodetool_path, method]
+        cmd += ["-h", ip, "-p", str(port)]
         cmd += list(args)
         res = subprocess.run(cmd, capture_output=True, text=True)
         sys.stdout.write(res.stdout)
