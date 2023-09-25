@@ -357,6 +357,18 @@ public:
     friend std::ostream& operator<<(std::ostream&, const tablet_metadata&);
 };
 
+struct tablet_metadata_key {
+    sstring keyspace_name;
+    table_id table_id;
+    std::vector<token> tokens;
+};
+
+struct tablet_metadata_change_hint {
+    std::vector<tablet_metadata_key> keys;
+
+    operator bool() const noexcept { return !keys.empty(); }
+};
+
 }
 
 template <>

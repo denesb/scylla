@@ -153,6 +153,55 @@ future<> save_tablet_metadata(replica::database& db, const tablet_metadata& tm, 
     co_await db.apply(freeze(muts), db::no_timeout);
 }
 
+static locator::tablet_metadata_key to_tablet_metadata_key(const schema& s, const partition_key& key) {
+    const auto elements = key.explode(s);
+    auto keyspace_name = value_cast<sstring>(utf8_type->deserialize_value(elements[0]));
+    auto table_id = value_cast<utils::UUID>(uuid_type->deserialize_value(elements[1]));
+    return locator::tablet_metadata_key{std::move(keyspace_name), ::table_id(table_id)};
+}
+
+static dht::token to_tablet_metadata_row_key(const schema& s, const clustering_key& key) {
+    const auto elements = key.explode(s);
+    return dht::token::from_int64(value_cast<int64_t>(long_type->deserialize_value(elements[0])));
+}
+
+static void do_update_tablet_metadata_change_hint(locator::tablet_metadata_change_hint& hint, const schema& s, const mutation& cm) {
+    if (cm.column_family_id() != s.id()) {
+        return;
+    }
+    hint.keys.push_back(to_tablet_metadata_key(s, cm.key()));
+
+    const auto& mp = cm.partition();
+    if (mp.partition_tombstone() || !mp.row_tombstones().empty()) {
+        // If there is a partition tombstone or range tombstone, update the
+        // entire partition.
+        return;
+    }
+
+    auto& tokens = hint.keys.back().tokens;
+    for (const auto& row : mp.clustered_rows()) {
+        tokens.push_back(to_tablet_metadata_row_key(s, row.key()));
+    }
+}
+
+locator::tablet_metadata_change_hint get_tablet_metadata_change_hint(const std::vector<canonical_mutation>& mutations) {
+    auto s = db::system_keyspace::tablets();
+
+    locator::tablet_metadata_change_hint hint;
+    hint.keys.reserve(mutations.size());
+
+    for (const auto& cm : mutations) {
+        do_update_tablet_metadata_change_hint(hint, *s, cm.to_mutation(s));
+    }
+
+    return hint;
+}
+
+void update_tablet_metadata_change_hint(locator::tablet_metadata_change_hint& hint, const mutation& m) {
+    auto s = db::system_keyspace::tablets();
+    do_update_tablet_metadata_change_hint(hint, *s, m);
+}
+
 future<tablet_metadata> read_tablet_metadata(cql3::query_processor& qp) {
     tablet_metadata tm;
     struct active_tablet_map {
