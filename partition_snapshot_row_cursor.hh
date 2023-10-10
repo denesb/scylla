@@ -749,39 +749,39 @@ public:
     }
 
     friend std::ostream& operator<<(std::ostream& out, const partition_snapshot_row_cursor& cur) {
-        fmt::print(out, "{{cursor: position={}, cont={}, rt={}}}",
+        fmt::print(out, "{{cursor:\n  position={}\n  cont={}\n  rt={}}}",
                    cur._position, cur.continuous(), cur.range_tombstone());
         if (cur.range_tombstone() != cur.range_tombstone_for_row()) {
-            fmt::print(out, ", row_rt={}", cur.range_tombstone_for_row());
+            fmt::print(out, "\n  row_rt={}", cur.range_tombstone_for_row());
         }
-        out << ", ";
+        out << "\n  ";
         if (cur._reversed) {
-            out << "reversed, ";
+            out << "reversed";
         }
         if (!cur.iterators_valid()) {
-            return out << " iterators invalid}";
+            return out << "\n iterators invalid}";
         }
-        out << "snp=" << &cur._snp << ", current=[";
+        out << "\n  snp=" << &cur._snp << "\n  current=[";
         bool first = true;
         for (auto&& v : cur._current_row) {
             if (!first) {
-                out << ", ";
+                out << "\n    ";
             }
             first = false;
             fmt::print(out, "{{v={}, pos={}, cont={}, rt={}, row_rt={}}}",
                        v.version_no, v.it->position(), v.continuous, v.rt, v.it->range_tombstone());
         }
-        out << "], heap=[\n  ";
+        out << "]\n  heap=[\n    ";
         first = true;
         for (auto&& v : cur._heap) {
             if (!first) {
-                out << ",\n  ";
+                out << ",\n    ";
             }
             first = false;
             fmt::print(out, "{{v={}, pos={}, cont={}, rt={}, row_rt={}}}",
                        v.version_no, v.it->position(), v.continuous, v.rt, v.it->range_tombstone());
         }
-        out << "], latest_iterator=[";
+        out << "]\n  latest_iterator=[";
         if (cur._latest_it) {
             mutation_partition::rows_type::iterator i = *cur._latest_it;
             if (!i) {

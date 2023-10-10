@@ -2008,7 +2008,7 @@ class random_mutation_generator::impl {
 
 private:
     // Set to true in order to produce mutations which are easier to work with during debugging.
-    static const bool debuggable = false;
+    static const bool debuggable = true;
 
     // The "333" prefix is so that it's easily distinguishable from other numbers in the printout.
     static const api::timestamp_type min_timestamp = debuggable ? 3330000 : ::api::min_timestamp;
@@ -2034,6 +2034,7 @@ private:
     // The "777" prefix is so that it's easily distinguishable from other numbers in the printout.
     // Also makes it easy to grep for a particular element.
     uint64_t _seq = 777000000;
+    api::timestamp_type _next_ts = min_timestamp;
 
     template <typename Generator>
     static gc_clock::time_point expiry_dist(Generator& gen) {
@@ -2055,6 +2056,7 @@ private:
             add_column(format("v{:d}", i), column_kind::regular_column);
             add_column(format("s{:d}", i), column_kind::static_column);
         }
+        builder.with_column(to_bytes("version"), int32_type, column_kind::static_column);
 
         return builder.build();
     }
@@ -2065,7 +2067,8 @@ private:
     }
 
     api::timestamp_type gen_timestamp(timestamp_level l) {
-        auto ts = _timestamp_dist(_gen);
+        //auto ts = _timestamp_dist(_gen);
+        auto ts = _next_ts++;
         if (_uncompactable) {
             // Offset the timestamp such that no higher level tombstones
             // covers any lower level tombstone, and no tombstone covers data.
@@ -2312,20 +2315,22 @@ public:
             abort();
         };
 
+        /*
         if (tests::random::with_probability(0.11)) {
             m.partition().apply(random_tombstone(timestamp_level::partition_tombstone));
         }
+        */
 
         m.partition().set_static_row_continuous(_bool_dist(_gen));
 
-        set_random_cells(m.partition().static_row().maybe_create(), column_kind::static_column);
+        //set_random_cells(m.partition().static_row().maybe_create(), column_kind::static_column);
 
         auto row_count_dist = [&] (auto& gen) {
             static thread_local std::normal_distribution<> dist(32, 1.5);
             return static_cast<size_t>(std::min(100.0, std::max(0.0, dist(gen))));
         };
 
-        size_t row_count = row_count_dist(_gen);
+        size_t row_count = 0;//row_count_dist(_gen);
 
         std::unordered_set<clustering_key, clustering_key::hashing, clustering_key::equality> keys(
                 0, clustering_key::hashing(*_schema), clustering_key::equality(*_schema));

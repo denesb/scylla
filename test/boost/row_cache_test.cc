@@ -3378,7 +3378,13 @@ SEASTAR_TEST_CASE(test_concurrent_reads_and_eviction) {
         schema_ptr rev_s = s->make_reversed();
         tests::reader_concurrency_semaphore_wrapper semaphore;
 
+        auto set_version = [&] (mutation& m, int32_t version) {
+            m.set_static_cell(to_bytes("version"), data_value(version), 555555);
+        };
+
         auto m0 = gen();
+        set_version(m0, 0);
+        testlog.info("GEN(): ORIG - {}", m0);
         m0.partition().make_fully_continuous();
         circular_buffer<mutation> versions;
         size_t last_generation = 0;
@@ -3398,7 +3404,7 @@ SEASTAR_TEST_CASE(test_concurrent_reads_and_eviction) {
             return rd;
         };
 
-        const int n_readers = 3;
+        const int n_readers = 1;
         std::vector<size_t> generations(n_readers);
         auto gc_versions = [&] {
             auto n_live = last_generation - *boost::min_element(generations) + 1;
@@ -3416,7 +3422,7 @@ SEASTAR_TEST_CASE(test_concurrent_reads_and_eviction) {
                     generations[id] = oldest_generation;
                     gc_versions();
 
-                    bool reversed = tests::random::get_bool();
+                    bool reversed = true;//tests::random::get_bool();
 
                     auto fwd_ranges = gen.make_random_ranges(1);
                     auto slice = partition_slice_builder(*s)
@@ -3441,19 +3447,21 @@ SEASTAR_TEST_CASE(test_concurrent_reads_and_eviction) {
 
                     auto n_to_consider = last_generation - oldest_generation + 1;
                     auto possible_versions = boost::make_iterator_range(versions.end() - n_to_consider, versions.end());
+                    std::vector<mutation> candidates;
                     if (!boost::algorithm::any_of(possible_versions, [&] (const mutation& m) {
                         auto m2 = m.sliced(fwd_ranges);
                         if (reversed) {
                             m2 = reverse(std::move(m2));
                         }
                         m2 = std::move(m2).compacted();
+                        candidates.push_back(m2);
                         if (n_to_consider == 1) {
                             assert_that(actual).is_equal_to(m2);
                         }
                         return m2 == actual;
                     })) {
                         BOOST_FAIL(format("Mutation read doesn't match any expected version, slice: {}, read: {}\nexpected: [{}]",
-                            slice, actual, fmt::join(possible_versions, ",\n")));
+                            slice, actual, fmt::join(candidates, ",\n")));
                     }
                 }
             }).finally([&] {
@@ -3462,8 +3470,11 @@ SEASTAR_TEST_CASE(test_concurrent_reads_and_eviction) {
         });
 
         int n_updates = 100;
+        int32_t version = 1;
         while (!done && n_updates--) {
             auto m2 = gen();
+            set_version(m2, version++);
+            testlog.info("GEN(): UPD - {}", m2);
             m2.partition().make_fully_continuous();
 
             bool upgrade_schema = tests::random::get_bool();

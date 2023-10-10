@@ -312,7 +312,11 @@ future<> cache_flat_mutation_reader::fill_buffer() {
     clogger.trace("csm {}: fill_buffer(), range={}, lb={}", fmt::ptr(this), *_ck_ranges_curr, _lower_bound);
     return do_until([this] { return _end_of_stream || is_buffer_full(); }, [this] {
         return do_fill_buffer();
-    });
+    }).then([this] {
+            for (const auto& mf : buffer()) {
+                clogger.trace("csm {}: fill_buffer() BUFFER {}", fmt::ptr(this), mutation_fragment_v2::printer(*_schema, mf));
+            }
+        });
 }
 
 inline
