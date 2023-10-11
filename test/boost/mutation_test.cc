@@ -3735,3 +3735,92 @@ SEASTAR_TEST_CASE(test_tracing_format) {
     BOOST_CHECK_EQUAL(formatted, "{key: pk{0103}, token: 42}");
     return make_ready_future();
  }
+
+SEASTAR_TEST_CASE(test_compare) {
+    auto s = schema_builder(get_name(), "tbl")
+        .with_column("pk", int32_type, column_kind::partition_key)
+        .with_column("ck1", int32_type, column_kind::clustering_key)
+        .with_column("ck2", int32_type, column_kind::clustering_key)
+        .with_column("v", int32_type)
+        .build();
+
+    auto for_key = [&] (int32_t ck1, int32_t ck2) {
+        return position_in_partition(
+                partition_region::clustered,
+                bound_weight::equal,
+                clustering_key::from_deeply_exploded(*s, {data_value(ck1), data_value(ck2)}));
+    };
+    auto before_key = [&] (int32_t ck1, std::optional<int32_t> ck2 = {}) {
+        std::vector<data_value> values;
+        values.emplace_back(ck1);
+        if (ck2) {
+            values.emplace_back(*ck2);
+        }
+        return position_in_partition(
+                partition_region::clustered,
+                bound_weight::before_all_prefixed,
+                clustering_key::from_deeply_exploded(*s, values));
+    };
+    auto after_key = [&] (int32_t ck1, std::optional<int32_t> ck2 = {}) {
+        std::vector<data_value> values;
+        values.emplace_back(ck1);
+        if (ck2) {
+            values.emplace_back(*ck2);
+        }
+        return position_in_partition(
+                partition_region::clustered,
+                bound_weight::after_all_prefixed,
+                clustering_key::from_deeply_exploded(*s, values));
+    };
+
+    const std::vector<position_in_partition> positions{
+            position_in_partition::before_all_clustered_rows(),
+            before_key(1),
+            before_key(1, 1),
+            for_key(1, 1),
+            after_key(1, 1),
+            before_key(1, 2),
+            for_key(1, 2),
+            after_key(1),
+            before_key(2),
+            for_key(2, 0),
+            after_key(2),
+            before_key(3),
+            after_key(3),
+            position_in_partition::after_all_clustered_rows()};
+
+    const auto compare = [] (const schema& s, const position_in_partition& a, const position_in_partition& b, std::strong_ordering expected) {
+        const auto cmp = position_in_partition::tri_compare(s);
+        const auto res = cmp(a, b);
+        testlog.info("      Comparing {} <=> {}: expected {}, got {}",
+                position_in_partition_view::printer(s, a),
+                position_in_partition_view::printer(s, b),
+                expected,
+                res);
+        BOOST_CHECK_EQUAL(res, expected);
+    };
+
+    auto check_order = [&compare] (const schema& s, const auto begin, const auto end) {
+        for (auto ita = begin; ita != end; ++ita) {
+            testlog.info("  Checking {}", position_in_partition_view::printer(s, *ita));
+            testlog.info("    Checking smaller positions");
+            for (auto itb = begin; itb != ita; ++itb) {
+                compare(s, *ita, *itb, std::strong_ordering::greater);
+            }
+            testlog.info("    Checking self");
+            compare(s, *ita, *ita, std::strong_ordering::equal);
+            testlog.info("    Checking larger positions");
+            for (auto itb = std::next(ita); itb != end; ++itb) {
+                compare(s, *ita, *itb, std::strong_ordering::less);
+            }
+        }
+    };
+
+    testlog.info("Check in forward order");
+    check_order(*s, positions.begin(), positions.end());
+
+    testlog.info("Check in reverse order");
+    //check_order(*s->make_reversed());
+
+    return make_ready_future<>();
+}
