@@ -513,7 +513,9 @@ bool cache_flat_mutation_reader::ensure_population_lower_bound() {
             return false;
         }
 
-        if (cmp(cur.position(), _last_row.position()) != 0) {
+        clogger.trace("csm {}: _last_row: {}, tmp cursor: {}", fmt::ptr(this), _last_row->position(), cur);
+
+        if (cmp(cur.table_position(), _last_row.position()) != 0) {
             return false;
         }
 
@@ -1012,7 +1014,6 @@ inline
 void cache_flat_mutation_reader::add_to_buffer(range_tombstone_change&& rtc) {
     clogger.trace("csm {}: add_to_buffer({})", fmt::ptr(this), rtc);
     _has_rt = true;
-    position_in_partition::less_compare less(*_schema);
     _lower_bound = position_in_partition(rtc.position());
     push_mutation_fragment(*_schema, _permit, std::move(rtc));
     _read_context.cache()._tracker.on_range_tombstone_read();
