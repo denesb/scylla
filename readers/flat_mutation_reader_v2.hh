@@ -387,7 +387,7 @@ public:
             _permit.set_timeout(timeout);
         }
     };
-private:
+public:
     std::unique_ptr<impl> _impl;
 
     flat_mutation_reader_v2() = default;

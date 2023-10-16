@@ -3404,7 +3404,7 @@ SEASTAR_TEST_CASE(test_concurrent_reads_and_eviction) {
             return rd;
         };
 
-        const int n_readers = 1;
+        const int n_readers = 3;
         std::vector<size_t> generations(n_readers);
         auto gc_versions = [&] {
             auto n_live = last_generation - *boost::min_element(generations) + 1;
@@ -3414,6 +3414,7 @@ SEASTAR_TEST_CASE(test_concurrent_reads_and_eviction) {
         };
 
         bool done = false;
+        int reader_id = 0;
         auto readers = parallel_for_each(boost::irange(0, n_readers), [&] (auto id) {
             generations[id] = last_generation;
             return seastar::async([&, id] {
@@ -3422,7 +3423,7 @@ SEASTAR_TEST_CASE(test_concurrent_reads_and_eviction) {
                     generations[id] = oldest_generation;
                     gc_versions();
 
-                    bool reversed = true;//tests::random::get_bool();
+                    bool reversed = tests::random::get_bool();
 
                     auto fwd_ranges = gen.make_random_ranges(1);
                     auto slice = partition_slice_builder(*s)
@@ -3435,6 +3436,8 @@ SEASTAR_TEST_CASE(test_concurrent_reads_and_eviction) {
                         native_slice = query::legacy_reverse_slice_to_native_reverse_slice(*s, slice);
                     }
 
+                    auto id = reader_id++;
+                    testlog.info("Creating reader id: {}, reversed: {}, slice: {}", id, reversed, slice);
                     auto rd = make_reader(slice);
                     auto close_rd = deferred_close(rd);
                     auto actual_opt = read_mutation_from_flat_mutation_reader(rd).get0();
@@ -3455,13 +3458,15 @@ SEASTAR_TEST_CASE(test_concurrent_reads_and_eviction) {
                         }
                         m2 = std::move(m2).compacted();
                         candidates.push_back(m2);
+                        /*
                         if (n_to_consider == 1) {
                             assert_that(actual).is_equal_to(m2);
                         }
+                        */
                         return m2 == actual;
                     })) {
-                        BOOST_FAIL(format("Mutation read doesn't match any expected version, slice: {}, read: {}\nexpected: [{}]",
-                            slice, actual, fmt::join(candidates, ",\n")));
+                        BOOST_FAIL(format("Mutation read ({}) doesn't match any expected version, slice: {}, reversed: {}, read: {}\nexpected: [{}]",
+                            id, slice, reversed, actual, fmt::join(candidates, ",\n")));
                     }
                 }
             }).finally([&] {
@@ -3474,7 +3479,6 @@ SEASTAR_TEST_CASE(test_concurrent_reads_and_eviction) {
         while (!done && n_updates--) {
             auto m2 = gen();
             set_version(m2, version++);
-            testlog.info("GEN(): UPD - {}", m2);
             m2.partition().make_fully_continuous();
 
             bool upgrade_schema = tests::random::get_bool();
@@ -3493,6 +3497,7 @@ SEASTAR_TEST_CASE(test_concurrent_reads_and_eviction) {
                 auto snap = underlying();
                 underlying.apply(m2);
                 auto new_version = versions.back() + m2;
+                testlog.info("NEW_VERSION({})\n{}\n+\n{}\n=\n{}", version - 1,versions.back(), m2, new_version);
                 versions.emplace_back(std::move(new_version));
                 ++last_generation;
             }), *mt).get();

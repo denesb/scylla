@@ -799,6 +799,7 @@ operator<<(std::ostream& os, const mutation_partition_v2::printer& p) {
 
         position_in_partition pip(re.position());
         if (pip.get_clustering_key_prefix()) {
+            os << indent << indent << indent << "position-raw: " << pip << "\n";
             os << indent << indent << indent << "position: {\n";
 
             auto ck = *pip.get_clustering_key_prefix();

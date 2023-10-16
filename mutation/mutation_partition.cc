@@ -1027,7 +1027,7 @@ std::ostream&
 operator<<(std::ostream& os, const rows_entry::printer& p) {
     auto& re = p._rows_entry;
     fmt::print(os, "{{rows_entry: cont={} dummy={} {} {}}}", re.continuous(), re.dummy(),
-                  position_in_partition_view::printer(p._schema, re.position()),
+                  re.position(),
                   deletable_row::printer(p._schema, re._row));
     return os;
 }

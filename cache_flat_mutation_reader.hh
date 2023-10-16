@@ -216,8 +216,11 @@ public:
         , _read_time(get_read_time())
         , _gc_before(get_gc_before(*_schema, dk, _read_time))
     {
-        clogger.trace("csm {}: table={}.{}, reversed={}, snap={}", fmt::ptr(this), _schema->ks_name(), _schema->cf_name(), _read_context.is_reversed(),
-                      fmt::ptr(&*_snp));
+        clogger.trace("csm {}: table={}.{}, reversed={}, snap={}, cursor={}", fmt::ptr(this), _schema->ks_name(), _schema->cf_name(), _read_context.is_reversed(),
+                      fmt::ptr(&*_snp), fmt::ptr(&_next_row));
+        for (const auto& v : _snp->versions()) {
+            clogger.trace("csm {}: VERSION: {}", fmt::ptr(this), mutation_partition_v2::printer(*v.get_schema(), v.partition()));
+        }
         push_mutation_fragment(*_schema, _permit, partition_start(std::move(dk), _snp->partition_tombstone()));
     }
     cache_flat_mutation_reader(schema_ptr s,

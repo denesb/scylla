@@ -14,6 +14,10 @@
 #include <boost/algorithm/cxx11/any_of.hpp>
 #include <boost/range/algorithm/heap_algorithm.hpp>
 
+namespace cache {
+extern logging::logger clogger;
+}
+
 class partition_snapshot_row_cursor;
 
 // A non-owning reference to a row inside partition_snapshot which
@@ -183,6 +187,7 @@ class partition_snapshot_row_cursor final {
     // Removes the next row from _heap and puts it into _current_row
     bool recreate_current_row() {
         _current_row.clear();
+        cache::clogger.info("cursor {}: recreate_current_row(): {}", fmt::ptr(this), *this);
         _continuous = _background_continuity;
         _range_tombstone = _background_rt;
         _range_tombstone_for_row = _background_rt;
