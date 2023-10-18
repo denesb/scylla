@@ -187,7 +187,7 @@ class partition_snapshot_row_cursor final {
     // Removes the next row from _heap and puts it into _current_row
     bool recreate_current_row() {
         _current_row.clear();
-        cache::clogger.info("cursor {}: recreate_current_row(): {}", fmt::ptr(this), *this);
+        cache::clogger.info("cursor {}: recreate_current_row(): {}\n{}", fmt::ptr(this), _background_rt, *this);
         _continuous = _background_continuity;
         _range_tombstone = _background_rt;
         _range_tombstone_for_row = _background_rt;
@@ -215,6 +215,7 @@ class partition_snapshot_row_cursor final {
             _range_tombstone_for_row.apply(e.range_tombstone());
             if (v.continuous) {
                 _range_tombstone.apply(v.rt);
+                cache::clogger.info("cursor {}: recreate_current_row(): 1 _range_tombstone -> {} (v{})", fmt::ptr(this), _range_tombstone, v.version_no);
             }
             _current_row.push_back(v);
             _heap.pop_back();
@@ -226,6 +227,7 @@ class partition_snapshot_row_cursor final {
             if (v.continuous) {
                 _range_tombstone.apply(v.rt);
                 _range_tombstone_for_row.apply(v.rt);
+                cache::clogger.info("cursor {}: recreate_current_row(): 2 _range_tombstone -> {} (v{})", fmt::ptr(this), _range_tombstone, v.version_no);
             }
         }
 
@@ -235,6 +237,7 @@ class partition_snapshot_row_cursor final {
 
     // lower_bound is in the query schema domain
     void prepare_heap(position_in_partition_view lower_bound) {
+        cache::clogger.info("cursor {}: prepare_heap()", fmt::ptr(this));
         lower_bound = to_table_domain(lower_bound);
         memory::on_alloc_point();
         rows_entry::tri_compare cmp(*_snp.schema());
@@ -257,6 +260,7 @@ class partition_snapshot_row_cursor final {
                 is_continuous cont;
                 tombstone rt;
                 if (_reversed) [[unlikely]] {
+                    cache::clogger.info("cursor {}: prepare_heap(): eq: {} <=> {} -> {}", fmt::ptr(this), lower_bound, pos->position(), cmp(pos->position(), lower_bound));
                     if (cmp(pos->position(), lower_bound) != 0) {
                         cont = pos->continuous();
                         rt = pos->range_tombstone();
@@ -286,6 +290,7 @@ class partition_snapshot_row_cursor final {
                     rt = pos->range_tombstone();
                 }
                 if (pos) [[likely]] {
+                    cache::clogger.info("cursor {}: prepare_heap()#1: add to heap: {} v{} rt: {}", fmt::ptr(this), pos->position(), version_no, rt);
                     _heap.emplace_back(position_in_version{pos, std::move(rows), version_no, v.get_schema().get(), unique_owner, cont, rt});
                 }
             } else {
@@ -299,6 +304,7 @@ class partition_snapshot_row_cursor final {
                     _background_continuity = true; // Default continuity past the last entry
                 }
                 if (pos) [[likely]] {
+                    cache::clogger.info("cursor {}: prepare_heap()#2: add to heap: {} v{}", fmt::ptr(this), pos->position(), version_no);
                     _heap.emplace_back(position_in_version{pos, std::move(rows), version_no, v.get_schema().get(), unique_owner, is_continuous::yes});
                 }
             }
@@ -315,6 +321,7 @@ class partition_snapshot_row_cursor final {
     // Can be only called on a valid cursor pointing at a row.
     // When throws, the cursor is invalidated and its position is not changed.
     bool advance(bool keep) {
+        cache::clogger.info("cursor {}: advance({})", fmt::ptr(this), keep);
         memory::on_alloc_point();
         version_heap_less_compare heap_less(*this);
         assert(iterators_valid());
@@ -357,6 +364,7 @@ class partition_snapshot_row_cursor final {
                 }
             }
             if (curr.it) {
+                cache::clogger.info("cursor {} advance({}): add to heap: {} v{}", fmt::ptr(this), keep, curr.it->position(), curr.version_no);
                 if (curr.version_no == 0) {
                     _latest_it = curr.it;
                 }
@@ -381,7 +389,14 @@ public:
         , _reversed(reversed)
         , _digest_requested(digest_requested)
         , _position(position_in_partition::static_row_tag_t{})
-    { }
+    {
+        cache::clogger.info("cursor {} partition_snapshot_row_cursor(): snp: {} unique_owner: {}, reversed: {}, digest_requested: {}",
+                fmt::ptr(this),
+                fmt::ptr(&_snp),
+                _unique_owner,
+                _reversed,
+                _digest_requested);
+    }
 
     // If is_in_latest_version() then this returns an iterator to the entry under cursor in the latest version.
     mutation_partition::rows_type::iterator get_iterator_in_latest_version() const {
@@ -409,6 +424,7 @@ public:
     // continuous() is always valid after the call, even if not pointing at a row.
     // Returns true iff the cursor is pointing at a row after the call.
     bool maybe_advance_to(position_in_partition_view pos) {
+        cache::clogger.info("cursor {}: maybe_advance_to({})", fmt::ptr(this), pos);
         prepare_heap(pos);
         return recreate_current_row();
     }
@@ -424,6 +440,7 @@ public:
     //
     // Changes to attributes of the current row (e.g. continuity) don't have to be reflected.
     bool maybe_refresh() {
+        cache::clogger.info("cursor {}: maybe_refresh()", fmt::ptr(this));
         if (!iterators_valid()) {
             auto pos = position_in_partition(position()); // advance_to() modifies position() so copy
             return advance_to(pos);
@@ -619,6 +636,7 @@ public:
     // The cursor remains valid after the call and points at the same row as before.
     // Use only with evictable snapshots.
     ensure_result ensure_entry_in_latest() {
+        cache::clogger.info("cursor {}: ensure_entry_in_latest()", fmt::ptr(this));
         auto&& rows = _snp.version()->partition().mutable_clustered_rows();
         if (is_in_latest_version()) {
             auto latest_i = get_iterator_in_latest_version();
@@ -682,6 +700,7 @@ public:
     // The cursor must not be a reversed-order cursor.
     // Use only with evictable snapshots.
     std::optional<ensure_result> ensure_entry_if_complete(position_in_partition_view pos) {
+        cache::clogger.info("cursor {}: ensure_entry_if_complete()", fmt::ptr(this));
         if (_reversed) { // latest_i is unreliable
             throw_with_backtrace<std::logic_error>("ensure_entry_if_complete() called on reverse cursor");
         }
@@ -733,6 +752,7 @@ public:
     // Cursor must be valid and pointing at a row.
     // Use only with evictable snapshots.
     void touch() {
+        cache::clogger.info("cursor {}: touch()", fmt::ptr(this));
         // We cannot bring entries from non-latest versions to the front because that
         // could result violate ordering invariant for the LRU, which states that older versions
         // must be evicted first. Needed to keep the snapshot consistent.
@@ -754,8 +774,8 @@ public:
     }
 
     friend std::ostream& operator<<(std::ostream& out, const partition_snapshot_row_cursor& cur) {
-        fmt::print(out, "{{cursor:\n  position={}\n  cont={}\n  rt={}}}",
-                   cur._position, cur.continuous(), cur.range_tombstone());
+        fmt::print(out, "{{cursor: {}\n  position={}\n  cont={}\n  rt={}}}",
+                   fmt::ptr(&cur), cur._position, cur.continuous(), cur.range_tombstone());
         if (cur.range_tombstone() != cur.range_tombstone_for_row()) {
             fmt::print(out, "\n  row_rt={}", cur.range_tombstone_for_row());
         }

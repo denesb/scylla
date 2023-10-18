@@ -384,6 +384,11 @@ future<> cache_flat_mutation_reader::do_fill_buffer() {
         auto next_valid = _next_row.iterators_valid();
         clogger.trace("csm {}: reading_from_cache, range=[{}, {}), next={}, valid={}, rt={}", fmt::ptr(this), _lower_bound,
             _upper_bound, _next_row.position(), next_valid, _current_tombstone);
+        /*
+        for (const auto& v : _snp->versions()) {
+            clogger.trace("csm {}: VERSION: {}", fmt::ptr(this), mutation_partition_v2::printer(*v.get_schema(), v.partition()));
+        }
+        */
         // We assume that if there was eviction, and thus the range may
         // no longer be continuous, the cursor was invalidated.
         if (!next_valid) {
@@ -500,6 +505,7 @@ future<> cache_flat_mutation_reader::read_from_underlying() {
 
 inline
 bool cache_flat_mutation_reader::ensure_population_lower_bound() {
+    clogger.trace("csm {}: ensure_population_lower_bound()", fmt::ptr(this));
     if (_population_range_starts_before_all_rows) {
         return true;
     }
@@ -741,7 +747,7 @@ void cache_flat_mutation_reader::start_reading_from_underlying() {
 
 inline
 void cache_flat_mutation_reader::copy_from_cache_to_buffer() {
-    clogger.trace("csm {}: copy_from_cache, next_row_in_range={}, next={}", fmt::ptr(this), _next_row_in_range, _next_row);
+    clogger.trace("csm {}: copy_from_cache, next_row_in_range={} next_rt={} curr_rt={}\n next={}", fmt::ptr(this), _next_row_in_range, _next_row.range_tombstone(), _current_tombstone, _next_row);
     _next_row.touch();
 
     if (_next_row.range_tombstone() != _current_tombstone) {
@@ -812,6 +818,8 @@ void cache_flat_mutation_reader::copy_from_cache_to_buffer() {
             _current_tombstone = tomb;
             _read_context.cache()._tracker.on_range_tombstone_read();
         }
+
+        clogger.trace("csm {}: copy_from_cache(): remove_row: {}", fmt::ptr(this), remove_row);
 
         if (remove_row) {
             _read_context.cache()._tracker.on_row_compacted_away();

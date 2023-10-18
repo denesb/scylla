@@ -14,6 +14,10 @@
 #include "utils/coroutine.hh"
 #include "real_dirty_memory_accounter.hh"
 
+namespace cache {
+extern logging::logger clogger;
+}
+
 static void remove_or_mark_as_unique_owner(partition_version* current, mutation_cleaner* cleaner)
 {
     while (current && !current->is_referenced()) {
@@ -489,13 +493,14 @@ utils::coroutine partition_entry::apply_to_incomplete(const schema& s,
     }
     auto dst_snp = read(reg, tracker.cleaner(), &tracker, phase);
     dst_snp->lock();
+    cache::clogger.info("apply_to_incomplete():\n{}\n+\n{}", partition_entry::printer(*this), partition_entry::printer(pe));
 
     // Once we start updating the partition, we must keep all snapshots until the update completes,
     // otherwise partial writes would be published. So the scope of snapshots must enclose the scope
     // of allocating sections, so we return here to get out of the current allocating section and
     // give the caller a chance to store the coroutine object. The code inside coroutine below
     // runs outside allocating section.
-    return utils::coroutine([&tracker, &s, &alloc, &reg, &acc, can_move, preemptible,
+    return utils::coroutine([this, &tracker, &s, &alloc, &reg, &acc, can_move, preemptible,
             cur = partition_snapshot_row_cursor(s, *dst_snp),
             src_cur = partition_snapshot_row_cursor(s, *src_snp, can_move),
             dst_snp = std::move(dst_snp),
@@ -601,6 +606,7 @@ utils::coroutine partition_entry::apply_to_incomplete(const schema& s,
                 acc.unpin_memory(size);
                 if (!has_next) {
                     dst_snp->unlock();
+                    cache::clogger.info("apply_to_incomplete=\n{}", partition_entry::printer(*this));
                     return stop_iteration::yes;
                 }
             } while (!preemptible || !need_preempt());
