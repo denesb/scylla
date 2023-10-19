@@ -290,7 +290,7 @@ class partition_snapshot_row_cursor final {
                     rt = pos->range_tombstone();
                 }
                 if (pos) [[likely]] {
-                    cache::clogger.info("cursor {}: prepare_heap()#1: add to heap: {} v{} rt: {}", fmt::ptr(this), pos->position(), version_no, rt);
+                    cache::clogger.info("cursor {}: prepare_heap()#1: add to heap: {} v{} rt: {} cont: {}", fmt::ptr(this), pos->position(), version_no, rt, cont);
                     _heap.emplace_back(position_in_version{pos, std::move(rows), version_no, v.get_schema().get(), unique_owner, cont, rt});
                 }
             } else {
