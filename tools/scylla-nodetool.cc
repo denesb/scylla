@@ -606,6 +606,9 @@ void removenode_operation(scylla_rest_client& client, const bpo::variables_map& 
     }
 }
 
+void scrub_operation(scylla_rest_client& client, const bpo::variables_map& vm) {
+}
+
 void setlogginglevel_operation(scylla_rest_client& client, const bpo::variables_map& vm) {
     if (!vm.count("logger") || !vm.count("level")) {
         throw std::invalid_argument("resetting logger(s) is not supported yet, the logger and level parameters are required");
@@ -764,6 +767,7 @@ const std::map<std::string_view, std::string_view> option_substitutions{
     {"--kc.list", "--keyspace-table-list"},
     {"-las", "--load-and-stream"},
     {"-pro", "--primary-replica-only"},
+    {"-ns", "--no-snapshot"},
 };
 
 std::map<operation, operation_func> get_operations_with_func() {
@@ -1119,6 +1123,25 @@ Fore more information, see: https://opensource.docs.scylladb.com/stable/operatin
                 },
             },
             removenode_operation
+        },
+        {
+            {
+                "scrub",
+                "Scrub the SSTable files in the specified keyspace or table(s)",
+R"(
+Fore more information, see: https://opensource.docs.scylladb.com/stable/operating-scylla/nodetool-commands/scrub.html
+)",
+                {
+                    typed_option<>("no-snapshot", "Do not take a snapshot of scrubbed tables before starting scrub (default false)"),
+                    typed_option<>("skip-corrupted|s", "Skip corrupted rows or partitions, even when scrubbing counter tables (deprecated, use ‘–-mode’ instead, default false)"),
+                    typed_option<>("mode|m", "How to handle corrupt data (one of: ABORT|SKIP|SEGREGATE|VALIDATE, default ABORT; overrides ‘–-skip-corrupted’)"),
+                },
+                {
+                    typed_option<sstring>("keyspace", "The keyspace to scrub", 1),
+                    typed_option<sstring>("table", "The table(s) to scrub (if unspecified, all tables in the keyspace are scrubbed)", -1),
+                },
+            },
+            scrub_operation
         },
         {
             {
