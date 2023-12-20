@@ -587,7 +587,7 @@ class TestScyllaSsstableSchemaLoading:
         assert dump == dump_reference
 
     def check_fail(self, scylla_path, extra_args, sstable, error_msg=None):
-        common_args = [scylla_path, "sstable", "dump-data", "--logger-log-level", "scylla-sstable=debug"]
+        common_args = [scylla_path, "sstable", "dump-data", "--logger-log-level", "scylla-sstable=debug:schema_loader=trace"]
         res = subprocess.run(common_args + extra_args + [sstable], capture_output=True, text=True)
         print(res.stderr)
         if error_msg is None:
@@ -751,7 +751,7 @@ class TestScyllaSsstableSchemaLoading:
                 scylla_path,
                 ["--scylla-yaml-file", scylla_yaml_file, "--keyspace", self.keyspace, "--table", "non-existent-table"],
                 ext_sstable,
-                error_msg="error processing arguments: could not load schema via schema-tables: std::runtime_error (Failed to find non-existent-keyspace.scylla_local in schema tables)")
+                error_msg="error processing arguments: could not load schema via schema-tables: std::runtime_error (Failed to find system.non-existent-table in schema tables)")
 
 
 @pytest.fixture(scope="module")
