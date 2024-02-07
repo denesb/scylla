@@ -655,10 +655,22 @@ future<std::vector<schema_ptr>> load_schemas(const db::config& dbcfg, std::strin
     });
 }
 
-future<schema_ptr> load_one_schema_from_file(const db::config& dbcfg, std::filesystem::path path) {
-    return async([&dbcfg, path] () mutable {
+future<schema_ptr> load_one_schema_from_file(const db::config& dbcfg, std::filesystem::path path, std::string_view keyspace, std::string_view table) {
+    return async([&dbcfg, path, keyspace, table] () mutable {
         auto schemas = do_load_schemas(dbcfg, read_file(path));
-        if (schemas.size() == 1) {
+        if (!keyspace.empty() || !table.empty()) {
+            auto it = std::ranges::find_if(schemas, [&] (const schema_ptr& schema) {
+                return keyspace == schema->ks_name() && table == schema->cf_name();
+            });
+            if (it == schemas.end()) {
+                throw std::runtime_error(fmt::format(
+                            "Schema file {} does not contain a schema for keyspace {} and table {}",
+                            path.native(),
+                            keyspace,
+                            table));
+            }
+            return std::move(*it);
+        } else if (schemas.size() == 1) {
             return std::move(schemas.front());
         } else if (schemas.size() == 2) {
             // We expect a base table at index 0 and a view/index on it at index 1

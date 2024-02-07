@@ -36,9 +36,17 @@ future<std::vector<schema_ptr>> load_schemas(const db::config& dbcfg, std::strin
 
 /// Load exactly one schema from the specified path
 ///
-/// If the file at the specified path contains more or less then one schema,
-/// an exception will be thrown. See \ref load_schemas().
-future<schema_ptr> load_one_schema_from_file(const db::config& dbcfg, std::filesystem::path path);
+/// If keyspace and table are unspecified, the file is expected to contain a
+/// single schema. If this is not the case, an exception will be thrown.
+/// If keyspace and table are specified, the table with the specified name will
+/// be looked up from the schemas loaded from the file. If not found an exception
+/// will be thrown.
+/// See \ref load_schemas().
+future<schema_ptr> load_one_schema_from_file(
+        const db::config& dbcfg,
+        std::filesystem::path path,
+        std::string_view keyspace = "",
+        std::string_view table = "");
 
 /// Load the system schema, with the given keyspace and table
 ///
