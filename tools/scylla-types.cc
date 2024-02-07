@@ -243,8 +243,6 @@ const std::vector<operation_option> global_options{
             "note that the order of the types on the command line will be their order in the compound too"),
     typed_option<>("prefix-compound", "values are prefixable compounds (e.g. clustering key), composed of multiple values of possibly different types"),
     typed_option<>("full-compound", "values are full compounds (e.g. partition key), composed of multiple values of possibly different types"),
-    typed_option<unsigned>("shards", "number of shards (only relevant for shardof action)"),
-    typed_option<unsigned>("ignore-msb-bits", 12u, "number of shards (only relevant for shardof action)"),
 };
 
 const std::vector<operation_option> global_positional_options{
@@ -340,7 +338,12 @@ Examples:
 
 $ scylla types shardof --full-compound -t UTF8Type -t SimpleDateType -t UUIDType --shards=7 000d66696c655f696e7374616e63650004800049190010c61a3321045941c38e5675255feb0196
 (file_instance, 2021-03-27, c61a3321-0459-41c3-8e56-75255feb0196): token: -5043005771368701888, shard: 1
-)"}, shardof_handler},
+)",
+    {
+        typed_option<unsigned>("shards", "number of shards"),
+        typed_option<unsigned>("ignore-msb-bits", 12u, "number of most significant token bits to ignore in murmur3 partitioner"),
+    }},
+    shardof_handler},
 };
 
 }
