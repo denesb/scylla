@@ -11,8 +11,10 @@
 #include <seastar/core/coroutine.hh>
 
 #include "compound.hh"
+#include "db/config.hh"
 #include "db/marshal/type_parser.hh"
 #include "schema/schema_builder.hh"
+#include "tools/schema_loader.hh"
 #include "tools/utils.hh"
 #include "dht/i_partitioner.hh"
 
@@ -197,9 +199,12 @@ void tokenof_handler(type_variant type, std::vector<bytes> values, const bpo::va
         }
         void operator()(const compound_type<allow_prefixes::no>& type) {
             auto s = build_dummy_partition_key_schema(type);
-            auto pk = partition_key::from_bytes(value);
-            auto dk = dht::decorate_key(*s, pk);
-            fmt::print("{}: {}\n", to_printable_string(type, value), dk.token());
+            //auto pk = partition_key::from_bytes(value);
+            auto pk = partition_key_view::from_bytes(value);
+            //auto dk = dht::decorate_key(*s, pk);
+            auto token = dht::get_token(*s, pk);
+            fmt::print("{}\n", token);
+            //fmt::print("{}: {}\n", to_printable_string(type, value), token);
         }
     };
 
@@ -243,6 +248,12 @@ const std::vector<operation_option> global_options{
             "note that the order of the types on the command line will be their order in the compound too"),
     typed_option<>("prefix-compound", "values are prefixable compounds (e.g. clustering key), composed of multiple values of possibly different types"),
     typed_option<>("full-compound", "values are full compounds (e.g. partition key), composed of multiple values of possibly different types"),
+    typed_option<sstring>("schema-file", "schema.cql", "file containing the schema description, if it contains multiple schemas, use --keyspace and --table to select the correct schema"),
+    typed_option<sstring>("keyspace", "keyspace name"),
+    typed_option<sstring>("table", "table name"),
+    typed_option<>("partition-key", "use the partition-key from the schema"),
+    typed_option<>("clustering-key", "use the clustering-key from the schema"),
+    typed_option<sstring>("column", "use the column with the specified name from the schema"),
 };
 
 const std::vector<operation_option> global_positional_options{
@@ -387,10 +398,11 @@ $ scylla types {{action}} --help
     tool_app_template app(std::move(app_cfg));
 
     return app.run_async(argc, argv, [] (const operation& op, const boost::program_options::variables_map& app_config) {
-        if (!app_config.contains("type")) {
-            throw std::invalid_argument("error: missing required option '--type'");
+        if (app_config.contains("type") && app_config.contains("schema-file")) {
+            fmt::print(std::cerr, "error: cannot use both --type|-t and --schema-file\n");
+            exit(2);
         }
-        type_variant type = [&app_config] () -> type_variant {
+        auto parse_type_args = [&app_config] () -> type_variant {
             auto types = boost::copy_range<std::vector<data_type>>(app_config["type"].as<std::vector<sstring>>()
                     | boost::adaptors::transformed([] (const sstring_view type_name) { return db::marshal::type_parser::parse(type_name); }));
             if (app_config.contains("prefix-compound")) {
@@ -403,12 +415,39 @@ $ scylla types {{action}} --help
                 }
                 return std::move(types.front());
             }
-        }();
+        };
+        auto parse_schema_args = [&app_config] () -> type_variant {
+            auto dbcfg = std::make_unique<db::config>();
+            dbcfg->experimental_features.set(db::experimental_features_t::all());
+            auto schema_file = app_config["schema-file"].as<sstring>();
+            auto keyspace = app_config.contains("keyspace") ? app_config["keyspace"].as<sstring>() : "";
+            auto table = app_config.contains("table") ? app_config["table"].as<sstring>() : "";
+            auto schema = load_one_schema_from_file(*dbcfg, std::filesystem::path(schema_file), keyspace, table).get();
+            if (app_config.contains("clustering-key")) {
+                return compound_type<allow_prefixes::yes>(schema->clustering_key_type()->types());
+            } else if (app_config.contains("partition-key")) {
+                return compound_type<allow_prefixes::no>(schema->partition_key_type()->types());
+            } else if (app_config.contains("column")) {
+                const auto col_name = app_config["column"].as<sstring>();
+                auto col_def = schema->get_column_definition(to_bytes(col_name));
+                if (!col_def) {
+                    fmt::print(std::cerr, "error: failed to find column with name {} in the schema\n", col_name);
+                    exit(2);
+                }
+                return type_variant(col_def->type);
+            } else {
+                fmt::print(std::cerr, "error: must specify one of --partition-key, --clustering-key or --column\n");
+                exit(2);
+            }
+        };
+
+        type_variant type = app_config.contains("type") ?  parse_type_args() : parse_schema_args();
 
         if (!app_config.contains("value")) {
             throw std::invalid_argument("error: no values specified");
         }
 
+      try{
         const auto& handler = operations_with_func.at(op);
         switch (handler.index()) {
             case 0:
@@ -423,6 +462,10 @@ $ scylla types {{action}} --help
                 std::get<string_func>(handler)(std::move(type), app_config["value"].as<std::vector<sstring>>(), app_config);
                 break;
         }
+      } catch (...) {
+            fmt::print(std::cerr, "error: operation failed with {}\n", std::current_exception());
+            exit(3);
+      }
 
         return 0;
     });
