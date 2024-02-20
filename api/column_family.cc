@@ -559,6 +559,7 @@ void set_column_family(http_context& ctx, routes& r, sharded<db::system_keyspace
     });
 
     cf::get_unleveled_sstables.set(r, [&ctx] (std::unique_ptr<http::request> req) {
+        std::abort();
         return get_cf_unleveled_sstables(ctx, req->param["name"]);
     });
 

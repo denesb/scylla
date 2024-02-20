@@ -20,7 +20,12 @@ import random
 import re
 import shutil
 import util
+import requests
 from typing import Iterable, Type, Union
+
+
+def test_crash_scylla(cql):
+    requests.get(f"{nodetool.rest_api_url(cql)}/column_family/sstables/unleveled/cf")
 
 
 def simple_no_clustering_table(cql, keyspace):
