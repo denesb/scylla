@@ -569,7 +569,7 @@ relocate_python3 "$rprefix"/scripts fix_system_distributed_tables.py
 
 if $supervisor; then
     install -d -m755 `supervisor_dir $retc`
-    for service in scylla-server scylla-jmx scylla-node-exporter; do
+    for service in scylla-server scylla-node-exporter; do
         if [ "$service" = "scylla-server" ]; then
             program="scylla"
         else

@@ -1,7 +1,6 @@
 FROM docker.io/fedora:38
 ADD ./install-dependencies.sh ./
 ADD ./seastar/install-dependencies.sh ./seastar/
-ADD ./tools/jmx/install-dependencies.sh ./tools/jmx/
 ADD ./tools/java/install-dependencies.sh ./tools/java/
 ADD ./tools/toolchain/system-auth ./
 RUN dnf -y update \
