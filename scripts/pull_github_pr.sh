@@ -9,32 +9,17 @@
 
 set -e
 
-gh_hosts=~/.config/gh/hosts.yml
-
-if [[ ( -z "$GITHUB_LOGIN" || -z "$GITHUB_TOKEN" ) && -f "$gh_hosts" ]]; then
-	GITHUB_LOGIN=$(awk '/user:/ { print $2 }' "$gh_hosts")
-	GITHUB_TOKEN=$(awk '/oauth_token:/ { print $2 }' "$gh_hosts")
-fi
-
 if [[ $# != 1 ]]; then
 	echo Please provide a github pull request number
 	exit 1
 fi
 
-for required in jq curl; do
+for required in jq gh; do
 	if ! type $required >& /dev/null; then
 		echo Please install $required first
 		exit 1
 	fi
 done
-
-curl() {
-    local opts=()
-    if [[ -n "$GITHUB_LOGIN" && -n "$GITHUB_TOKEN" ]]; then
-        opts+=(--user "${GITHUB_LOGIN}:${GITHUB_TOKEN}")
-    fi
-    command curl "${opts[@]}" "$@"
-}
 
 NL=$'\n'
 
@@ -49,7 +34,7 @@ PROJECT=`sed 's/git@github.com://;s#https://github.com/##;s/\.git$//;' <<<"${REM
 PR_PREFIX=https://api.github.com/repos/$PROJECT/pulls
 
 echo "Fetching info on PR #$PR_NUM... "
-PR_DATA=$(curl -s $PR_PREFIX/$PR_NUM)
+PR_DATA=$(gh api $PR_PREFIX/$PR_NUM)
 MESSAGE=$(jq -r .message <<< $PR_DATA)
 if [ "$MESSAGE" != null ]
 then
@@ -62,7 +47,7 @@ echo "    $PR_TITLE"
 PR_DESCR=$(jq -r .body <<< $PR_DATA)
 PR_LOGIN=$(jq -r .head.user.login <<< $PR_DATA)
 echo -n "Fetching full name of author $PR_LOGIN... "
-USER_NAME=$(curl -s "https://api.github.com/users/$PR_LOGIN" | jq -r .name)
+USER_NAME=$(gh api "https://api.github.com/users/$PR_LOGIN" | jq -r .name)
 echo "$USER_NAME"
 
 git fetch "$REMOTE" pull/$PR_NUM/head
@@ -85,6 +70,11 @@ if [[ $nr_commits == 1 ]]; then
 		fi
 	fi
 	git commit --amend -m "${message}${closes}"
+	gh pr edit "${PR_NUM}" -b "${message}${closes}"
+	gh pr checkout "${PR_NUM}"
+	git rebase next
+	git push -f $(git config --get remote.origin.url) $(git rev-parse --abbrev-ref HEAD)
+	git checkout next
 else
 	git merge --no-ff --log=1000 FETCH_HEAD -m "Merge '$PR_TITLE' from $USER_NAME" -m "${PR_DESCR}${closes}"
 fi
@@ -92,7 +82,7 @@ git commit --amend # for a manual double-check
 
 # Check PR tests status
 PR_HEAD_SHA=$(jq -r .head.sha <<< $PR_DATA)
-PR_TESTS_STATUS=$(curl -s "https://api.github.com/repos/$PROJECT/commits/$PR_HEAD_SHA/status" | jq -r .state)
+PR_TESTS_STATUS=$(gh api "https://api.github.com/repos/$PROJECT/commits/$PR_HEAD_SHA/status" | jq -r .state)
 if [ "$PR_TESTS_STATUS" != "success" ]; then
   ORANGE='\033[0;33m'
   NC='\033[0m'
