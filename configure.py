@@ -624,6 +624,7 @@ scylla_tests = set([
     'test/perf/perf_row_cache_reads',
     'test/perf/logalloc',
     'test/perf/perf_s3_client',
+    'test/perf/perf_large_collection',
     'test/unit/lsa_async_eviction_test',
     'test/unit/lsa_sync_eviction_test',
     'test/unit/row_cache_alloc_stress_test',
@@ -1392,6 +1393,7 @@ tests_not_using_seastar_test_framework = set([
     'test/perf/perf_hash',
     'test/perf/perf_mutation',
     'test/perf/perf_collection',
+    'test/perf/perf_large_collection',
     'test/perf/logalloc',
     'test/unit/lsa_async_eviction_test',
     'test/unit/lsa_sync_eviction_test',
@@ -1455,6 +1457,7 @@ deps['test/boost/summary_test'] = ['test/boost/summary_test.cc']
 deps['test/boost/anchorless_list_test'] = ['test/boost/anchorless_list_test.cc']
 deps['test/perf/perf_commitlog'] += ['test/perf/perf.cc', 'seastar/tests/perf/linux_perf_event.cc']
 deps['test/perf/perf_row_cache_reads'] += ['test/perf/perf.cc', 'seastar/tests/perf/linux_perf_event.cc']
+deps['test/perf/perf_large_collection'] += ['test/perf/perf.cc', 'seastar/tests/perf/linux_perf_event.cc']
 deps['test/boost/reusable_buffer_test'] = [
     "test/boost/reusable_buffer_test.cc",
     "test/lib/log.cc",
