@@ -452,8 +452,15 @@ private:
             if (!cfg->reader_concurrency_semaphore_kill_limit_multiplier.is_set()) {
                 cfg->reader_concurrency_semaphore_kill_limit_multiplier.set(std::numeric_limits<uint32_t>::max());
             }
-            tmpdir data_dir;
-            auto data_dir_path = data_dir.path().string();
+
+            std::optional<tmpdir> data_dir;
+            sstring data_dir_path;
+            if (cfg_in.data_dir_path) {
+                data_dir_path = cfg_in.data_dir_path->native();
+            } else {
+                data_dir.emplace();
+                data_dir_path = data_dir->path().string();
+            }
             if (!cfg->data_file_directories.is_set()) {
                 cfg->data_file_directories.set({data_dir_path});
             } else {

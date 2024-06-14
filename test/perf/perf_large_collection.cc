@@ -22,6 +22,8 @@
 
 logging::logger plclog("perf_large_collection");
 
+namespace bpo = boost::program_options;
+
 dht::decorated_key make_pkey(const schema& s, int32_t pk) {
     auto key = partition_key::from_single_value(s, serialized(pk));
     return dht::decorate_key(s, key);
@@ -61,10 +63,73 @@ void print_stats(const char* prefix, uint64_t ops, const utils::estimated_histog
         latencies_hist.percentile(0.999) / 1000.0);
 }
 
+std::vector<prepared_partition_key> write_data(const bpo::variables_map& app_cfg, cql_test_env& env, schema_ptr s, std::mt19937& engine) {
+    std::vector<prepared_partition_key> partitions;
+
+    // Check if we have a previous data dir and load it instead if not empty.
+    if (app_cfg.count("data-dir")) {
+        //TODO
+    }
+
+    const auto partition_count = app_cfg["partition-count"].as<size_t>();
+    const auto write_ops = app_cfg["write-ops"].as<size_t>();
+    const auto live_dead_cell_ratio = app_cfg["live-dead-cell-ratio"].as<double>();
+    const auto geometric_distribution_param = app_cfg["geometric-distribution-param"].as<double>();
+
+    auto update_id = env.prepare("UPDATE ks.tbl SET v[?] = ? WHERE pk = ?").get();
+    auto delete_id = env.prepare("DELETE v[?] FROM ks.tbl WHERE pk = ?").get();
+
+    partitions.reserve(partition_count);
+    for (size_t i = 0; i < partition_count; ++i) {
+        auto& partition = partitions.emplace_back(*s, tests::random::get_int<int32_t>(engine));
+
+        // Make sure all partitions have at least one cell.
+        env.execute_prepared(update_id, {partition.prepared_key, partition.next_map_key(), make_raw(0)}).get();
+    }
+
+    // We want a distribution which will heavily favor a subset of
+    // the keys, producing a few huge partitions, leaving most of
+    // them small.
+    std::geometric_distribution<size_t> pk_index_dist{geometric_distribution_param};
+
+    const auto live_threshold = size_t(100* live_dead_cell_ratio);
+    std::uniform_int_distribution<size_t> live_dead_distribution{0, 100};
+    size_t i = 0;
+
+    time_parallel([&] () -> future<> {
+        ++i;
+        const auto pk_index = std::clamp(pk_index_dist(engine), size_t(0), partitions.size() - 1);
+        const auto is_live = live_dead_distribution(engine) <= live_threshold;
+
+        auto& partition = partitions.at(pk_index);
+
+        if (is_live) {
+            return env.execute_prepared(update_id, {partition.next_map_key(), make_raw(i), partition.prepared_key}).discard_result();
+        } else {
+            return env.execute_prepared(delete_id, {partition.next_map_key(), partition.prepared_key}).discard_result();
+        }
+    }, 100, 0, write_ops, true);
+
+    utils::estimated_histogram cells_hist;
+    for (const auto& p : partitions) {
+        cells_hist.add(p.last_map_key);
+    }
+    std::vector<sstring> lines;
+    lines.push_back("quantile      cells");
+    for (float p = 0.1; p <= 1.0; p += 0.1) {
+        lines.push_back(fmt::format("{:>6.3f} {:>10d}", p, cells_hist.percentile(p)));
+    }
+    lines.push_back(fmt::format("{:>6.3f} {:>10d}", 0.99, cells_hist.percentile(0.99)));
+    lines.push_back(fmt::format("{:>6.3f} {:>10d}", 0.999, cells_hist.percentile(0.999)));
+    plclog.info("cell count histogram:\n{}\n\nChange by tweaking --partition-count, --write-ops and --geometric-distribution-param.", fmt::join(lines, "\n"));
+
+    return partitions;
+}
+
 int main(int argc, char** argv) {
-    namespace bpo = boost::program_options;
     app_template app;
     app.add_options()
+        ("data-dir", bpo::value<sstring>(), "Data directory created during a previous run, can be used to share the data between runs; write-phase will be run if dir is empty")
         ("concurrency", bpo::value<unsigned>()->default_value(100), "Read concurrency")
         ("duration", bpo::value<unsigned>()->default_value(60), "Duration [s] after which the test terminates with a success")
         ("operations-per-shard", bpo::value<unsigned>(), "Operations to execute after which the test terminates with a success (overrides duration)")
@@ -83,8 +148,12 @@ int main(int argc, char** argv) {
     return app.run(argc, argv, [&app] {
         const auto& app_cfg = app.configuration();
 
-        auto cfg_ptr = make_shared<db::config>();
-        auto& cfg = *cfg_ptr;
+        auto test_cfg = cql_test_config{};
+        auto& cfg = *test_cfg.db_config;
+
+        if (app_cfg.count("data-dir")) {
+            test_cfg.data_dir_path = std::filesystem::path(app_cfg["data-dir"].as<sstring>());
+        }
 
         cfg.reader_concurrency_semaphore_cpu_concurrency.set(uint32_t(app_cfg["reader-concurrency-semaphore-cpu-concurrency"].as<uint32_t>()));
         cfg.enable_commitlog(false);
@@ -106,62 +175,7 @@ int main(int argc, char** argv) {
             env.execute_cql("CREATE TABLE ks.tbl (pk int PRIMARY KEY, v map<int, int>) WITH compaction = {'class': 'NullCompactionStrategy'}").get();
             auto s = env.local_db().find_schema("ks", "tbl");
 
-            std::vector<prepared_partition_key> partitions;
-
-            // write data-set
-            {
-                const auto partition_count = app_cfg["partition-count"].as<size_t>();
-                const auto write_ops = app_cfg["write-ops"].as<size_t>();
-                const auto live_dead_cell_ratio = app_cfg["live-dead-cell-ratio"].as<double>();
-                const auto geometric_distribution_param = app_cfg["geometric-distribution-param"].as<double>();
-
-                auto update_id = env.prepare("UPDATE ks.tbl SET v[?] = ? WHERE pk = ?").get();
-                auto delete_id = env.prepare("DELETE v[?] FROM ks.tbl WHERE pk = ?").get();
-
-                partitions.reserve(partition_count);
-                for (size_t i = 0; i < partition_count; ++i) {
-                    auto& partition = partitions.emplace_back(*s, tests::random::get_int<int32_t>(engine));
-
-                    // Make sure all partitions have at least one cell.
-                    env.execute_prepared(update_id, {partition.prepared_key, partition.next_map_key(), make_raw(0)}).get();
-                }
-
-                // We want a distribution which will heavily favor a subset of
-                // the keys, producing a few huge partitions, leaving most of
-                // them small.
-                std::geometric_distribution<size_t> pk_index_dist{geometric_distribution_param};
-
-                const auto live_threshold = size_t(100* live_dead_cell_ratio);
-                std::uniform_int_distribution<size_t> live_dead_distribution{0, 100};
-                size_t i = 0;
-
-                time_parallel([&] () -> future<> {
-                    ++i;
-                    const auto pk_index = std::clamp(pk_index_dist(engine), size_t(0), partitions.size() - 1);
-                    const auto is_live = live_dead_distribution(engine) <= live_threshold;
-
-                    auto& partition = partitions.at(pk_index);
-
-                    if (is_live) {
-                        return env.execute_prepared(update_id, {partition.next_map_key(), make_raw(i), partition.prepared_key}).discard_result();
-                    } else {
-                        return env.execute_prepared(delete_id, {partition.next_map_key(), partition.prepared_key}).discard_result();
-                    }
-                }, 100, 0, write_ops, true);
-
-                utils::estimated_histogram cells_hist;
-                for (const auto& p : partitions) {
-                    cells_hist.add(p.last_map_key);
-                }
-                std::vector<sstring> lines;
-                lines.push_back("quantile      cells");
-                for (float p = 0.1; p <= 1.0; p += 0.1) {
-                    lines.push_back(fmt::format("{:>6.3f} {:>10d}", p, cells_hist.percentile(p)));
-                }
-                lines.push_back(fmt::format("{:>6.3f} {:>10d}", 0.99, cells_hist.percentile(0.99)));
-                lines.push_back(fmt::format("{:>6.3f} {:>10d}", 0.999, cells_hist.percentile(0.999)));
-                plclog.info("cell count histogram:\n{}\n\nChange by tweaking --partition-count, --write-ops and --geometric-distribution-param.", fmt::join(lines, "\n"));
-            }
+            const auto partitions = write_data(app_cfg, env, s, engine);
 
             uint64_t reads = 0;
             utils::estimated_histogram reads_hist;
@@ -203,6 +217,6 @@ int main(int argc, char** argv) {
             print_stats("Final stats: ", total_reads, total_reads_hist);
 
             plclog.info("semaphore diagnostics: {}", env.local_db().get_reader_concurrency_semaphore().dump_diagnostics());
-        }, cfg_ptr);
+        }, std::move(test_cfg));
     });
 }

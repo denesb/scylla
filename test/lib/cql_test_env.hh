@@ -96,6 +96,9 @@ public:
     gms::inet_address broadcast_address = gms::inet_address("localhost");
     bool ms_listen = false;
     bool run_with_raft_recovery = false;
+    // When engaged, this path will be used as te data_dir path.
+    // The directory will not be cleared and unlinked after the test run.
+    std::optional<std::filesystem::path> data_dir_path;
 
     cql_test_config();
     cql_test_config(const cql_test_config&);
