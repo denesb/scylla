@@ -453,23 +453,24 @@ private:
                 cfg->reader_concurrency_semaphore_kill_limit_multiplier.set(std::numeric_limits<uint32_t>::max());
             }
 
-            std::optional<tmpdir> data_dir;
-            sstring data_dir_path;
-            if (cfg_in.data_dir_path) {
-                data_dir_path = cfg_in.data_dir_path->native();
+            std::optional<tmpdir> workdir;
+            sstring workdir_path;
+            if (cfg_in.workdir_path) {
+                workdir_path = cfg_in.workdir_path->native();
             } else {
-                data_dir.emplace();
-                data_dir_path = data_dir->path().string();
+                workdir.emplace();
+                workdir_path = workdir->path().string();
             }
+            auto data_dir_path = workdir_path + "/data";
             if (!cfg->data_file_directories.is_set()) {
                 cfg->data_file_directories.set({data_dir_path});
             } else {
                 data_dir_path = cfg->data_file_directories()[0];
             }
-            cfg->commitlog_directory.set(data_dir_path + "/commitlog.dir");
+            cfg->commitlog_directory.set(workdir_path + "/commitlog");
             cfg->schema_commitlog_directory.set(cfg->commitlog_directory() + "/schema");
-            cfg->hints_directory.set(data_dir_path + "/hints.dir");
-            cfg->view_hints_directory.set(data_dir_path + "/view_hints.dir");
+            cfg->hints_directory.set(workdir_path + "/hints");
+            cfg->view_hints_directory.set(workdir_path + "/view_hints");
             cfg->num_tokens.set(256);
             cfg->ring_delay_ms.set(500);
             cfg->shutdown_announce_in_ms.set(0);

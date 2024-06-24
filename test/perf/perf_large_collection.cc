@@ -129,7 +129,7 @@ std::vector<prepared_partition_key> write_data(const bpo::variables_map& app_cfg
 int main(int argc, char** argv) {
     app_template app;
     app.add_options()
-        ("data-dir", bpo::value<sstring>(), "Data directory created during a previous run, can be used to share the data between runs; write-phase will be run if dir is empty")
+        ("workdir", bpo::value<sstring>(), "Work directory to use, can be the one from a previous run; write-phase only runs if the workdir is empty")
         ("concurrency", bpo::value<unsigned>()->default_value(100), "Read concurrency")
         ("duration", bpo::value<unsigned>()->default_value(60), "Duration [s] after which the test terminates with a success")
         ("operations-per-shard", bpo::value<unsigned>(), "Operations to execute after which the test terminates with a success (overrides duration)")
@@ -151,22 +151,15 @@ int main(int argc, char** argv) {
         auto test_cfg = cql_test_config{};
         auto& cfg = *test_cfg.db_config;
 
-        if (app_cfg.count("data-dir")) {
-            test_cfg.data_dir_path = std::filesystem::path(app_cfg["data-dir"].as<sstring>());
+        if (app_cfg.count("workdir")) {
+            test_cfg.workdir_path = std::filesystem::path(app_cfg["workdir"].as<sstring>());
         }
 
         cfg.reader_concurrency_semaphore_cpu_concurrency.set(uint32_t(app_cfg["reader-concurrency-semaphore-cpu-concurrency"].as<uint32_t>()));
         cfg.enable_commitlog(false);
         cfg.enable_cache(true);
 
-        uint32_t seed = std::random_device()();
-        if (app_cfg.count("random-seed")) {
-            seed = app_cfg["random-seed"].as<uint32_t>();
-        }
-        plclog.info("random_seed: {}", seed);
-        std::mt19937 engine(seed);
-
-        return do_with_cql_env_thread([&app_cfg, &engine] (cql_test_env& env) {
+        return do_with_cql_env_thread([&app_cfg] (cql_test_env& env) {
             const auto concurrency = app_cfg["concurrency"].as<unsigned>();
             const auto duration_in_seconds = app_cfg["duration"].as<unsigned>();
             const auto operations_per_shard = app_cfg.count("operations-per-shard") ? app_cfg["operations-per-shard"].as<unsigned>() : 0u;
@@ -174,6 +167,13 @@ int main(int argc, char** argv) {
 
             env.execute_cql("CREATE TABLE ks.tbl (pk int PRIMARY KEY, v map<int, int>) WITH compaction = {'class': 'NullCompactionStrategy'}").get();
             auto s = env.local_db().find_schema("ks", "tbl");
+
+            uint32_t seed = std::random_device()();
+            if (app_cfg.count("random-seed")) {
+                seed = app_cfg["random-seed"].as<uint32_t>();
+            }
+            plclog.info("random_seed: {}", seed);
+            std::mt19937 engine(seed);
 
             const auto partitions = write_data(app_cfg, env, s, engine);
 
