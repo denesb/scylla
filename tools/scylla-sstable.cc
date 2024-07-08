@@ -2633,6 +2633,52 @@ void shard_of_operation(schema_ptr, reader_permit,
     writer.EndStream();
 }
 
+void compact_operation(schema_ptr schema, reader_permit permit, const std::vector<sstables::shared_sstable>& sstables,
+        sstables::sstables_manager& sst_man, const bpo::variables_map& vm) {
+    if (sstables.empty()) {
+        throw std::invalid_argument("no sstables specified on the command line");
+    }
+
+    auto output_dir = vm["output-dir"].as<std::string>();
+    validate_output_dir(output_dir, vm.count("unsafe-accept-nonempty-output-dir"));
+
+    const auto enable_tombstone_gc = vm["enable-tombstone-gc"].as<bool>();
+    const auto use_uuid_generation = sstables::uuid_identifiers(vm["enable-uuid-generation"].as<bool>());
+
+    if (enable_tombstone_gc) {
+        const auto gc_mode = schema->tombstone_gc_options().mode();
+        const auto error_msg_template = "tombstone GC was requested (see --enable-tombstone-gc) but schema has unsupported tombstone gc mode '{}', consider providing an alternative schema, see --help";
+        // Using a switch for the sole purpose of forcing an update of this code
+        // if new gc_mode is added.
+        switch (gc_mode) {
+            case tombstone_gc_mode::timeout:
+                break; // supported
+            case tombstone_gc_mode::disabled:
+                throw std::invalid_argument(fmt::format(fmt::runtime(error_msg_template), "tombstone_gc_mode::disabled"));
+            case tombstone_gc_mode::immediate:
+                break; // supported
+            case tombstone_gc_mode::repair:
+                throw std::invalid_argument(fmt::format(fmt::runtime(error_msg_template), "tombstone_gc_mode::repair"));
+        }
+    }
+
+    scylla_sstable_table_state table_state(schema, permit, sst_man, output_dir, use_uuid_generation, enable_tombstone_gc);
+
+    auto compaction_descriptor = sstables::compaction_descriptor(std::move(sstables));
+    compaction_descriptor.all_sstables_snapshot = sstables::make_partitioned_sstable_set(schema, false);
+    compaction_descriptor.options = sstables::compaction_type_options::make_regular();
+    compaction_descriptor.creator = [&table_state] (shard_id) { return table_state.make_sstable(); };
+    compaction_descriptor.replacer = [] (sstables::compaction_completion_desc output) {
+        const auto filename_transform_adaptor = boost::adaptors::transformed([] (const sstables::shared_sstable& sst) { return sst->get_filename(); });
+        sst_log.info("Done compacting [{}] into [{}]", fmt::join(output.old_sstables | filename_transform_adaptor, ", "), fmt::join(output.new_sstables | filename_transform_adaptor, ", "));
+    };
+
+    auto compaction_data = sstables::compaction_data{};
+
+    compaction_progress_monitor progress_monitor;
+    sstables::compact_sstables(std::move(compaction_descriptor), compaction_data, table_state, progress_monitor).get();
+}
+
 const std::vector<operation_option> global_options {
     typed_option<sstring>("schema-file", "schema.cql", "file containing the schema description"),
     typed_option<sstring>("keyspace", "keyspace name"),
@@ -2908,6 +2954,27 @@ for more information on this operation, including the API documentation.
                 typed_option<unsigned>("ignore-msb-bits", 12u, "'murmur3_partitioner_ignore_msb_bits' set by scylla.yaml"),
             }},
             shard_of_operation},
+/* compact */
+    {{"compact",
+            "Compact the sstable(s)",
+R"(
+Compact the sstables, optionally purging expired tombstones.
+
+Purging of expired tombstones (tombstone GC) can be enabled with
+--enable-tombstone-gc=1. When enabling this, you should be extra careful of how
+you provide the schema, because the tombstone GC rules are sourced from the
+schema. For example, if the schema is read from the sstable's serialization
+headers, the tombstone GC rules will be the default ones.
+To ensure that the tombstone GC rules are the desired ones, it is best to
+provide an explicit schema source.
+)",
+            {
+                    typed_option<std::string>("output-dir", ".", "directory to place the scrubbed sstables to"),
+                    typed_option<>("unsafe-accept-nonempty-output-dir", "allow the operation to write into a non-empty output directory, acknowledging the risk that this may result in sstable clash"),
+                    typed_option<bool>("enable-uuid-generation", true, "use UUID sstable generation(s) for output sstable(s)"),
+                    typed_option<bool>("enable-tombstone-gc", false, "enable garbage collection of expired tombstones, be careful of how you provide the schema and thus what tombstone GC options take effect "),
+            }},
+            compact_operation},
 };
 
 } // anonymous namespace
