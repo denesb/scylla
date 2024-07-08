@@ -216,7 +216,7 @@ schema_with_source do_load_schema_from_sstable_serialization_header(const bpo::v
     const auto sst_path = app_config["sstables"].as<std::vector<sstring>>().front();
     return schema_with_source{.schema = tools::load_schema_from_sstable(cfg, fs::path(sst_path),
             keyspace_name, table_name).get(),
-        .source = "sstable's serialization header",
+        .source = "sstable-serialization-header",
         .obtained_from = sst_path};
 }
 
@@ -238,6 +238,10 @@ std::optional<schema_with_source> try_load_schema_from_user_provided_source(cons
             return schema_with_source{.schema = tools::load_system_schema(cfg, keyspace_name, table_name),
                 .source = schema_source_opt,
                 .obtained_from = "--system-schema parameter"};
+        }
+        if (app_config.contains("sstable-schema")) {
+            schema_source_opt = "sstable-serialization-header";
+            return do_load_schema_from_sstable_serialization_header(app_config, cfg);
         }
         if (app_config.contains("scylla-data-dir")) {
             schema_source_opt = "schema-tables";
@@ -303,7 +307,7 @@ std::optional<schema_with_source> try_load_schema_autodetect(const bpo::variable
     try {
         return do_load_schema_from_sstable_serialization_header(app_config, cfg);
     } catch (...) {
-        sst_log.debug("Trying to load schema from the sstable itself failed: {}", std::current_exception());
+        sst_log.debug("Trying to load schema from the sstable serialization header: {}", std::current_exception());
     }
 
     fmt::print(std::cerr, "Failed to autodetect and load schema, try again with --logger-log-level scylla-sstable=debug to learn more or provide the schema source manually\n");
@@ -2634,6 +2638,7 @@ const std::vector<operation_option> global_options {
     typed_option<sstring>("keyspace", "keyspace name"),
     typed_option<sstring>("table", "table name"),
     typed_option<>("system-schema", "the table designated by --keyspace and --table is a system table, use the built-in schema for it"),
+    typed_option<>("sstable-schema", "obtain the schema from the sstable serialization headers (note that this schema is incomplete, it only contains column definitions, but not the schema options)"),
     typed_option<sstring>("scylla-yaml-file", "path to the scylla.yaml config file, to obtain the data directory path from, this can be also provided directly with --scylla-data-dir"),
     typed_option<sstring>("scylla-data-dir", "path to the scylla data dir (usually /var/lib/scylla/data), to read the schema tables from"),
 };
@@ -3049,6 +3054,7 @@ $ scylla sstable validate /path/to/md-123456-big-Data.db /path/to/md-123457-big-
             unsigned schema_sources = 0;
             schema_sources += !app_config["schema-file"].defaulted();
             schema_sources += app_config.contains("system-schema");
+            schema_sources += app_config.contains("sstable-schema");
             schema_sources += app_config.contains("scylla-data-dir");
             schema_sources += app_config.contains("scylla-yaml-file");
 
