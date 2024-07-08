@@ -43,7 +43,7 @@ The schema can be obtained in the following ways:
 
 * Auto-detected - If the SStable is located in the table's directory within the ScyllaDB data directory.
 * ``--keyspace=KEYSPACE --table=TABLE`` - If the SStable is located at an external location, but the ScyllaDB data directory or the config file are located at the standard location. The tool also reads the ``SCYLLA_CONF`` and ``SCYLLA_HOME`` environment variables to try to locate the configuration file.
-* ``--schema-file FILENAME`` - Read the schema definition from a file.
+* ``--schema-file FILENAME`` - Read the schema definition from a file, containing the CQL CREATE TABLE statement. The file is expected to contain a single statement for regular tables and exactly two statements for Materialized Views and Indexes: one for the base table and one for the View/Index. Providing an the CREATE KEYSPACE statement is supported but it is optional.
 * ``--system-schema --keyspace=KEYSPACE --table=TABLE`` - Use the known definition of built-in tables (only works for system tables).
 * ``--scylla-data-dir SCYLLA_DATA_DIR_PATH --keyspace=KEYSPACE --table=TABLE`` - Read the schema tables from the data directory at the provided location, needs the keyspace and table name to be provided with ``--keyspace`` and ``--table``.
 * ``--scylla-yaml-file SCYLLA_YAML_FILE_PATH --keyspace=KEYSPACE --table=TABLE`` - Read the schema tables from the data directory path obtained from the configuration, needs the keyspace and table name to be provided with ``--keyspace`` and ``--table``.
