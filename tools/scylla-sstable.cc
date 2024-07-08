@@ -202,6 +202,24 @@ struct schema_with_source {
     sstring obtained_from;
 };
 
+schema_with_source do_load_schema_from_sstable_serialization_header(const bpo::variables_map& app_config, db::config& cfg) {
+    sstring keyspace_name, table_name;
+    try {
+        std::tie(keyspace_name, table_name) = get_keyspace_and_table_options(app_config);
+    } catch (std::invalid_argument&) {
+        keyspace_name = "my_keyspace";
+        table_name = "my_table";
+    }
+    if (!app_config.count("sstables")) {
+        throw std::runtime_error("no sstables provided on the command-line");
+    }
+    const auto sst_path = app_config["sstables"].as<std::vector<sstring>>().front();
+    return schema_with_source{.schema = tools::load_schema_from_sstable(cfg, fs::path(sst_path),
+            keyspace_name, table_name).get(),
+        .source = "sstable's serialization header",
+        .obtained_from = sst_path};
+}
+
 std::optional<schema_with_source> try_load_schema_from_user_provided_source(const bpo::variables_map& app_config, db::config& cfg) {
     sstring schema_source_opt;
     try {
@@ -283,21 +301,7 @@ std::optional<schema_with_source> try_load_schema_autodetect(const bpo::variable
     }
 
     try {
-        sstring keyspace_name, table_name;
-        try {
-            std::tie(keyspace_name, table_name) = get_keyspace_and_table_options(app_config);
-        } catch (std::invalid_argument&) {
-            keyspace_name = "my_keyspace";
-            table_name = "my_table";
-        }
-        if (!app_config.count("sstables")) {
-            throw std::runtime_error("no sstables provided on the command-line");
-        }
-        const auto sst_path = app_config["sstables"].as<std::vector<sstring>>().front();
-        return schema_with_source{.schema = tools::load_schema_from_sstable(cfg, fs::path(sst_path),
-                keyspace_name, table_name).get(),
-            .source = "sstable's serialization header",
-            .obtained_from = sst_path};
+        return do_load_schema_from_sstable_serialization_header(app_config, cfg);
     } catch (...) {
         sst_log.debug("Trying to load schema from the sstable itself failed: {}", std::current_exception());
     }
