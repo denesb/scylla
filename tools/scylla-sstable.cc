@@ -870,6 +870,7 @@ private:
     sstables::sstables_manager& _sst_man;
     std::string _output_dir;
     sstables::uuid_identifiers _use_uuid_sstable_generation = sstables::uuid_identifiers::yes;
+    bool _tombstone_gc_enabled;
 
     sstables::sstable_set _main_set;
     sstables::sstable_set _maintenance_set;
@@ -900,12 +901,13 @@ private:
 
 public:
     scylla_sstable_table_state(schema_ptr schema, reader_permit permit, sstables::sstables_manager& sst_man, std::string output_dir,
-            sstables::uuid_identifiers use_uuid_sstable_generation)
+            sstables::uuid_identifiers use_uuid_sstable_generation, bool tombstone_gc_enabled)
         : _schema(std::move(schema))
         , _permit(std::move(permit))
         , _sst_man(sst_man)
         , _output_dir(std::move(output_dir))
         , _use_uuid_sstable_generation(use_uuid_sstable_generation)
+        , _tombstone_gc_enabled(tombstone_gc_enabled)
         , _main_set(sstables::make_partitioned_sstable_set(_schema, false))
         , _maintenance_set(sstables::make_partitioned_sstable_set(_schema, false))
         , _compaction_strategy(sstables::make_compaction_strategy(_schema->compaction_strategy(), _schema->compaction_strategy_options()))
@@ -928,11 +930,11 @@ public:
     virtual sstables::sstables_manager& get_sstables_manager() noexcept override { return _sst_man; }
     virtual sstables::shared_sstable make_sstable() const override { return do_make_sstable(); }
     virtual sstables::sstable_writer_config configure_writer(sstring origin) const override { return do_configure_writer(std::move(origin)); }
-    virtual api::timestamp_type min_memtable_timestamp() const override { return api::min_timestamp; }
+    virtual api::timestamp_type min_memtable_timestamp() const override { return api::max_timestamp; }
     virtual bool memtable_has_key(const dht::decorated_key& key) const override { return false; }
     virtual future<> on_compaction_completion(sstables::compaction_completion_desc desc, sstables::offstrategy offstrategy) override { return make_ready_future<>(); }
     virtual bool is_auto_compaction_disabled_by_user() const noexcept override { return false; }
-    virtual bool tombstone_gc_enabled() const noexcept override { return false; }
+    virtual bool tombstone_gc_enabled() const noexcept override { return _tombstone_gc_enabled; }
     virtual const tombstone_gc_state& get_tombstone_gc_state() const noexcept override { return _tombstone_gc_state; }
     virtual compaction_backlog_tracker& get_backlog_tracker() override { return _backlog_tracker; }
     virtual const std::string get_group_id() const noexcept override { return _group_id; }
@@ -1009,8 +1011,9 @@ void scrub_operation(schema_ptr schema, reader_permit permit, const std::vector<
     }
 
     const auto use_uuid_generation = sstables::uuid_identifiers(vm["enable-uuid-generation"].as<bool>());
+    const auto enable_tombstone_gc = false;
 
-    scylla_sstable_table_state table_state(schema, permit, sst_man, output_dir, use_uuid_generation);
+    scylla_sstable_table_state table_state(schema, permit, sst_man, output_dir, use_uuid_generation, enable_tombstone_gc);
 
     auto compaction_descriptor = sstables::compaction_descriptor(std::move(sstables));
     compaction_descriptor.options = sstables::compaction_type_options::make_scrub(scrub_mode, sstables::compaction_type_options::scrub::quarantine_invalid_sstables::no);
