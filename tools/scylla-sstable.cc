@@ -2641,6 +2641,7 @@ const std::vector<operation_option> global_options {
     typed_option<>("sstable-schema", "obtain the schema from the sstable serialization headers (note that this schema is incomplete, it only contains column definitions, but not the schema options)"),
     typed_option<sstring>("scylla-yaml-file", "path to the scylla.yaml config file, to obtain the data directory path from, this can be also provided directly with --scylla-data-dir"),
     typed_option<sstring>("scylla-data-dir", "path to the scylla data dir (usually /var/lib/scylla/data), to read the schema tables from"),
+    typed_option<>("dry-run", "load the schema and config, but don't run the designated operation, can be used to simulate where the schema and config would be loaded from")
 };
 
 const std::vector<operation_option> global_positional_options{
@@ -3108,6 +3109,11 @@ $ scylla sstable validate /path/to/md-123456-big-Data.db /path/to/md-123457-big-
         auto stop_semaphore = deferred_stop(rcs_sem);
 
         const auto permit = rcs_sem.make_tracking_only_permit(schema, app_name, db::no_timeout, {});
+
+        if (app_config.contains("dry-run")) {
+            sst_log.info("dry run: will not actually run the {} operation", operation.name());
+            return 0;
+        }
 
         try {
             operations_with_func.at(operation)(schema, permit, sstables, sst_man, app_config);
