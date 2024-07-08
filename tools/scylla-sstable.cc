@@ -869,6 +869,8 @@ private:
     reader_permit _permit;
     sstables::sstables_manager& _sst_man;
     std::string _output_dir;
+    sstables::uuid_identifiers _use_uuid_sstable_generation = sstables::uuid_identifiers::yes;
+
     sstables::sstable_set _main_set;
     sstables::sstable_set _maintenance_set;
     std::vector<sstables::shared_sstable> _compacted_undeleted_sstables;
@@ -884,7 +886,7 @@ private:
     sstables::shared_sstable do_make_sstable() const {
         const auto format = sstables::sstable_format_types::big;
         const auto version = sstables::get_highest_sstable_version();
-        auto generation = _generation_generator();
+        auto generation = _generation_generator(_use_uuid_sstable_generation);
         auto sst_name = sstables::sstable::filename(_output_dir, _schema->ks_name(), _schema->cf_name(), version, generation, format, component_type::Data);
         if (file_exists(sst_name).get()) {
             throw std::runtime_error(fmt::format("cannot create output sstable {}, file already exists", sst_name));
@@ -897,11 +899,13 @@ private:
     }
 
 public:
-    scylla_sstable_table_state(schema_ptr schema, reader_permit permit, sstables::sstables_manager& sst_man, std::string output_dir)
+    scylla_sstable_table_state(schema_ptr schema, reader_permit permit, sstables::sstables_manager& sst_man, std::string output_dir,
+            sstables::uuid_identifiers use_uuid_sstable_generation)
         : _schema(std::move(schema))
         , _permit(std::move(permit))
         , _sst_man(sst_man)
         , _output_dir(std::move(output_dir))
+        , _use_uuid_sstable_generation(use_uuid_sstable_generation)
         , _main_set(sstables::make_partitioned_sstable_set(_schema, false))
         , _maintenance_set(sstables::make_partitioned_sstable_set(_schema, false))
         , _compaction_strategy(sstables::make_compaction_strategy(_schema->compaction_strategy(), _schema->compaction_strategy_options()))
@@ -1004,7 +1008,9 @@ void scrub_operation(schema_ptr schema, reader_permit permit, const std::vector<
         validate_output_dir(output_dir, vm.count("unsafe-accept-nonempty-output-dir"));
     }
 
-    scylla_sstable_table_state table_state(schema, permit, sst_man, output_dir);
+    const auto use_uuid_generation = sstables::uuid_identifiers(vm["enable-uuid-generation"].as<bool>());
+
+    scylla_sstable_table_state table_state(schema, permit, sst_man, output_dir, use_uuid_generation);
 
     auto compaction_descriptor = sstables::compaction_descriptor(std::move(sstables));
     compaction_descriptor.options = sstables::compaction_type_options::make_scrub(scrub_mode, sstables::compaction_type_options::scrub::quarantine_invalid_sstables::no);
@@ -2803,6 +2809,7 @@ for more information on this operation, including what the different modes do.
                     typed_option<std::string>("scrub-mode", "scrub mode to use, one of (abort, skip, segregate, validate)"),
                     typed_option<std::string>("output-dir", ".", "directory to place the scrubbed sstables to"),
                     typed_option<>("unsafe-accept-nonempty-output-dir", "allow the operation to write into a non-empty output directory, acknowledging the risk that this may result in sstable clash"),
+                    typed_option<bool>("enable-uuid-generation", true, "use UUID sstable generation(s) for output sstable(s)"),
             }},
             scrub_operation},
 /* validate-checksums */
