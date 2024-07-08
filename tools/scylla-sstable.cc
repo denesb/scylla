@@ -2629,7 +2629,7 @@ const std::vector<operation_option> global_options {
     typed_option<sstring>("schema-file", "schema.cql", "file containing the schema description"),
     typed_option<sstring>("keyspace", "keyspace name"),
     typed_option<sstring>("table", "table name"),
-    typed_option<>("system-schema", "the table designated by --keyspace and --table is a system table, use the hard-coded in-memory hard-coded schema for it"),
+    typed_option<>("system-schema", "the table designated by --keyspace and --table is a system table, use the built-in schema for it"),
     typed_option<sstring>("scylla-yaml-file", "path to the scylla.yaml config file, to obtain the data directory path from, this can be also provided directly with --scylla-data-dir"),
     typed_option<sstring>("scylla-data-dir", "path to the scylla data dir (usually /var/lib/scylla/data), to read the schema tables from"),
 };
