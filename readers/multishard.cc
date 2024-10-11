@@ -823,6 +823,7 @@ future<remote_fill_buffer_result_v2> shard_reader_v2::fill_reader_buffer(evictab
     }
 
     mutation_reader::tracked_buffer buffer(reader.permit());
+    size_t buffer_size = 0;
 
     auto drain_buffer_and_check_hint = [&] {
         bool reached_stop_token = false;
@@ -830,8 +831,9 @@ future<remote_fill_buffer_result_v2> shard_reader_v2::fill_reader_buffer(evictab
             auto mf = reader.pop_mutation_fragment();
             reached_stop_token |= mf.is_partition_start() && mf.as_partition_start().key().token() >= hint->stop_token;
             buffer.push_back(std::move(mf));
+            buffer_size += buffer.back().memory_usage();
         }
-        return reader.is_end_of_stream() || reached_stop_token || buffer.size() >= hint->size;
+        return reader.is_end_of_stream() || reached_stop_token || buffer_size >= hint->size;
     };
 
     while (!drain_buffer_and_check_hint()) {
