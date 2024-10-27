@@ -1138,16 +1138,23 @@ future<> compaction_manager::stop() {
     if (auto cm = std::exchange(_task_manager_module, nullptr)) {
         co_await cm->stop();
     }
-    if (_state != state::none) {
-        co_return co_await std::move(*_stop_future);
+    if (_stop_future) {
+        co_await std::move(*_stop_future);
     }
 }
 
-future<> compaction_manager::really_do_stop() {
+future<> compaction_manager::really_do_stop() noexcept {
     cmlog.info("Asked to stop");
     // Reset the metrics registry
     _metrics.clear();
-    co_await stop_ongoing_compactions("shutdown");
+    try {
+        co_await stop_ongoing_compactions("shutdown");
+    } catch (...) {
+        cmlog.warn("Ignored error while stopping compaction tasks: {}", std::current_exception());
+    }
+    if (!_tasks.empty()) {
+        on_fatal_internal_error(cmlog, format("{} tasks still exist after being stopped", _tasks.size()));
+    }
     co_await coroutine::parallel_for_each(_compaction_state | std::views::values, [] (compaction_state& cs) -> future<> {
         if (!cs.gate.is_closed()) {
             co_await cs.gate.close();
