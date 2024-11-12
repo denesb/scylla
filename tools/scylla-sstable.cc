@@ -2724,6 +2724,24 @@ void shard_of_operation(schema_ptr schema, reader_permit permit,
     }
 }
 
+struct scylla_sstable_schema_describe_helper : public schema_describe_helper {
+    virtual bool is_global_index(const table_id& base_id, const schema& view_s) const override {
+        return false;
+    }
+    virtual bool is_index(const table_id& base_id, const schema& view_s) const override {
+        return false;
+    }
+    virtual schema_ptr find_schema(const table_id& id) const override {
+        return nullptr;
+    }
+};
+
+void dump_schema_operation(schema_ptr schema, reader_permit permit, const std::vector<sstables::shared_sstable>& sstables,
+        sstables::sstables_manager& sstable_manager, const bpo::variables_map& vm) {
+    auto desc = schema->describe(scylla_sstable_schema_describe_helper{}, cql3::describe_option::STMTS);
+    fmt::print("{}\n", desc.create_statement.value());
+}
+
 const std::vector<operation_option> global_options {
     typed_option<sstring>("schema-file", "schema.cql", "file containing the schema description"),
     typed_option<sstring>("keyspace", "keyspace name"),
@@ -2997,6 +3015,12 @@ for more information on this operation, including the API documentation.
                 typed_option<>("vnodes", "assume that tokens are distributed with vnodes"),
             }},
             shard_of_operation},
+/* dump-schema */
+    {{"dump-schema",
+            "Dump the schema of the sstable(s)",
+            "Can be used to quickly obtain the schema of an sstable, inclding the schema stored in the sstable itself",
+            {}},
+            dump_schema_operation},
 };
 
 } // anonymous namespace
