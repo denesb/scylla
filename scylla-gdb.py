@@ -951,6 +951,46 @@ class sstring:
         return self.as_hex()
 
 
+class managed_bytes:
+    def __init__(self, val):
+        self.val = val
+
+    def is_multi_chunk(self):
+        return self.val['_inline_size'] < -1
+
+    def is_single_chunk(self):
+        return self.val['_inline_size'] == -1
+
+    def is_inline(self):
+        return self.val['_inline_size'] >= 0
+
+    def size(self):
+        if self.is_multi_chunk():
+            return int(self.val['_u']['multi_chunk_ref']['size'])
+        elif self.is_single_chunk():
+            return int(self.val['_u']['single_chunk_ref']['size'])
+        else:
+            return int(self.val['_inline_size'])
+
+    def data(self):
+        inf = gdb.selected_inferior()
+
+        def to_bytes(data, size):
+            return bytes(inf.read_memory(data, size))
+
+        if self.is_multi_chunk():
+            ref = self.val['_u']['multi_chunk_ref']['ptr']
+            chunks = list()
+            while ref['ptr']:
+                chunks.append(to_bytes(ref['ptr']['data'], int(ref['ptr']['frag_size'])))
+                ref = ref['ptr']['next']
+            return b''.join(chunks)
+        elif self.is_single_chunk():
+            return to_bytes(self.val['_u']['single_chunk_ref']['ptr']['data'], int(self.val['_u']['single_chunk_ref']['size']))
+        else:
+            return to_bytes(self.val['_u']['inline_data'], int(self.val['_inline_size']))
+
+
 def uint64_t(val):
     val = int(val)
     if val < 0:
@@ -1015,25 +1055,10 @@ class managed_bytes_printer(gdb.printing.PrettyPrinter):
     'print a managed_bytes'
 
     def __init__(self, val):
-        self.val = val
+        self.val = managed_bytes(val)
 
     def pure_bytes(self):
-        inf = gdb.selected_inferior()
-
-        def to_bytes(data, size):
-            return bytes(inf.read_memory(data, size))
-
-        if self.val['_inline_size'] >= 0:
-            return to_bytes(self.val['_u']['inline_data'], int(self.val['_inline_size']))
-        elif self.val['_inline_size'] == -1:
-            return to_bytes(self.val['_u']['single_chunk_ref']['ptr']['data'], int(self.val['_u']['single_chunk_ref']['size']))
-        else:
-            ref = self.val['_u']['multi_chunk_ref']['ptr']
-            chunks = list()
-            while ref['ptr']:
-                chunks.append(to_bytes(ref['ptr']['data'], int(ref['ptr']['frag_size'])))
-                ref = ref['ptr']['next']
-            return b''.join(chunks)
+        return self.val.data()
 
     def bytes_as_hex(self):
         return self.pure_bytes().hex()
@@ -2037,6 +2062,9 @@ class seastar_lw_shared_ptr():
         else:
             return self.ref['_p'].cast(self._no_esft_type())['_value'].address
 
+    def __bool__(self):
+        return int(self.ref['_p']) != 0
+
 
 class lsa_region():
     def __init__(self, region):
@@ -2381,31 +2409,31 @@ class scylla_memory(gdb.Command):
                   '  free:      {lsa_free:>13}\n\n'
                   .format(lsa=lsa_allocated, lsa_used=lsa_used, lsa_free=lsa_free))
 
-        db = find_db()
-        cache_region = lsa_region(db['_row_cache_tracker']['_region'])
+        #db = find_db()
+        #cache_region = lsa_region(db['_row_cache_tracker']['_region'])
 
-        gdb.write('Cache:\n'
-                  '  total:     {cache_total:>13}\n'
-                  '  used:      {cache_used:>13}\n'
-                  '  free:      {cache_free:>13}\n\n'
-                  .format(cache_total=cache_region.total(), cache_used=cache_region.used(), cache_free=cache_region.free()))
+        #gdb.write('Cache:\n'
+        #          '  total:     {cache_total:>13}\n'
+        #          '  used:      {cache_used:>13}\n'
+        #          '  free:      {cache_free:>13}\n\n'
+        #          .format(cache_total=cache_region.total(), cache_used=cache_region.used(), cache_free=cache_region.free()))
 
-        gdb.write('Memtables:\n'
-                  ' total:       {total:>13}\n'
-                  ' Regular:\n'
-                  '  real dirty: {reg_real_dirty:>13}\n'
-                  '  unspooled:  {reg_unspooled:>13}\n'
-                  ' System:\n'
-                  '  real dirty: {sys_real_dirty:>13}\n'
-                  '  unspooled:  {sys_unspooled:>13}\n\n'
-                  .format(total=(lsa_allocated-cache_region.total()),
-                          reg_real_dirty=dirty_mem_mgr(db['_dirty_memory_manager']).real_dirty(),
-                          reg_unspooled=dirty_mem_mgr(db['_dirty_memory_manager']).unspooled(),
-                          sys_real_dirty=dirty_mem_mgr(db['_system_dirty_memory_manager']).real_dirty(),
-                          sys_unspooled=dirty_mem_mgr(db['_system_dirty_memory_manager']).unspooled()))
+        #gdb.write('Memtables:\n'
+        #          ' total:       {total:>13}\n'
+        #          ' Regular:\n'
+        #          '  real dirty: {reg_real_dirty:>13}\n'
+        #          '  unspooled:  {reg_unspooled:>13}\n'
+        #          ' System:\n'
+        #          '  real dirty: {sys_real_dirty:>13}\n'
+        #          '  unspooled:  {sys_unspooled:>13}\n\n'
+        #          .format(total=(lsa_allocated-cache_region.total()),
+        #                  reg_real_dirty=dirty_mem_mgr(db['_dirty_memory_manager']).real_dirty(),
+        #                  reg_unspooled=dirty_mem_mgr(db['_dirty_memory_manager']).unspooled(),
+        #                  sys_real_dirty=dirty_mem_mgr(db['_system_dirty_memory_manager']).real_dirty(),
+        #                  sys_unspooled=dirty_mem_mgr(db['_system_dirty_memory_manager']).unspooled()))
 
-        scylla_memory.print_coordinator_stats()
-        scylla_memory.print_replica_stats()
+        #scylla_memory.print_coordinator_stats()
+        #scylla_memory.print_replica_stats()
 
         gdb.write('Small pools:\n')
         small_pools = cpu_mem['small_pools']
@@ -6087,20 +6115,69 @@ class scylla_repairs(gdb.Command):
     def __init__(self):
         gdb.Command.__init__(self, 'scylla repairs', gdb.COMMAND_USER, gdb.COMPLETE_NONE, True)
 
-    def process(self, master, rm):
+    def repair_rows_memory(self, repair_row_list):
+        known_dks = set()
+
+        total_memory = 0
+        for row in repair_row_list:
+            total_memory += row.type.sizeof
+
+            fmopt = std_optional(row["_fm"])
+            if fmopt:
+                total_memory += int(fmopt.get()["_bytes"]["_size"])
+
+            dk_with_hash = seastar_lw_shared_ptr(row["_dk_with_hash"])
+            if dk_with_hash and int(dk_with_hash.get()) not in known_dks:
+                dk_with_hash = dk_with_hash.get()
+                known_dks.add(int(dk_with_hash))
+                dk_with_hash = dk_with_hash.dereference()
+                total_memory += dk_with_hash.type.sizeof
+                total_memory += managed_bytes(dk_with_hash['dk']['_key']['_bytes']).size()
+
+            mf = seastar_lw_shared_ptr(row["_mf"])
+            if mf:
+                mf = mf.get()
+                data = std_unique_ptr(mf["_data"]).get()
+                total_memory += int(data["_memory"]["_resources"]["memory"])
+
+        return total_memory
+
+    def process(self, rm, calculate_memory_usage):
         schema = rm['_schema']
         table = schema_ptr(schema).table_name().replace('"', '')
-        all_nodes_state = []
-        ip = str(rm['_myip']).replace('"', '')
+
+        memory_usage = ''
+        if calculate_memory_usage:
+            row_buf = std_list(rm["_row_buf"])
+            working_row_buf = std_list(rm["_working_row_buf"])
+            memory_usage = f', row_buf={{len={len(row_buf)}, memory={self.repair_rows_memory(row_buf)}}}, working_row_buf={{len={len(working_row_buf)}, memory={self.repair_rows_memory(working_row_buf)}}}'
+
+        gdb.write(f'  ({rm.type}*) 0x{int(rm.address):016x}:'
+                  f' id={int(rm["_repair_meta_id"])}'
+                  f', table={table}'
+                  f', reason={str(rm["_reason"]).replace("streaming::stream_reason::""", "")}'
+                  f'{memory_usage}'
+                  f', same_shard={rm["_same_sharding_config"]}'
+                  f', tablet={rm["_is_tablet"]}\n')
         for n in std_vector(rm['_all_node_states']):
-            all_nodes_state.append(str(n['node']).replace('"', '') + "->" + str(n['state']))
-        gdb.write('(%s*) for %s: addr = %s, table = %s, ip = %s, states = %s, repair_meta = (repair_meta*) %s\n' % (rm.type, master, str(rm.address), table, ip, all_nodes_state, rm.address))
+            gdb.write(f'    host: {n["node"]["id"]}, shard: {n["shard"]}, state: {n["state"]}\n')
 
     def invoke(self, arg, for_tty):
+        parser = argparse.ArgumentParser(description="scylla repairs")
+        parser.add_argument("-m", "--memory", action="store_true", default=False,
+                help="Calculate memory usage of repairs (can take a long time)")
+
+        try:
+            args = parser.parse_args(arg.split())
+        except SystemExit:
+            return
+
+        gdb.write("Repairs for which this node is leader:\n")
         for rm in intrusive_list(gdb.parse_and_eval('debug::repair_meta_for_masters._repair_metas'), link='_tracker_link'):
-            self.process("masters", rm)
+            self.process(rm, args.memory)
+        gdb.write("Repairs for which this node is follower:\n")
         for rm in intrusive_list(gdb.parse_and_eval('debug::repair_meta_for_followers._repair_metas'), link='_tracker_link'):
-            self.process("follower", rm)
+            self.process(rm, args.memory)
 
 class scylla_gdb_func_collection_element(gdb.Function):
     """Return the element at the specified index/key from the container.
@@ -6324,3 +6401,15 @@ scylla_gdb_func_sharded_local()
 scylla_gdb_func_variant_member()
 
 gdb.execute('set language c++')
+
+def rr_total_size(rows):
+    total_size = 0
+
+    for r in rows:
+        fmopt = std_optional(r['_fm'])
+        if not fmopt:
+            continue
+        fm = fmopt.get()
+        total_size += int(fm['_bytes']['_size'])
+
+    return total_size
