@@ -2316,8 +2316,11 @@ class scylla_memory(gdb.Command):
             per_service_level_sem.append(scylla_memory.format_semaphore_stats(sem["sem"]))
 
         per_service_level_vu_sem = []
-        for sg, sem in unordered_map(db["_view_update_read_concurrency_semaphores_group"]["_semaphores"]):
-            per_service_level_vu_sem.append(scylla_memory.format_semaphore_stats(sem["sem"]))
+        try:
+            for sg, sem in unordered_map(db["_view_update_read_concurrency_semaphores_group"]["_semaphores"]):
+                per_service_level_vu_sem.append(scylla_memory.format_semaphore_stats(sem["sem"]))
+        except gdb.error:
+            pass
 
         database_typename = lookup_type(['replica::database', 'database'])[1].name
         gdb.write('Replica:\n')
@@ -5770,27 +5773,35 @@ class scylla_read_stats(gdb.Command):
         permit_summaries = defaultdict(permit_stats)
         total = permit_stats()
 
-        for permit in intrusive_list(permit_list):
-            try:
-                schema = permit['_schema']['_p']
-            except:
-                # schema is already a raw pointer in older versions
-                schema = permit['_schema']
+        permit_lists = ["_ready_list", "_inactive_reads", "_permit_list", "_wait_list._admission_queue", "_wait_list._memory_queue"]
 
-            if schema:
-                raw_schema = schema.dereference()['_raw']
-                schema_name = "{}.{}".format(str(raw_schema['_ks_name']).replace('"', ''), str(raw_schema['_cf_name']).replace('"', ''))
-            else:
-                schema_name = "*.*"
+        for list_name in permit_lists:
+            member = semaphore
+            for member_name in list_name.split("."):
+                member =  member[member_name]
 
-            description = str(permit['_op_name_view'])[1:-1]
-            state = str(permit['_state'])[state_prefix_len:]
-            summary = permit_stats(int(permit['_resources']['count']), int(permit['_resources']['memory']))
+            for permit in intrusive_list(member):
+                try:
+                    schema = permit['_schema']['_p']
+                except:
+                    # schema is already a raw pointer in older versions
+                    schema = permit['_schema']
 
-            permit_summaries[(schema_name, description, state)].add(summary)
-            total.add(summary)
+                if schema:
+                    #raw_schema = schema.dereference()['_raw']
+                    schema_name = "adad" #"{}.{}".format(str(raw_schema['_ks_name']).replace('"', ''), str(raw_schema['_cf_name']).replace('"', ''))
+                else:
+                    schema_name = "*.*"
+
+                description = str(permit['_op_name_view'])[1:-1]
+                state = str(permit['_state'])[state_prefix_len:]
+                summary = permit_stats(int(permit['_resources']['count']), int(permit['_resources']['memory']))
+
+                permit_summaries[(schema_name, description, state)].add(summary)
+                total.add(summary)
 
         if not permit_summaries:
+            gdb.write("NO PERMIT SUMMARIES\n")
             return
 
         semaphore_name = str(semaphore['_name'])[1:-1]
@@ -5816,17 +5827,18 @@ class scylla_read_stats(gdb.Command):
         gdb.write("{:10} {:5} {:12} Total\n".format(total.permits, total.resource_count, total.resource_memory))
 
     def invoke(self, args, from_tty):
+        gdb.write("ARGS: '{}' | {}\n".format(args, bool(args)))
         if args:
             semaphores = [gdb.parse_and_eval(arg) for arg in args.split(' ')]
         else:
             db = find_db()
             semaphores = [db["_streaming_concurrency_sem"], db["_system_read_concurrency_sem"]]
             semaphores.append(db["_compaction_concurrency_sem"])
-            try:
-                semaphores += [weighted_sem["sem"] for (_, weighted_sem) in unordered_map(db["_reader_concurrency_semaphores_group"]["_semaphores"])]
-            except gdb.error:
+            #try:
+            semaphores += [weighted_sem["sem"] for (_, weighted_sem) in unordered_map(db["_reader_concurrency_semaphores_group"]["_semaphores"])]
+            #except gdb.error:
                 # compatibility with code before per-scheduling-group semaphore
-                pass
+            #    pass
             try:
                 semaphores += [weighted_sem["sem"] for (_, weighted_sem) in unordered_map(db["_view_update_read_concurrency_semaphores_group"]["_semaphores"])]
             except gdb.error:

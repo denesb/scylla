@@ -337,13 +337,13 @@ else
 fi
 
 # We do the checkout unconditionally, it is cheap anyway.
-pushd ${SCYLLA_REPO_PATH} > /dev/null
-git fetch -q ${REMOTE_REPO_NAME} ${BRANCH}
-git checkout -q ${COMMIT_HASH}
+#pushd ${SCYLLA_REPO_PATH} > /dev/null
+#git fetch -q ${REMOTE_REPO_NAME} ${BRANCH}
+#git checkout -q ${COMMIT_HASH}
 # Skip the other submodules, they are not needed for debugging
-git submodule -q sync
-git submodule update -q --depth=1 --init seastar
-popd > /dev/null
+#git submodule -q sync
+#git submodule update -q --depth=1 --init seastar
+#popd > /dev/null
 
 if ! [[ -f ${COREDIR}/scylla-gdb.py ]]
 then
