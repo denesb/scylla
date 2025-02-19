@@ -285,7 +285,7 @@ static mutation_reader maybe_compact_for_streaming(mutation_reader underlying, c
             std::move(underlying),
             compaction_time,
             compaction_can_gc ? can_always_purge : can_never_purge,
-            cm.get_tombstone_gc_state(),
+            tombstone_gc_before_getter(cm.get_tombstone_gc_state()),
             streamed_mutation::forwarding::no);
 }
 
@@ -2833,7 +2833,7 @@ table::sstables_as_snapshot_source() {
                 std::move(reader),
                 gc_clock::now(),
                 get_max_purgeable_fn_for_cache_underlying_reader(),
-                _compaction_manager.get_tombstone_gc_state().with_commitlog_check_disabled(),
+                tombstone_gc_before_getter(_compaction_manager.get_tombstone_gc_state()).with_commitlog_check_disabled(),
                 fwd);
         }, [this, sst_set] {
             return make_partition_presence_checker(sst_set);
@@ -3584,7 +3584,7 @@ table::query(schema_ptr query_schema,
 
         if (!querier_opt) {
             query::querier_base::querier_config conf(_config.tombstone_warn_threshold);
-            querier_opt = query::querier(as_mutation_source(), query_schema, permit, range, qs.cmd.slice, trace_state, get_compaction_manager().get_tombstone_gc_state(), conf);
+            querier_opt = query::querier(as_mutation_source(), query_schema, permit, range, qs.cmd.slice, trace_state, tombstone_gc_before_getter(get_compaction_manager().get_tombstone_gc_state()), conf);
         }
         auto& q = *querier_opt;
 
@@ -3640,7 +3640,7 @@ table::mutation_query(schema_ptr query_schema,
     }
     if (!querier_opt) {
         query::querier_base::querier_config conf(_config.tombstone_warn_threshold);
-        querier_opt = query::querier(as_mutation_source(), query_schema, permit, range, cmd.slice, trace_state, get_compaction_manager().get_tombstone_gc_state(), conf);
+        querier_opt = query::querier(as_mutation_source(), query_schema, permit, range, cmd.slice, trace_state, tombstone_gc_before_getter(get_compaction_manager().get_tombstone_gc_state()), conf);
     }
     auto& q = *querier_opt;
 
