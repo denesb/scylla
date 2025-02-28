@@ -276,6 +276,8 @@ public:
     named_value<uint32_t> counter_cache_keys_to_save;
     named_value<uint32_t> tombstone_warn_threshold;
     named_value<uint32_t> tombstone_failure_threshold;
+    named_value<uint32_t> tombstone_warn_row_tombstone_rate_limit;
+    named_value<uint32_t> tombstone_warn_cell_tombstone_rate_limit;
     named_value<uint64_t> query_tombstone_page_limit;
     named_value<uint64_t> query_page_size_in_bytes;
     named_value<uint32_t> group0_tombstone_gc_refresh_interval_in_ms;

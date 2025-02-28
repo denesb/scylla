@@ -428,6 +428,14 @@ database::database(const db::config& cfg, database_config dbcfg, service::migrat
     , _stop_barrier(std::move(barrier))
     , _update_memtable_flush_static_shares_action([this, &cfg] { return _memtable_controller.update_static_shares(cfg.memtable_flush_static_shares()); })
     , _memtable_flush_static_shares_observer(cfg.memtable_flush_static_shares.observe(_update_memtable_flush_static_shares_action.make_observer()))
+    , _row_tombstone_warn_rate_limit(std::chrono::seconds(cfg.tombstone_warn_row_tombstone_rate_limit()))
+    , _cell_tombstone_warn_rate_limit(std::chrono::seconds(cfg.tombstone_warn_cell_tombstone_rate_limit()))
+    , _row_tombstone_warn_rate_limit_observer(cfg.tombstone_warn_row_tombstone_rate_limit.observe([this] (uint32_t rl) mutable {
+            _row_tombstone_warn_rate_limit = logger::rate_limit(std::chrono::seconds(rl));
+        }))
+    , _cell_tombstone_warn_rate_limit_observer(cfg.tombstone_warn_cell_tombstone_rate_limit.observe([this] (uint32_t rl) mutable {
+            _cell_tombstone_warn_rate_limit = logger::rate_limit(std::chrono::seconds(rl));
+        }))
 {
     SCYLLA_ASSERT(dbcfg.available_memory != 0); // Detect misconfigured unit tests, see #7544
 
@@ -1312,7 +1320,9 @@ keyspace::make_column_family_config(const schema& s, const database& db) const {
     cfg.statement_scheduling_group = _config.statement_scheduling_group;
     cfg.enable_metrics_reporting = db_config.enable_keyspace_column_family_metrics();
     cfg.enable_node_aggregated_table_metrics = db_config.enable_node_aggregated_table_metrics();
-    cfg.tombstone_warn_threshold = db_config.tombstone_warn_threshold();
+    cfg.tombstone_warn_threshold = db_config.tombstone_warn_threshold;
+    cfg.row_tombstone_warn_rate_limit = db.get_row_tombstone_warn_rate_limit();
+    cfg.cell_tombstone_warn_rate_limit = db.get_cell_tombstone_warn_rate_limit();
     cfg.view_update_concurrency_semaphore_limit = _config.view_update_concurrency_semaphore_limit;
     cfg.data_listeners = &db.data_listeners();
     cfg.enable_compacting_data_for_streaming_and_repair = db_config.enable_compacting_data_for_streaming_and_repair;

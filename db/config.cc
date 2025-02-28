@@ -855,6 +855,8 @@ db::config::config(std::shared_ptr<db::extensions> exts)
     */
     , tombstone_warn_threshold(this, "tombstone_warn_threshold", value_status::Used, 1000,
         "The maximum number of tombstones a query can scan before warning.")
+    , tombstone_warn_row_tombstone_rate_limit(this, "tombstone_warn_row_tombstone_rate_limit", value_status::Used, 10, "")
+    , tombstone_warn_cell_tombstone_rate_limit(this, "tombstone_warn_cell_tombstone_rate_limit", value_status::Used, 10, "")
     , tombstone_failure_threshold(this, "tombstone_failure_threshold", value_status::Unused, 100000,
         "The maximum number of tombstones a query can scan before aborting.")
     , query_tombstone_page_limit(this, "query_tombstone_page_limit", liveness::LiveUpdate, value_status::Used, 10000,

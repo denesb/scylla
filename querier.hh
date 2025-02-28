@@ -56,9 +56,15 @@ class querier_base {
 public:
     struct querier_config {
         uint32_t tombstone_warn_threshold {0}; // 0 disabled
+        logger::rate_limit* row_tombstone_warn_rate_limit{nullptr};
+        logger::rate_limit* cell_tombstone_warn_rate_limit{nullptr};
+
         querier_config() = default;
-        explicit querier_config(uint32_t warn)
-            : tombstone_warn_threshold(warn) {}
+        explicit querier_config(uint32_t warn, logger::rate_limit* row_tombstone_warn_rate_limit, logger::rate_limit* cell_tombstone_warn_rate_limit)
+            : tombstone_warn_threshold(warn)
+            , row_tombstone_warn_rate_limit(row_tombstone_warn_rate_limit)
+            , cell_tombstone_warn_rate_limit(cell_tombstone_warn_rate_limit)
+        {}
     };
 
 protected:

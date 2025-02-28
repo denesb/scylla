@@ -424,7 +424,9 @@ public:
         bool enable_node_aggregated_table_metrics = true;
         size_t view_update_concurrency_semaphore_limit;
         db::data_listeners* data_listeners = nullptr;
-        uint32_t tombstone_warn_threshold{0};
+        utils::updateable_value<uint32_t> tombstone_warn_threshold;
+        logger::rate_limit* row_tombstone_warn_rate_limit = nullptr;
+        logger::rate_limit* cell_tombstone_warn_rate_limit = nullptr;
         unsigned x_log2_compaction_groups{0};
         utils::updateable_value<bool> enable_compacting_data_for_streaming_and_repair;
         utils::updateable_value<bool> enable_tombstone_gc_for_streaming_and_repair;
@@ -1561,6 +1563,11 @@ private:
 
     db_clock::time_point _all_tables_flushed_at;
 
+    logger::rate_limit _row_tombstone_warn_rate_limit;
+    logger::rate_limit _cell_tombstone_warn_rate_limit;
+    utils::observer<uint32_t> _row_tombstone_warn_rate_limit_observer;
+    utils::observer<uint32_t> _cell_tombstone_warn_rate_limit_observer;
+
 public:
     data_dictionary::database as_data_dictionary() const;
     db::commitlog* commitlog_for(const schema_ptr& schema);
@@ -1582,6 +1589,10 @@ public:
 
     void plug_view_update_generator(db::view::view_update_generator& generator) noexcept;
     void unplug_view_update_generator() noexcept;
+
+
+    logger::rate_limit& get_row_tombstone_warn_rate_limit() { return _row_tombstone_warn_rate_limit; }
+    logger::rate_limit& get_cell_tombstone_warn_rate_limit() { return _cell_tombstone_warn_rate_limit; }
 
 private:
     future<> flush_non_system_column_families();
