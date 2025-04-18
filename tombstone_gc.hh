@@ -134,8 +134,6 @@ private:
     { }
 
 public:
-    tombstone_gc_before_getter() = default;
-
     static tombstone_gc_before_getter no_gc() { return tombstone_gc_before_getter(mode::no_gc, nullptr, nullptr, 0); }
 
     static tombstone_gc_before_getter gc_all() { return tombstone_gc_before_getter(mode::gc_all, nullptr, nullptr, 0); }
