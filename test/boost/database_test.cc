@@ -1515,7 +1515,7 @@ SEASTAR_TEST_CASE(database_drop_column_family_clears_querier_cache) {
                 query::full_partition_range,
                 s->full_slice(),
                 nullptr,
-                {});
+                tombstone_gc_before_getter::no_gc());
 
         auto f = replica::database::drop_table_on_all_shards(e.db(), e.get_system_keyspace(), "ks", "cf");
 

@@ -117,7 +117,7 @@ private:
             range,
             _s.schema()->full_slice(),
             nullptr,
-            {});
+            tombstone_gc_before_getter::no_gc());
     }
 
     static query_id make_cache_key(unsigned key) {
