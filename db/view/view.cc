@@ -3220,7 +3220,7 @@ void view_builder::execute(build_step& step, exponential_backoff_retry r) {
             step.pslice,
             batch_size,
             query::max_partitions,
-            tombstone_gc_before_getter{});
+            tombstone_gc_before_getter::no_gc());
     auto consumer = compact_for_query<view_builder::consumer>(compaction_state, view_builder::consumer{*this, _vug.shared_from_this(), step, now});
     auto built = step.reader.consume_in_thread(std::move(consumer));
     if (auto ds = std::move(*compaction_state).detach_state()) {
