@@ -348,6 +348,29 @@ private:
             service::query_state& state, const query_options& options) const override;
 };
 
+class nonmaterialized_view_select_statement : public select_statement {
+public:
+    nonmaterialized_view_select_statement(schema_ptr schema,
+        uint32_t bound_terms,
+        lw_shared_ptr<const parameters> parameters,
+        ::shared_ptr<selection::selection> selection,
+        ::shared_ptr<const restrictions::statement_restrictions> restrictions,
+        ::shared_ptr<std::vector<size_t>> group_by_cell_indices,
+        bool is_reversed,
+        ordering_comparator_type ordering_comparator,
+        std::optional<expr::expression> limit,
+        std::optional<expr::expression> per_partition_limit,
+        cql_stats& stats,
+        std::unique_ptr<cql3::attributes> attrs);
+
+    virtual future<::shared_ptr<cql_transport::messages::result_message>> do_execute(query_processor& qp,
+        service::query_state& state, const query_options& options) const;
+private:
+    future<exceptions::coordinator_result<service::storage_proxy_coordinator_query_result>>
+    do_query(service::storage_proxy& sp, schema_ptr schema, lw_shared_ptr<query::read_command> cmd, dht::partition_range_vector partition_ranges,
+            db::consistency_level cl, service::storage_proxy_coordinator_query_options optional_params) const;
+};
+
 }
 
 }
