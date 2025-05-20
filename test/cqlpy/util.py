@@ -182,9 +182,10 @@ def new_materialized_view(cql, table, select, pk, where, extra=""):
 def new_nonmaterialized_view(cql, table, select):
     keyspace, _, table = table.partition('.')
     #nmv = keyspace + "." + unique_name()
-    # FIXME HACK, remove once we have working CREATE NONMATERIALIZED_VIEW
-    nmv = keyspace + "." + "MAGIC_NONMATERIALIZED_VIEW"
     #cql.execute(f"CREATE NONMATERIALIZED VIEW {nmv} AS SELECT {select} FROM {table}")
+
+    # FIXME HACK, remove once we have working CREATE NONMATERIALIZED_VIEW
+    nmv = f"{keyspace}.MAGIC_NONMATERIALIZED_VIEW:{table}"
 
     col_list = []
     partition_key_cols = []
