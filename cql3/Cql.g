@@ -386,6 +386,7 @@ cqlStatement returns [std::unique_ptr<raw::parsed_statement> stmt]
     | st48=pruneMaterializedViewStatement  { $stmt = std::move(st48); }
     | st49=describeStatement           { $stmt = std::move(st49); }
     | st50=listEffectiveServiceLevelStatement { $stmt = std::move(st50); }
+    | st51=dropNonMaterializedViewStatement { $stmt = std::move(st51); }
     ;
 
 /*
@@ -1114,6 +1115,15 @@ dropViewStatement returns [std::unique_ptr<drop_view_statement> stmt]
     @init { bool if_exists = false; }
     : K_DROP K_MATERIALIZED K_VIEW (K_IF K_EXISTS { if_exists = true; } )? cf=columnFamilyName
       { $stmt = std::make_unique<drop_view_statement>(cf, if_exists); }
+    ;
+
+/**
+ * DROP VIEW [IF EXISTS] <view_name>
+ */
+dropNonMaterializedViewStatement returns [std::unique_ptr<drop_non_materialized_view_statement> stmt]
+    @init { bool if_exists = false; }
+    : K_DROP K_VIEW (K_IF K_EXISTS { if_exists = true; } )? cf=columnFamilyName
+      { $stmt = std::make_unique<drop_non_materialized_view_statement>(cf, if_exists); }
     ;
 
 /**
