@@ -43,6 +43,8 @@
 
 constexpr int32_t schema::NAME_LENGTH;
 
+const sstring magic_nmv_name("magic_nonmaterialized_view");
+
 extern logging::logger dblog;
 
 sstring
@@ -511,6 +513,9 @@ schema::schema(private_tag, const raw_schema& raw, const schema_static_props& pr
             }
         ), *base);
     } else if (_raw._nonmaterialized_view_info) {
+        _nonmaterialized_view_info = std::make_unique<::nonmaterialized_view_info>(*this, *_raw._nonmaterialized_view_info);
+    } else if (_raw._cf_name.compare(0, magic_nmv_name.size(), magic_nmv_name) == 0) { // FIXME HACK
+        _raw._nonmaterialized_view_info.emplace(table_id{}, _raw._cf_name.substr(magic_nmv_name.size()));
         _nonmaterialized_view_info = std::make_unique<::nonmaterialized_view_info>(*this, *_raw._nonmaterialized_view_info);
     } else if (base) {
         on_internal_error(dblog, format("Tried to create schema for table/view {}.{} with base info but without view info",
