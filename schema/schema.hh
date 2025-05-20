@@ -443,6 +443,7 @@ public:
 bool operator==(const raw_nonmaterialized_view_info&, const raw_nonmaterialized_view_info&);
 
 class view_info;
+class nonmaterialized_view_info;
 
 // Represents a column set which is compactible with Cassandra 3.x.
 //
@@ -594,12 +595,14 @@ private:
         bool _in_memory = false;
         std::optional<std::map<sstring, sstring>> _tablet_options;
         std::optional<raw_view_info> _view_info;
+        std::optional<raw_nonmaterialized_view_info> _nonmaterialized_view_info;
     };
     raw_schema _raw;
     schema_static_props _static_props;
     v3_columns _v3_columns;
     mutable schema_registry_entry* _registry_entry = nullptr;
     std::unique_ptr<::view_info> _view_info;
+    std::unique_ptr<::nonmaterialized_view_info> _nonmaterialized_view_info;
 
     const std::array<column_count_type, 3> _offsets;
 
@@ -894,6 +897,12 @@ public:
     }
     bool is_view() const {
         return bool(_view_info);
+    }
+    const std::unique_ptr<::nonmaterialized_view_info>& nonmaterialized_view_info() const {
+        return _nonmaterialized_view_info;
+    }
+    bool is_nonmaterialized_view() const {
+        return bool(_nonmaterialized_view_info);
     }
     const query::partition_slice& full_slice() const {
         return *_full_slice;
