@@ -1989,6 +1989,34 @@ static void make_drop_table_or_view_mutations(schema_ptr schema_table,
     mutations.emplace_back(m1);
 }
 
+// FIXME: drop from system_schema.nonmaterialized_views instead of system_schema.views
+static void make_drop_table_or_non_materialized_view_mutations(schema_ptr schema_table,
+            schema_ptr table_or_view,
+            api::timestamp_type timestamp,
+            std::vector<mutation>& mutations) {
+    auto pkey = partition_key::from_singular(*schema_table, table_or_view->ks_name());
+    mutation m{schema_table, pkey};
+    auto ckey = clustering_key::from_singular(*schema_table, table_or_view->cf_name());
+    m.partition().apply_delete(*schema_table, ckey, tombstone(timestamp, gc_clock::now()));
+    mutations.emplace_back(m);
+    for (auto& column : table_or_view->v3().all_columns()) {
+        if (column.is_view_virtual()) {
+            drop_column_from_schema_mutation(view_virtual_columns(), table_or_view, column.name_as_text(), timestamp, mutations);
+        } else {
+            drop_column_from_schema_mutation(columns(), table_or_view, column.name_as_text(), timestamp, mutations);
+        }
+        if (column.is_computed()) {
+            drop_column_from_schema_mutation(computed_columns(), table_or_view, column.name_as_text(), timestamp, mutations);
+        }
+    }
+    for (auto& column : table_or_view->dropped_columns() | std::views::keys) {
+        drop_column_from_schema_mutation(dropped_columns(), table_or_view, column, timestamp, mutations);
+    }
+    mutation m1{scylla_tables(), pkey};
+    m1.partition().apply_delete(*scylla_tables(), ckey, tombstone(timestamp, gc_clock::now()));
+    mutations.emplace_back(m1);
+}
+
 std::vector<mutation> make_drop_table_mutations(lw_shared_ptr<keyspace_metadata> keyspace, schema_ptr table, api::timestamp_type timestamp)
 {
     std::vector<mutation> mutations;
@@ -2373,6 +2401,7 @@ static void drop_index_from_schema_mutation(schema_ptr table, const index_metada
     mutations.push_back(std::move(m));
 }
 
+// FIXME
 static void drop_column_from_schema_mutation(
         schema_ptr schema_table,
         schema_ptr table,
@@ -2675,6 +2704,14 @@ std::vector<mutation> make_drop_view_mutations(lw_shared_ptr<keyspace_metadata> 
     make_drop_table_or_view_mutations(views(), view, timestamp, mutations);
     return mutations;
 }
+
+std::vector<mutation> make_drop_non_materialized_view_mutations(lw_shared_ptr<keyspace_metadata> keyspace, view_ptr view, api::timestamp_type timestamp) {
+    std::vector<mutation> mutations;
+    // FIXME: Use nonmaterialized_views instead
+    make_drop_table_or_non_materialized_view_mutations(views(), view, timestamp, mutations);
+    return mutations;
+}
+
 
 data_type parse_type(sstring str)
 {

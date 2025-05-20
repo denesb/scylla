@@ -900,6 +900,30 @@ future<std::vector<mutation>> prepare_view_drop_announcement(storage_proxy& sp, 
     }
 }
 
+future<std::vector<mutation>> prepare_non_materialized_view_drop_announcement(storage_proxy& sp, const sstring& ks_name, const sstring& cf_name, api::timestamp_type ts) {
+    auto& db = sp.local_db();
+    try {
+        auto& view = db.find_column_family(ks_name, cf_name).schema();
+        if (!view->is_view()) {
+            throw exceptions::invalid_request_exception("Cannot use DROP MATERIALIZED VIEW on Table");
+        }
+        if (db.find_column_family(view->view_info()->base_id()).get_index_manager().is_index(view_ptr(view))) {
+            throw exceptions::invalid_request_exception("Cannot use DROP MATERIALIZED VIEW on Index");
+        }
+        auto keyspace = db.find_keyspace(ks_name).metadata();
+        mlogger.info("Drop view '{}.{}'", view->ks_name(), view->cf_name());
+        auto mutations = db::schema_tables::make_drop_view_mutations(keyspace, view_ptr(std::move(view)), ts);
+        // notifiers must run in seastar thread
+        co_await seastar::async([&] {
+            db.get_notifier().before_drop_column_family(*view, mutations, ts);
+        });
+        co_return co_await include_keyspace(sp, *keyspace, std::move(mutations));
+    } catch (const replica::no_such_column_family& e) {
+        throw exceptions::configuration_exception(format("Cannot drop non existing materialized view '{}' in keyspace '{}'.",
+                                                         cf_name, ks_name));
+    }
+}
+
 future<> migration_manager::push_schema_mutation(locator::host_id id, const std::vector<mutation>& schema)
 {
     auto schema_features = _feat.cluster_schema_features();
