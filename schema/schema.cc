@@ -538,7 +538,8 @@ schema::schema(const schema& o, const std::function<void(schema&)>& transform)
     if (o.is_view()) {
         _view_info = std::make_unique<::view_info>(*this, o.view_info()->raw(), o.view_info()->base_info());
     }
-    if (o.is_nonmaterialized_view()) {
+    // FIXME: remove this if we proceed with materialized field to schema_tables::views().
+    if (o.nonmaterialized_view_info()) {
         _nonmaterialized_view_info = std::make_unique<::nonmaterialized_view_info>(*this, o.nonmaterialized_view_info()->raw());
     }
 }
@@ -653,6 +654,7 @@ struct appending_hash<raw_view_info>  {
         feed_hash(h, x.base_name());
         feed_hash(h, x.include_all_columns());
         feed_hash(h, x.where_clause());
+        feed_hash(h, x.materialized());
     }
 };
 
@@ -1310,7 +1312,8 @@ schema_builder::schema_builder(const schema_ptr s)
         _base_info = s->view_info()->base_info();
         _view_info = s->view_info()->raw();
     }
-    if (s->is_nonmaterialized_view()) {
+    // FIXME: remove this if we proceed with materialized field to schema_tables::views().
+    if (s->nonmaterialized_view_info()) {
         _nonmaterialized_view_info = s->nonmaterialized_view_info()->raw();
     }
 }
@@ -1548,15 +1551,15 @@ void schema_builder::prepare_dense_schema(schema::raw_schema& raw) {
     }
 }
 
-schema_builder& schema_builder::with_view_info(schema_ptr base, bool include_all_columns, sstring where_clause) {
+schema_builder& schema_builder::with_view_info(schema_ptr base, bool include_all_columns, sstring where_clause, schema_builder::materialized is_materialized) {
     _base_schema = std::move(base);
-    _raw._view_info = raw_view_info(_base_schema.value()->id(), _base_schema.value()->cf_name(), include_all_columns, std::move(where_clause));
+    _raw._view_info = raw_view_info(_base_schema.value()->id(), _base_schema.value()->cf_name(), include_all_columns, std::move(where_clause), bool(is_materialized));
     return *this;
 }
 
-schema_builder& schema_builder::with_view_info(table_id base_id, sstring base_name, bool include_all_columns, sstring where_clause, db::view::base_dependent_view_info base) {
+schema_builder& schema_builder::with_view_info(table_id base_id, sstring base_name, bool include_all_columns, sstring where_clause, db::view::base_dependent_view_info base, schema_builder::materialized is_materialized) {
     _base_info = std::move(base);
-    _raw._view_info = raw_view_info(std::move(base_id), std::move(base_name), include_all_columns, std::move(where_clause));
+    _raw._view_info = raw_view_info(std::move(base_id), std::move(base_name), include_all_columns, std::move(where_clause), bool(is_materialized));
     return *this;
 }
 
@@ -2078,6 +2081,13 @@ bool schema::has_index(const sstring& index_name) const {
     return _raw._indices_by_name.contains(index_name);
 }
 
+bool schema::is_nonmaterialized_view() const {
+    // FIXME: if we decide to go with schema_table::views() for non-materialized, then
+    //  we get rid of former check.
+    return bool(_nonmaterialized_view_info) || (is_view() && view_info()->materialized());
+}
+
+
 std::vector<sstring> schema::index_names() const {
     return _raw._indices_by_name | std::views::keys | std::ranges::to<std::vector>();
 }
@@ -2109,11 +2119,12 @@ schema_ptr schema::get_reversed() const {
     });
 }
 
-raw_view_info::raw_view_info(table_id base_id, sstring base_name, bool include_all_columns, sstring where_clause)
+raw_view_info::raw_view_info(table_id base_id, sstring base_name, bool include_all_columns, sstring where_clause, bool materialized)
         : _base_id(std::move(base_id))
         , _base_name(std::move(base_name))
         , _include_all_columns(include_all_columns)
         , _where_clause(where_clause)
+        , _materialized(materialized)
 { }
 
 raw_nonmaterialized_view_info::raw_nonmaterialized_view_info(table_id base_id, sstring base_name)
@@ -2330,14 +2341,15 @@ bool operator==(const raw_view_info& x, const raw_view_info& y) {
     return x._base_id == y._base_id
         && x._base_name == y._base_name
         && x._include_all_columns == y._include_all_columns
-        && x._where_clause == y._where_clause;
+        && x._where_clause == y._where_clause
+        && x._materialized == y._materialized;
 }
 
 auto fmt::formatter<raw_view_info>::format(const raw_view_info& view, fmt::format_context& ctx) const
         -> decltype(ctx.out()) {
     return fmt::format_to(ctx.out(),
-                          "ViewInfo{{baseTableId={}, baseTableName={}, includeAllColumns={}, whereClause={}}}",
-                          view._base_id, view._base_name, view._include_all_columns, view._where_clause);
+                          "ViewInfo{{baseTableId={}, baseTableName={}, includeAllColumns={}, whereClause={}, materialized={}}}",
+                          view._base_id, view._base_name, view._include_all_columns, view._where_clause, view._materialized);
 }
 
 bool operator==(const raw_nonmaterialized_view_info& x, const raw_nonmaterialized_view_info& y) {

@@ -21,6 +21,8 @@ class per_partition_rate_limit_options;
 
 struct schema_builder {
 public:
+    class materialized_tag;
+    using materialized = bool_class<class materialized_tag>;
     enum class compact_storage { no, yes };
     using static_configurator = noncopyable_function<void(const sstring& ks_name, const sstring& cf_name, schema_static_props&)>;
 private:
@@ -277,8 +279,10 @@ public:
     // of table_schema_version (even in ABA changes).
     schema_builder& with_hash_version();
 
-    schema_builder& with_view_info(schema_ptr base_schema, bool include_all_columns, sstring where_clause);
-    schema_builder& with_view_info(table_id base_id, sstring base_name, bool include_all_columns, sstring where_clause, db::view::base_dependent_view_info base);
+    schema_builder& with_view_info(schema_ptr base_schema, bool include_all_columns, sstring where_clause,
+                                   materialized is_materialized = materialized::yes);
+    schema_builder& with_view_info(table_id base_id, sstring base_name, bool include_all_columns, sstring where_clause, db::view::base_dependent_view_info base,
+                                   materialized is_materialized = materialized::yes);
 
     schema_builder& with_nonmaterialized_view_info(schema_ptr base);
 

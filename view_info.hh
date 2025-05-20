@@ -47,6 +47,10 @@ public:
         return _raw.where_clause();
     }
 
+    bool materialized() const {
+        return _raw.materialized();
+    }
+
     cql3::statements::select_statement& select_statement(data_dictionary::database) const;
     const query::partition_slice& partition_slice(data_dictionary::database) const;
     const column_definition* view_column(const schema& base, column_kind kind, column_id base_id) const;
