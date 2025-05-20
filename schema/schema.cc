@@ -645,6 +645,16 @@ struct appending_hash<raw_view_info>  {
 };
 
 template<>
+struct appending_hash<raw_nonmaterialized_view_info>  {
+    template<typename H>
+    requires Hasher<H>
+    void operator()(H& h, const raw_nonmaterialized_view_info& x) const noexcept {
+        feed_hash(h, x.base_id());
+        feed_hash(h, x.base_name());
+    }
+};
+
+template<>
 struct appending_hash<schema::dropped_column> {
     template<typename H>
     requires Hasher<H>
@@ -2085,6 +2095,11 @@ raw_view_info::raw_view_info(table_id base_id, sstring base_name, bool include_a
         , _where_clause(where_clause)
 { }
 
+raw_nonmaterialized_view_info::raw_nonmaterialized_view_info(table_id base_id, sstring base_name)
+    : _base_id(std::move(base_id))
+    , _base_name(std::move(base_name))
+{ }
+
 column_computation_ptr column_computation::deserialize(bytes_view raw) {
     rjson::value parsed = rjson::parse(std::string_view(reinterpret_cast<const char*>(raw.begin()), reinterpret_cast<const char*>(raw.end())));
     if (!parsed.IsObject()) {
@@ -2302,6 +2317,19 @@ auto fmt::formatter<raw_view_info>::format(const raw_view_info& view, fmt::forma
     return fmt::format_to(ctx.out(),
                           "ViewInfo{{baseTableId={}, baseTableName={}, includeAllColumns={}, whereClause={}}}",
                           view._base_id, view._base_name, view._include_all_columns, view._where_clause);
+}
+
+bool operator==(const raw_nonmaterialized_view_info& x, const raw_nonmaterialized_view_info& y) {
+    // Keep consistent with appending_hash<raw_nonmaterialized_view_info>
+    return x._base_id == y._base_id
+        && x._base_name == y._base_name;
+}
+
+auto fmt::formatter<raw_nonmaterialized_view_info>::format(const raw_nonmaterialized_view_info& view, fmt::format_context& ctx) const
+        -> decltype(ctx.out()) {
+    return fmt::format_to(ctx.out(),
+                          "NonMaterializedViewInfo{{baseTableId={}, baseTableName={}}}",
+                          view._base_id, view._base_name);
 }
 
 auto fmt::formatter<view_ptr>::format(const view_ptr& view, fmt::format_context& ctx) const
