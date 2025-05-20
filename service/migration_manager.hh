@@ -246,5 +246,6 @@ future<std::vector<mutation>> prepare_new_view_announcement(storage_proxy& sp, v
 future<std::vector<mutation>> prepare_view_update_announcement(storage_proxy& sp, view_ptr view, api::timestamp_type ts);
 
 future<std::vector<mutation>> prepare_view_drop_announcement(storage_proxy& sp, const sstring& ks_name, const sstring& cf_name, api::timestamp_type ts);
+future<std::vector<mutation>> prepare_non_materialized_view_drop_announcement(storage_proxy& sp, const sstring& ks_name, const sstring& cf_name, api::timestamp_type ts);
 
 }
