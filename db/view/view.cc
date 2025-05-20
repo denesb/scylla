@@ -56,6 +56,7 @@
 #include "utils/assert.hh"
 #include "utils/small_vector.hh"
 #include "view_info.hh"
+#include "nonmaterialized_view_info.hh"
 #include "view_update_checks.hh"
 #include "types/list.hh"
 #include "types/map.hh"
@@ -91,6 +92,11 @@ view_info::view_info(const schema& schema, const raw_view_info& raw_view_info, d
         , _raw(raw_view_info)
         , _base_info(std::move(base_info))
 { }
+
+nonmaterialized_view_info::nonmaterialized_view_info(const schema& schema, const raw_nonmaterialized_view_info& raw_view_info)
+    : _schema(schema)
+    , _raw(raw_view_info) {
+}
 
 cql3::statements::select_statement& view_info::select_statement(data_dictionary::database db) const {
     if (!_select_statement) {
