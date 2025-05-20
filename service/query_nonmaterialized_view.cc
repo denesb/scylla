@@ -8,9 +8,12 @@
  * SPDX-License-Identifier: (LicenseRef-ScyllaDB-Source-Available-1.0 and Apache-2.0)
  */
 
+#include "nonmaterialized_view_info.hh"
+#include "partition_slice_builder.hh"
 #include "replica/database.hh"
 #include "service/storage_proxy.hh"
-#include "partition_slice_builder.hh"
+
+static logging::logger nmv_log("query_nonmaterialized_view");
 
 namespace service {
 
@@ -33,15 +36,17 @@ future<exceptions::coordinator_result<storage_proxy_coordinator_query_result>> q
 
     auto& view_table = db.find_column_family(query_schema->id());
 
-    const table_id base_table_id; /* = query_schema.get_base_table_id(); */
+    auto view_schema = view_table.schema();
+    if (!view_schema->is_nonmaterialized_view()) {
+        on_internal_error(nmv_log, format("table {}.{} ({}) is not a non-materialized view", view_schema->ks_name(), view_schema->cf_name(), view_schema->id()));
+    }
+
+    //const table_id base_table_id = view_schema->nonmaterialized_view_info()->raw().base_id();
+    const table_id base_table_id = db.find_column_family(view_schema->ks_name(), view_schema->nonmaterialized_view_info()->raw().base_name()).schema()->id();
     auto& base_table = db.find_column_family(base_table_id);
 
-    auto view_schema = view_table.schema();
     auto base_query_schema = base_table.schema();
-    if (view_schema->version() != query_schema->version()) {
-        if (view_schema->version() != query_schema->get_reversed()->version()) {
-            std::abort(); // TODO
-        }
+    if (cmd->slice.is_reversed()) {
         base_query_schema = base_query_schema->get_reversed();
     }
 

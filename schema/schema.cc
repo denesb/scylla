@@ -43,7 +43,7 @@
 
 constexpr int32_t schema::NAME_LENGTH;
 
-constexpr sstring magic_nmv_name("MAGIC_NONMATERIALIZED_VIEW");
+const sstring magic_nmv_name("MAGIC_NONMATERIALIZED_VIEW");
 
 extern logging::logger dblog;
 
