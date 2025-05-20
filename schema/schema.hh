@@ -422,6 +422,26 @@ public:
 
 bool operator==(const raw_view_info&, const raw_view_info&);
 
+class raw_nonmaterialized_view_info final {
+    table_id _base_id;
+    sstring _base_name;
+public:
+    raw_nonmaterialized_view_info(table_id base_id, sstring base_name);
+
+    const table_id& base_id() const {
+        return _base_id;
+    }
+
+    const sstring& base_name() const {
+        return _base_name;
+    }
+
+    friend bool operator==(const raw_nonmaterialized_view_info&, const raw_nonmaterialized_view_info&);
+    friend fmt::formatter<raw_nonmaterialized_view_info>;
+};
+
+bool operator==(const raw_nonmaterialized_view_info&, const raw_nonmaterialized_view_info&);
+
 class view_info;
 
 // Represents a column set which is compactible with Cassandra 3.x.
@@ -1027,6 +1047,10 @@ template <> struct fmt::formatter<column_mapping> : fmt::formatter<string_view> 
 
 template <> struct fmt::formatter<raw_view_info> : fmt::formatter<string_view> {
     auto format(const raw_view_info&, fmt::format_context& ctx) const -> decltype(ctx.out());
+};
+
+template <> struct fmt::formatter<raw_nonmaterialized_view_info> : fmt::formatter<string_view> {
+    auto format(const raw_nonmaterialized_view_info&, fmt::format_context& ctx) const -> decltype(ctx.out());
 };
 
 template <> struct fmt::formatter<schema> : fmt::formatter<string_view> {
