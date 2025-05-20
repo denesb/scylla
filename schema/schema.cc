@@ -22,6 +22,7 @@
 #include "schema_registry.hh"
 #include <type_traits>
 #include "view_info.hh"
+#include "nonmaterialized_view_info.hh"
 #include "partition_slice_builder.hh"
 #include "replica/database.hh"
 #include "dht/token-sharding.hh"
@@ -509,6 +510,8 @@ schema::schema(private_tag, const raw_schema& raw, const schema_static_props& pr
                 return std::make_unique<::view_info>(*this, *_raw._view_info, base_info);
             }
         ), *base);
+    } else if (_raw._nonmaterialized_view_info) {
+        _nonmaterialized_view_info = std::make_unique<::nonmaterialized_view_info>(*this, *_raw._nonmaterialized_view_info);
     } else if (base) {
         on_internal_error(dblog, format("Tried to create schema for table/view {}.{} with base info but without view info",
                                         _raw._ks_name, _raw._cf_name));
@@ -529,6 +532,9 @@ schema::schema(const schema& o, const std::function<void(schema&)>& transform)
     rebuild();
     if (o.is_view()) {
         _view_info = std::make_unique<::view_info>(*this, o.view_info()->raw(), o.view_info()->base_info());
+    }
+    if (o.is_nonmaterialized_view()) {
+        _nonmaterialized_view_info = std::make_unique<::nonmaterialized_view_info>(*this, o.nonmaterialized_view_info()->raw());
     }
 }
 
@@ -598,6 +604,7 @@ bool operator==(const schema& x, const schema& y)
         && x._raw._dropped_columns == y._raw._dropped_columns
         && x._raw._collections == y._raw._collections
         && indirect_equal_to<std::unique_ptr<::view_info>>()(x._view_info, y._view_info)
+        && indirect_equal_to<std::unique_ptr<::nonmaterialized_view_info>>()(x._nonmaterialized_view_info, y._nonmaterialized_view_info)
         && x._raw._indices_by_name == y._raw._indices_by_name
         && x._raw._is_counter == y._raw._is_counter
         && x._raw._in_memory == y._raw._in_memory
@@ -692,6 +699,7 @@ table_schema_version schema::calculate_digest(const schema::raw_schema& r) {
     feed_hash(h, r._dropped_columns);
     feed_hash(h, r._collections);
     feed_hash(h, r._view_info);
+    feed_hash(h, r._nonmaterialized_view_info);
     feed_hash(h, r._indices_by_name);
     feed_hash(h, r._is_counter);
 
@@ -1297,6 +1305,9 @@ schema_builder::schema_builder(const schema_ptr s)
         _base_info = s->view_info()->base_info();
         _view_info = s->view_info()->raw();
     }
+    if (s->is_nonmaterialized_view()) {
+        _nonmaterialized_view_info = s->nonmaterialized_view_info()->raw();
+    }
 }
 
 schema_builder::schema_builder(const schema::raw_schema& raw)
@@ -1541,6 +1552,11 @@ schema_builder& schema_builder::with_view_info(schema_ptr base, bool include_all
 schema_builder& schema_builder::with_view_info(table_id base_id, sstring base_name, bool include_all_columns, sstring where_clause, db::view::base_dependent_view_info base) {
     _base_info = std::move(base);
     _raw._view_info = raw_view_info(std::move(base_id), std::move(base_name), include_all_columns, std::move(where_clause));
+    return *this;
+}
+
+schema_builder& schema_builder::with_nonmaterialized_view_info(schema_ptr base) {
+    _raw._nonmaterialized_view_info = raw_nonmaterialized_view_info(base->id(), base->cf_name());
     return *this;
 }
 
