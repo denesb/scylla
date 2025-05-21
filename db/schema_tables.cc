@@ -520,7 +520,6 @@ schema_ptr views() {
          {"gc_grace_seconds", int32_type},
          {"id", uuid_type},
          {"include_all_columns", boolean_type},
-         {"materialized", boolean_type},
          {"max_index_interval", int32_type},
          {"memtable_flush_period_in_ms", int32_type},
          {"min_index_interval", int32_type},
@@ -2537,9 +2536,8 @@ view_ptr create_view_from_mutations(const schema_ctxt& ctxt, schema_mutations sm
     const query::result_set_row& row = table_rs.row(0);
     auto include_all_columns = row.get_nonnull<bool>("include_all_columns");
     auto where_clause = row.get_nonnull<sstring>("where_clause");
-    auto materialized = row.get_nonnull<bool>("materialized");
 
-    builder.with_view_info(std::move(base_schema), include_all_columns, std::move(where_clause), schema_builder::materialized(materialized));
+    builder.with_view_info(std::move(base_schema), include_all_columns, std::move(where_clause));
     return view_ptr(builder.build());
 }
 
@@ -2551,7 +2549,6 @@ view_ptr create_view_from_mutations(const schema_ctxt& ctxt, schema_mutations sm
     auto base_name = row.get_nonnull<sstring>("base_table_name");
     auto include_all_columns = row.get_nonnull<bool>("include_all_columns");
     auto where_clause = row.get_nonnull<sstring>("where_clause");
-    auto materialized = row.get_nonnull<bool>("materialized");
 
     if (!base_info) {
         if (!ctxt.get_db()) {
@@ -2562,9 +2559,9 @@ view_ptr create_view_from_mutations(const schema_ctxt& ctxt, schema_mutations sm
         }
         auto base_id = table_id(row.get_nonnull<utils::UUID>("base_table_id"));
         auto base_schema = ctxt.get_db()->find_schema(base_id);
-        builder.with_view_info(base_schema, include_all_columns, std::move(where_clause), schema_builder::materialized(materialized));
+        builder.with_view_info(base_schema, include_all_columns, std::move(where_clause));
     } else {
-        builder.with_view_info(id, base_name, include_all_columns, std::move(where_clause), *base_info, schema_builder::materialized(materialized));
+        builder.with_view_info(id, base_name, include_all_columns, std::move(where_clause), *base_info);
     }
     return view_ptr(builder.build());
 }
@@ -2611,7 +2608,6 @@ static schema_mutations make_view_mutations(view_ptr view, api::timestamp_type t
     m.set_clustered_cell(ckey, "bloom_filter_fp_chance", view->bloom_filter_fp_chance(), timestamp);
     m.set_clustered_cell(ckey, "include_all_columns", view->view_info()->include_all_columns(), timestamp);
     m.set_clustered_cell(ckey, "id", view->id().uuid(), timestamp);
-    m.set_clustered_cell(ckey, "materialized", view->view_info()->materialized(), timestamp);
 
     add_table_params_to_mutations(m, ckey, view, timestamp);
 

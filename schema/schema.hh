@@ -397,9 +397,8 @@ class raw_view_info final {
     sstring _base_name;
     bool _include_all_columns;
     sstring _where_clause;
-    bool _materialized;
 public:
-    raw_view_info(table_id base_id, sstring base_name, bool include_all_columns, sstring where_clause, bool materialized);
+    raw_view_info(table_id base_id, sstring base_name, bool include_all_columns, sstring where_clause);
 
     const table_id& base_id() const {
         return _base_id;
@@ -415,10 +414,6 @@ public:
 
     const sstring& where_clause() const {
         return _where_clause;
-    }
-
-    bool materialized() const {
-        return _materialized;
     }
 
     friend bool operator==(const raw_view_info&, const raw_view_info&);
@@ -906,7 +901,9 @@ public:
     const std::unique_ptr<::nonmaterialized_view_info>& nonmaterialized_view_info() const {
         return _nonmaterialized_view_info;
     }
-    bool is_nonmaterialized_view() const;
+    bool is_nonmaterialized_view() const {
+        return bool(_nonmaterialized_view_info);
+    }
     const query::partition_slice& full_slice() const {
         return *_full_slice;
     }
