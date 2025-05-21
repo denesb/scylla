@@ -11,7 +11,8 @@
 #include "db/schema_tables.hh"
 #include "utils/hashers.hh"
 #include "utils/UUID_gen.hh"
-
+// FIXME: seems unused, maybe used in tests. if it's used, we need to handle the is_view flag properly.
+#if 1
 schema_mutations::schema_mutations(canonical_mutation columnfamilies,
                                    canonical_mutation columns,
                                    bool is_view,
@@ -28,6 +29,7 @@ schema_mutations::schema_mutations(canonical_mutation columnfamilies,
     , _dropped_columns(dropped_columns ? mutation_opt{dropped_columns.value().to_mutation(db::schema_tables::dropped_columns())} : std::nullopt)
     , _scylla_tables(scylla_tables ? mutation_opt{scylla_tables.value().to_mutation(db::schema_tables::scylla_tables())} : std::nullopt)
 {}
+#endif
 
 void schema_mutations::copy_to(std::vector<mutation>& dst) const {
     dst.push_back(_columnfamilies);
@@ -136,6 +138,10 @@ bool schema_mutations::live() const {
 
 bool schema_mutations::is_view() const {
     return _columnfamilies.schema() == db::schema_tables::views();
+}
+
+bool schema_mutations::is_nonmaterialized_view() const {
+    return _columnfamilies.schema() == db::schema_tables::nonmaterialized_views();
 }
 
 auto fmt::formatter<schema_mutations>::format(const schema_mutations& sm, fmt::format_context& ctx) const

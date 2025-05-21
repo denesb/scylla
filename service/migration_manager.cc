@@ -857,6 +857,31 @@ future<std::vector<mutation>> prepare_new_view_announcement(storage_proxy& sp, v
   });
 }
 
+future<std::vector<mutation>> prepare_new_nonmaterialized_view_announcement(storage_proxy& sp, view_ptr view, api::timestamp_type ts) {
+  return validate(view).then([&sp, view = std::move(view), ts] {
+    auto& db = sp.local_db();
+    try {
+        auto keyspace = db.find_keyspace(view->ks_name()).metadata();
+        if (keyspace->cf_meta_data().contains(view->cf_name())) {
+            throw exceptions::already_exists_exception(view->ks_name(), view->cf_name());
+        }
+        mlogger.info("Create new non materialized view: {}", view);
+        return seastar::async([&db, keyspace = std::move(keyspace), &sp, view = std::move(view), ts] {
+            auto mutations = db::schema_tables::make_create_nonmaterialized_view_mutations(keyspace, view, ts);
+            // We don't have a separate on_before_create_view() listener to
+            // call. But a view is also a column family, and we need to call
+            // the on_before_create_column_family listener - notably, to
+            // create tablets for the new view table.
+            db.get_notifier().before_create_column_family(*keyspace, *view, mutations, ts);
+            return include_keyspace(sp, *keyspace, std::move(mutations)).get();
+        });
+    } catch (const replica::no_such_keyspace& e) {
+        return make_exception_future<std::vector<mutation>>(
+            exceptions::configuration_exception(format("Cannot add view '{}' to non existing keyspace '{}'.", view->cf_name(), view->ks_name())));
+    }
+  });
+}
+
 future<std::vector<mutation>> prepare_view_update_announcement(storage_proxy& sp, view_ptr view, api::timestamp_type ts) {
     co_await validate(view);
     auto db = sp.data_dictionary();
@@ -868,6 +893,25 @@ future<std::vector<mutation>> prepare_view_update_announcement(storage_proxy& sp
         }
         mlogger.info("Update view '{}.{}' From {} To {}", view->ks_name(), view->cf_name(), *old_view, *view);
         auto mutations = db::schema_tables::make_update_view_mutations(keyspace, view_ptr(old_view), std::move(view), ts, true);
+        co_return co_await include_keyspace(sp, *keyspace, std::move(mutations));
+    } catch (const std::out_of_range& e) {
+        auto&& ex = std::make_exception_ptr(exceptions::configuration_exception(format("Cannot update non existing materialized view '{}' in keyspace '{}'.",
+                                                         view->cf_name(), view->ks_name())));
+        co_return coroutine::exception(std::move(ex));
+    }
+}
+
+future<std::vector<mutation>> prepare_nonmaterialized_view_update_announcement(storage_proxy& sp, view_ptr view, api::timestamp_type ts) {
+    co_await validate(view);
+    auto db = sp.data_dictionary();
+    try {
+        auto&& keyspace = db.find_keyspace(view->ks_name()).metadata();
+        auto& old_view = keyspace->cf_meta_data().at(view->cf_name());
+        if (!old_view->is_view()) {
+            co_await coroutine::return_exception(exceptions::invalid_request_exception("Cannot use ALTER MATERIALIZED VIEW on Table"));
+        }
+        mlogger.info("Update non materialized view '{}.{}' From {} To {}", view->ks_name(), view->cf_name(), *old_view, *view);
+        auto mutations = db::schema_tables::make_update_nonmaterialized_view_mutations(keyspace, view_ptr(old_view), std::move(view), ts, true);
         co_return co_await include_keyspace(sp, *keyspace, std::move(mutations));
     } catch (const std::out_of_range& e) {
         auto&& ex = std::make_exception_ptr(exceptions::configuration_exception(format("Cannot update non existing materialized view '{}' in keyspace '{}'.",

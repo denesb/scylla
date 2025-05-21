@@ -21,6 +21,14 @@ public:
         return _raw;
     }
 
+    const table_id& base_id() const {
+        return _raw.base_id();
+    }
+
+    const sstring& base_name() const {
+        return _raw.base_name();
+    }
+
     friend bool operator==(const nonmaterialized_view_info& x, const nonmaterialized_view_info& y) {
         return x._raw == y._raw;
     }

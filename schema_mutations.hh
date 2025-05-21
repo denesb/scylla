@@ -124,6 +124,7 @@ public:
     }
 
     bool is_view() const;
+    bool is_nonmaterialized_view() const;
 
     table_schema_version digest(db::schema_features) const;
     std::optional<sstring> partitioner() const;

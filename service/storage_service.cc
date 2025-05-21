@@ -3187,6 +3187,7 @@ future<> storage_service::replicate_to_all_cores(mutable_token_metadata_ptr tmpt
                 } else {
                     erm = pending_effective_replication_maps[this_shard_id()][table->schema()->ks_name()];
                 }
+                // FIXME: possibly handle this for non materialized view.
                 if (table->schema()->is_view()) {
                     pending_view_erms[this_shard_id()].emplace(id, std::move(erm));
                 } else {

@@ -63,6 +63,7 @@
 
 #include "compaction/compaction_strategy.hh"
 #include "view_info.hh"
+#include "nonmaterialized_view_info.hh"
 #include "cql_type_parser.hh"
 #include "db/timeout_clock.hh"
 #include "replica/database.hh"
@@ -497,6 +498,53 @@ schema_ptr triggers() {
 schema_ptr views() {
     static thread_local auto schema = [] {
         schema_builder builder(generate_legacy_id(NAME, VIEWS), NAME, VIEWS,
+        // partition key
+        {{"keyspace_name", utf8_type}},
+        // clustering key
+        {{"view_name", utf8_type}},
+        // regular columns
+        {
+         {"base_table_id", uuid_type},
+         {"base_table_name", utf8_type},
+         {"where_clause", utf8_type},
+         {"bloom_filter_fp_chance", double_type},
+         {"caching", map_type_impl::get_instance(utf8_type, utf8_type, false)},
+         {"comment", utf8_type},
+         {"compaction", map_type_impl::get_instance(utf8_type, utf8_type, false)},
+         {"compression", map_type_impl::get_instance(utf8_type, utf8_type, false)},
+         {"crc_check_chance", double_type},
+         // dclocal_read_repair_chance has been deprecated, preserved to be
+         // backward compatible
+         {"dclocal_read_repair_chance", double_type},
+         {"default_time_to_live", int32_type},
+         {"extensions", map_type_impl::get_instance(utf8_type, bytes_type, false)},
+         {"gc_grace_seconds", int32_type},
+         {"id", uuid_type},
+         {"include_all_columns", boolean_type},
+         {"max_index_interval", int32_type},
+         {"memtable_flush_period_in_ms", int32_type},
+         {"min_index_interval", int32_type},
+         // read_repair_chance has been deprecated, preserved to be backward
+         // compatible
+         {"read_repair_chance", double_type},
+         {"speculative_retry", utf8_type},
+        },
+        // static columns
+        {},
+        // regular column name type
+        utf8_type,
+        // comment
+        "view definitions"
+        );
+        return builder.with_hash_version().build();
+    }();
+    return schema;
+}
+
+schema_ptr nonmaterialized_views() {
+    // FIXME: remove unneeded fields.
+    static thread_local auto schema = [] {
+        schema_builder builder(generate_legacy_id(NAME, NONMATERIALIZED_VIEWS), NAME, NONMATERIALIZED_VIEWS,
         // partition key
         {{"keyspace_name", utf8_type}},
         // clustering key
@@ -1563,11 +1611,20 @@ std::vector<mutation> make_drop_aggregate_mutations(schema_features features, sh
  * Table metadata serialization/deserialization.
  */
 
+static schema_ptr to_schema_table(schema_ptr table_s) {
+    if (table_s->is_view()) {
+        return views();
+    } else if (table_s->is_nonmaterialized_view()) {
+        return nonmaterialized_views();
+    }
+    return tables();
+}
+
 /// Returns mutations which when applied to the database will cause all schema changes
 /// which create or alter the table with a given name, made with timestamps smaller than t,
 /// have no effect. Used when overriding schema to shadow concurrent conflicting schema changes.
 /// Shouldn't be needed if schema changes are serialized with RAFT.
-static schema_mutations make_table_deleting_mutations(const sstring& ks, const sstring& table, bool is_view, api::timestamp_type t) {
+static schema_mutations make_table_deleting_mutations(const sstring& ks, const sstring& table, schema_ptr table_s, api::timestamp_type t) {
     tombstone tomb;
 
     // Generate neutral mutations if t == api::min_timestamp
@@ -1575,7 +1632,7 @@ static schema_mutations make_table_deleting_mutations(const sstring& ks, const s
         tomb = tombstone(t - 1, gc_clock::now());
     }
 
-    auto tables_m_s = is_view ? views() : tables();
+    auto tables_m_s = to_schema_table(table_s);
     mutation tables_m{tables_m_s, partition_key::from_singular(*tables_m_s, ks)};
     {
         auto ckey = clustering_key::from_singular(*tables_m_s, table);
@@ -1609,7 +1666,7 @@ std::vector<mutation> make_create_table_mutations(schema_ptr table, api::timesta
 {
     std::vector<mutation> mutations;
     add_table_or_view_to_schema_mutation(table, timestamp, true, mutations);
-    make_table_deleting_mutations(table->ks_name(), table->cf_name(), table->is_view(), timestamp)
+    make_table_deleting_mutations(table->ks_name(), table->cf_name(), table, timestamp)
         .copy_to(mutations);
     return mutations;
 }
@@ -2566,6 +2623,29 @@ view_ptr create_view_from_mutations(const schema_ctxt& ctxt, schema_mutations sm
     return view_ptr(builder.build());
 }
 
+view_ptr create_nonmaterialized_view_from_mutations(const schema_ctxt& ctxt, schema_mutations sm, std::optional<table_schema_version> version)  {
+    auto table_rs = query::result_set(sm.columnfamilies_mutation());
+    auto builder = prepare_view_schema_builder_from_mutations(ctxt, sm, version, table_rs);
+    const query::result_set_row& row = table_rs.row(0);
+    auto id = table_id(row.get_nonnull<utils::UUID>("base_table_id"));
+    auto base_name = row.get_nonnull<sstring>("base_table_name");
+    // FIXME: add them for filtering
+    //auto include_all_columns = row.get_nonnull<bool>("include_all_columns");
+    //auto where_clause = row.get_nonnull<sstring>("where_clause");
+
+    if (!ctxt.get_db()) {
+        auto ks_name = row.get_nonnull<sstring>("keyspace_name");
+        auto cf_name = row.get_nonnull<sstring>("view_name");
+        on_internal_error(slogger, format("No database reference with missing base schema when creating view {}.{} from mutations",
+            ks_name, cf_name));
+    }
+    auto base_id = table_id(row.get_nonnull<utils::UUID>("base_table_id"));
+    auto base_schema = ctxt.get_db()->find_schema(base_id);
+    builder.with_nonmaterialized_view_info(base_schema);
+
+    return view_ptr(builder.build());
+}
+
 static future<view_ptr> create_view_from_table_row(distributed<service::storage_proxy>& proxy, const query::result_set_row& row) {
     qualified_name qn(row.get_nonnull<sstring>("keyspace_name"), row.get_nonnull<sstring>("view_name"));
     schema_mutations sm = co_await read_table_mutations(proxy, qn, views());
@@ -2573,6 +2653,15 @@ static future<view_ptr> create_view_from_table_row(distributed<service::storage_
         co_await coroutine::return_exception(std::runtime_error(format("{}:{} not found in the view definitions keyspace.", qn.keyspace_name, qn.table_name)));
     }
     co_return create_view_from_mutations(proxy, std::move(sm));
+}
+
+static future<view_ptr> create_nonmaterialized_view_from_table_row(distributed<service::storage_proxy>& proxy, const query::result_set_row& row) {
+    qualified_name qn(row.get_nonnull<sstring>("keyspace_name"), row.get_nonnull<sstring>("view_name"));
+    schema_mutations sm = co_await read_table_mutations(proxy, qn, nonmaterialized_views());
+    if (!sm.live()) {
+        co_await coroutine::return_exception(std::runtime_error(format("{}:{} not found in the view definitions keyspace.", qn.keyspace_name, qn.table_name)));
+    }
+    co_return create_nonmaterialized_view_from_mutations(proxy, std::move(sm));
 }
 
 /**
@@ -2585,6 +2674,16 @@ future<std::vector<view_ptr>> create_views_from_schema_partition(distributed<ser
     std::vector<view_ptr> views;
     co_await max_concurrent_for_each(result->rows().begin(), result->rows().end(), max_concurrent, [&] (auto&& row) -> future<> {
         auto v = co_await create_view_from_table_row(proxy, row);
+        views.push_back(std::move(v));
+    });
+    co_return std::move(views);
+}
+
+future<std::vector<view_ptr>> create_nonmaterialized_views_from_schema_partition(distributed<service::storage_proxy>& proxy, const schema_result::mapped_type& result)
+{
+    std::vector<view_ptr> views;
+    co_await max_concurrent_for_each(result->rows().begin(), result->rows().end(), max_concurrent, [&] (auto&& row) -> future<> {
+        auto v = co_await create_nonmaterialized_view_from_table_row(proxy, row);
         views.push_back(std::move(v));
     });
     co_return std::move(views);
@@ -2648,9 +2747,75 @@ static schema_mutations make_view_mutations(view_ptr view, api::timestamp_type t
                             std::move(scylla_tables_mutation)};
 }
 
+static schema_mutations make_nonmaterialized_view_mutations(view_ptr view, api::timestamp_type timestamp, bool with_columns)
+{
+    // When adding new schema properties, don't set cells for default values so that
+    // both old and new nodes will see the same version during rolling upgrades.
+
+    // For properties that can be null (and can be changed), we insert tombstones, to make sure
+    // we don't keep a property the user has removed
+    schema_ptr s = nonmaterialized_views();
+    auto pkey = partition_key::from_singular(*s, view->ks_name());
+    mutation m{s, pkey};
+    auto ckey = clustering_key::from_singular(*s, view->cf_name());
+
+    const auto& nonmaterialized_view_info_ptr = view->nonmaterialized_view_info();
+
+    m.set_clustered_cell(ckey, "base_table_id", nonmaterialized_view_info_ptr->base_id().uuid(), timestamp);
+    m.set_clustered_cell(ckey, "base_table_name", nonmaterialized_view_info_ptr->base_name(), timestamp);
+    // FIXME: fix this for allowing filtering
+    //m.set_clustered_cell(ckey, "where_clause", view->view_info()->where_clause(), timestamp);
+    //m.set_clustered_cell(ckey, "bloom_filter_fp_chance", view->bloom_filter_fp_chance(), timestamp);
+    //m.set_clustered_cell(ckey, "include_all_columns", view->view_info()->include_all_columns(), timestamp);
+    m.set_clustered_cell(ckey, "id", view->id().uuid(), timestamp);
+
+    add_table_params_to_mutations(m, ckey, view, timestamp);
+
+    mutation columns_mutation(columns(), pkey);
+    mutation view_virtual_columns_mutation(view_virtual_columns(), pkey);
+    mutation computed_columns_mutation(computed_columns(), pkey);
+    mutation dropped_columns_mutation(dropped_columns(), pkey);
+    mutation indices_mutation(indexes(), pkey);
+
+    if (with_columns) {
+        for (auto&& column : view->v3().all_columns()) {
+            if (column.is_view_virtual()) {
+                add_column_to_schema_mutation(view, column, timestamp, view_virtual_columns_mutation);
+            } else {
+                add_column_to_schema_mutation(view, column, timestamp, columns_mutation);
+            }
+            if (column.is_computed()) {
+                add_computed_column_to_schema_mutation(view, column, timestamp, computed_columns_mutation);
+            }
+        }
+
+        for (auto&& e : view->dropped_columns()) {
+            add_dropped_column_to_schema_mutation(view, e.first, e.second, timestamp, dropped_columns_mutation);
+        }
+        for (auto&& index : view->indices()) {
+            add_index_to_schema_mutation(view, index, timestamp, indices_mutation);
+        }
+    }
+
+    auto scylla_tables_mutation = make_scylla_tables_mutation(view, timestamp);
+
+    return schema_mutations{std::move(m),
+                            std::move(columns_mutation),
+                            std::move(view_virtual_columns_mutation),
+                            std::move(computed_columns_mutation),
+                            std::move(indices_mutation),
+                            std::move(dropped_columns_mutation),
+                            std::move(scylla_tables_mutation)};
+}
+
 schema_mutations make_schema_mutations(schema_ptr s, api::timestamp_type timestamp, bool with_columns)
 {
-    return s->is_view() ? make_view_mutations(view_ptr(s), timestamp, with_columns) : make_table_mutations(s, timestamp, with_columns);
+    if (s->is_view()) {
+        return make_view_mutations(view_ptr(s), timestamp, with_columns);
+    } else if (s->is_nonmaterialized_view()) {
+        return make_nonmaterialized_view_mutations(view_ptr(s), timestamp, with_columns);
+    }
+    return make_table_mutations(s, timestamp, with_columns);
 }
 
 std::vector<mutation> make_create_view_mutations(lw_shared_ptr<keyspace_metadata> keyspace, view_ptr view, api::timestamp_type timestamp)
@@ -2666,7 +2831,25 @@ std::vector<mutation> make_create_view_mutations(lw_shared_ptr<keyspace_metadata
     // a view (see `make_update_view_mutations`); we use similarly modified timestamp here for consistency.
     add_table_or_view_to_schema_mutation(base, timestamp - 1, true, mutations);
     add_table_or_view_to_schema_mutation(view, timestamp, true, mutations);
-    make_table_deleting_mutations(view->ks_name(), view->cf_name(), view->is_view(), timestamp)
+    make_table_deleting_mutations(view->ks_name(), view->cf_name(), view, timestamp)
+        .copy_to(mutations);
+    return mutations;
+}
+
+std::vector<mutation> make_create_nonmaterialized_view_mutations(lw_shared_ptr<keyspace_metadata> keyspace, view_ptr view, api::timestamp_type timestamp)
+{
+    std::vector<mutation> mutations;
+    // Include the serialized base table mutations in case the target node is missing them.
+    auto base = keyspace->cf_meta_data().at(view->nonmaterialized_view_info()->base_name());
+    // Use a smaller timestamp for the included base mutations.
+    // If the constructed schema change command also contains an update for the base table,
+    // these mutations would conflict with the base mutations we're returning here; using a smaller
+    // timestamp makes sure that the update mutations take precedence. Although there is no known
+    // scenario involving creation of new view where this might happen, there is one with updating
+    // a view (see `make_update_view_mutations`); we use similarly modified timestamp here for consistency.
+    add_table_or_view_to_schema_mutation(base, timestamp - 1, true, mutations);
+    add_table_or_view_to_schema_mutation(view, timestamp, true, mutations);
+    make_table_deleting_mutations(view->ks_name(), view->cf_name(), view, timestamp)
         .copy_to(mutations);
     return mutations;
 }
@@ -2699,6 +2882,29 @@ std::vector<mutation> make_update_view_mutations(lw_shared_ptr<keyspace_metadata
     return mutations;
 }
 
+std::vector<mutation> make_update_nonmaterialized_view_mutations(lw_shared_ptr<keyspace_metadata> keyspace,
+                                                 view_ptr old_view,
+                                                 view_ptr new_view,
+                                                 api::timestamp_type timestamp,
+                                                 bool include_base)
+{
+    std::vector<mutation> mutations;
+    if (include_base) {
+        // Include the serialized base table mutations in case the target node is missing them.
+        auto base = keyspace->cf_meta_data().at(new_view->nonmaterialized_view_info()->base_name());
+        // Use a smaller timestamp for the included base mutations.
+        // If the constructed schema change command also contains an update for the base table,
+        // these mutations would conflict with the base mutations we're returning here; using a smaller
+        // timestamp makes sure that the update mutations take precedence. Such conflicting mutations
+        // may appear, for example, when we modify a user defined type that is referenced by both base table
+        // and its attached view. See #15530.
+        add_table_or_view_to_schema_mutation(base, timestamp - 1, true, mutations);
+    }
+    add_table_or_view_to_schema_mutation(new_view, timestamp, false, mutations);
+    make_update_columns_mutations(old_view, new_view, timestamp, mutations);
+    return mutations;
+}
+
 std::vector<mutation> make_drop_view_mutations(lw_shared_ptr<keyspace_metadata> keyspace, view_ptr view, api::timestamp_type timestamp) {
     std::vector<mutation> mutations;
     make_drop_table_or_view_mutations(views(), view, timestamp, mutations);
@@ -2707,8 +2913,7 @@ std::vector<mutation> make_drop_view_mutations(lw_shared_ptr<keyspace_metadata> 
 
 std::vector<mutation> make_drop_non_materialized_view_mutations(lw_shared_ptr<keyspace_metadata> keyspace, view_ptr view, api::timestamp_type timestamp) {
     std::vector<mutation> mutations;
-    // FIXME: Use nonmaterialized_views instead
-    make_drop_table_or_non_materialized_view_mutations(views(), view, timestamp, mutations);
+    make_drop_table_or_non_materialized_view_mutations(nonmaterialized_views(), view, timestamp, mutations);
     return mutations;
 }
 
@@ -2727,7 +2932,7 @@ std::vector<schema_ptr> all_tables(schema_features features) {
     // for schema digest calculation. Refs #4457.
     std::vector<schema_ptr> result = {
         keyspaces(), tables(), scylla_tables(), columns(), dropped_columns(), triggers(),
-        views(), types(), functions(), aggregates(), indexes()
+        views(), types(), functions(), aggregates(), indexes(), nonmaterialized_views()
     };
     result.emplace_back(view_virtual_columns());
     if (features.contains<schema_feature::COMPUTED_COLUMNS>()) {

@@ -125,6 +125,7 @@ static constexpr auto COLUMNS = "columns";
 static constexpr auto DROPPED_COLUMNS = "dropped_columns";
 static constexpr auto TRIGGERS = "triggers";
 static constexpr auto VIEWS = "views";
+static constexpr auto NONMATERIALIZED_VIEWS = "nonmaterialized_views";
 static constexpr auto TYPES = "types";
 static constexpr auto FUNCTIONS = "functions";
 static constexpr auto AGGREGATES = "aggregates";
@@ -142,6 +143,7 @@ schema_ptr indexes();
 schema_ptr tables();
 schema_ptr scylla_tables(schema_features features = schema_features::full());
 schema_ptr views();
+schema_ptr nonmaterialized_views();
 schema_ptr types();
 schema_ptr functions();
 schema_ptr aggregates();
@@ -291,7 +293,11 @@ schema_ptr create_table_from_mutations(const schema_ctxt&, schema_mutations, std
 view_ptr create_view_from_mutations(const schema_ctxt&, schema_mutations, schema_ptr, std::optional<table_schema_version> version = {});
 view_ptr create_view_from_mutations(const schema_ctxt&, schema_mutations, std::optional<view::base_dependent_view_info> = {}, std::optional<table_schema_version> version = {});
 
+view_ptr create_nonmaterialized_view_from_mutations(const schema_ctxt&, schema_mutations, std::optional<table_schema_version> version = {});
+
 future<std::vector<view_ptr>> create_views_from_schema_partition(distributed<service::storage_proxy>& proxy, const schema_result::mapped_type& result);
+
+future<std::vector<view_ptr>> create_nonmaterialized_views_from_schema_partition(distributed<service::storage_proxy>& proxy, const schema_result::mapped_type& result);
 
 schema_mutations make_schema_mutations(schema_ptr s, api::timestamp_type timestamp, bool with_columns);
 mutation make_scylla_tables_mutation(schema_ptr, api::timestamp_type timestamp);
@@ -299,8 +305,10 @@ mutation make_scylla_tables_mutation(schema_ptr, api::timestamp_type timestamp);
 void add_table_or_view_to_schema_mutation(schema_ptr view, api::timestamp_type timestamp, bool with_columns, std::vector<mutation>& mutations);
 
 std::vector<mutation> make_create_view_mutations(lw_shared_ptr<keyspace_metadata> keyspace, view_ptr view, api::timestamp_type timestamp);
+std::vector<mutation> make_create_nonmaterialized_view_mutations(lw_shared_ptr<keyspace_metadata> keyspace, view_ptr view, api::timestamp_type timestamp);
 
 std::vector<mutation> make_update_view_mutations(lw_shared_ptr<keyspace_metadata> keyspace, view_ptr old_view, view_ptr new_view, api::timestamp_type timestamp, bool include_base);
+std::vector<mutation> make_update_nonmaterialized_view_mutations(lw_shared_ptr<keyspace_metadata> keyspace, view_ptr old_view, view_ptr new_view, api::timestamp_type timestamp, bool include_base);
 
 std::vector<mutation> make_drop_view_mutations(lw_shared_ptr<keyspace_metadata> keyspace, view_ptr view, api::timestamp_type timestamp);
 std::vector<mutation> make_drop_non_materialized_view_mutations(lw_shared_ptr<keyspace_metadata> keyspace, view_ptr view, api::timestamp_type timestamp);

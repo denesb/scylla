@@ -904,6 +904,10 @@ public:
     bool is_nonmaterialized_view() const {
         return bool(_nonmaterialized_view_info);
     }
+    bool has_view_kind() const {
+        return is_view() || is_nonmaterialized_view();
+    }
+
     const query::partition_slice& full_slice() const {
         return *_full_slice;
     }

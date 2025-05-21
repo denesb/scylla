@@ -788,6 +788,13 @@ future<> database::parse_system_tables(distributed<service::storage_proxy>& prox
             co_await this->add_column_family_and_make_directory(v, replica::database::is_new_cf::no);
         });
     }));
+    co_await do_parse_schema_tables(proxy, db::schema_tables::NONMATERIALIZED_VIEWS, coroutine::lambda([&] (schema_result_value_type &v) -> future<> {
+        std::vector<view_ptr> views = co_await create_nonmaterialized_views_from_schema_partition(proxy, v.second);
+        co_await coroutine::parallel_for_each(views, [&] (auto&& v) -> future<> {
+            check_no_legacy_secondary_index_mv_schema(*this, v, nullptr);
+            co_await this->add_column_family_and_make_directory(v, replica::database::is_new_cf::no);
+        });
+    }));
 }
 
 static auto add_fragmented_listeners(const gms::feature& f, db::commitlog& cl) {

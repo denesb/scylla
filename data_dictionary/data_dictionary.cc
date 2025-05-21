@@ -265,14 +265,14 @@ void keyspace_metadata::remove_user_type(const user_type ut) {
 std::vector<schema_ptr> keyspace_metadata::tables() const {
     return _cf_meta_data
             | std::views::values
-            | std::views::filter([] (const auto& s) { return !s->is_view(); })
+            | std::views::filter([] (const auto& s) { return !s->has_view_kind(); })
             | std::ranges::to<std::vector<schema_ptr>>();
 }
 
 std::vector<view_ptr> keyspace_metadata::views() const {
     return _cf_meta_data
             | std::views::values
-            | std::views::filter([] (const auto& s) { return s->is_view(); })
+            | std::views::filter([] (const auto& s) { return s->has_view_kind(); })
             | std::views::transform([] (auto& s) { return view_ptr(s); })
             | std::ranges::to<std::vector<view_ptr>>();
 }
