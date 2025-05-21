@@ -23,11 +23,11 @@ def test_exclude_one_regular_column(cql, test_keyspace):
         view_rows_v2 = []
 
         for ck in range(0, 10):
-            row = (1, ck, 'v1-{ck}', 'v2-{ck}')
+            row = (1, ck, f'v1-{ck}', f'v2-{ck}')
             cql.execute(insert_stmt, row)
             rows.append(row)
-            view_rows_v1.append((1, ck, 'v1-{ck}'))
-            view_rows_v2.append((1, ck, 'v2-{ck}'))
+            view_rows_v1.append((1, ck, f'v1-{ck}'))
+            view_rows_v2.append((1, ck, f'v2-{ck}'))
 
         assert values(cql.execute(f"SELECT * FROM {table}")) == rows
 
@@ -49,7 +49,7 @@ def test_exclude_all_regular_columns(cql, test_keyspace):
         view_rows = []
 
         for ck in range(0, 10):
-            row = (1, ck, 'v1-{ck}', 'v2-{ck}')
+            row = (1, ck, f'v1-{ck}', f'v2-{ck}')
             cql.execute(insert_stmt, row)
             rows.append(row)
             view_rows.append(row[:-2])
