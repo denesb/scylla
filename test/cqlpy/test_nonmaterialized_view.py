@@ -31,6 +31,10 @@ def test_exclude_one_regular_column(cql, test_keyspace):
 
         assert values(cql.execute(f"SELECT * FROM {table}")) == rows
 
+        print(f"rows: {rows}")
+        print(f"view_rows_v1: {view_rows_v1}")
+        print(f"view_rows_v2: {view_rows_v2}")
+
         with new_nonmaterialized_view(cql, table, "pk, ck, v1") as nmv:
             assert values(cql.execute(f"SELECT * FROM {nmv}")) == view_rows_v1
 
@@ -53,7 +57,8 @@ def test_exclude_all_regular_columns(cql, test_keyspace):
             cql.execute(insert_stmt, row)
             rows.append(row)
             view_rows.append(row[:-2])
-
+        print(f"rows: {rows}")
+        print(f"view_rows: {view_rows}")
         with new_nonmaterialized_view(cql, table, "pk, ck") as nmv:
             assert values(cql.execute(f"SELECT * FROM {table}")) == rows
             assert values(cql.execute(f"SELECT * FROM {nmv}")) == view_rows

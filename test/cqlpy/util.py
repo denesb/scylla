@@ -207,8 +207,10 @@ def new_nonmaterialized_view(cql, table, select):
     assert len(partition_key_cols) == 1
     primary_key_str = ", ".join(partition_key_cols + clustering_key_cols)
     stmt = f"CREATE TABLE {nmv} ({col_list_str}, PRIMARY KEY ({primary_key_str}))"
-
-    print(stmt)
+    print(f"{col_list_str=}")
+    print(f"{partition_key_cols=}")
+    print(f"{clustering_key_cols=}")
+    print(f"{stmt=}")
 
     cql.execute(stmt)
 
