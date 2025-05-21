@@ -1007,7 +1007,8 @@ class view_ptr final {
 public:
     explicit view_ptr(schema_ptr schema) noexcept : _schema(schema) {
         if (schema) {
-            SCYLLA_ASSERT(_schema->is_view());
+            // FIXME
+            SCYLLA_ASSERT(_schema->has_view_kind());
         }
     }
 
