@@ -1118,11 +1118,11 @@ dropViewStatement returns [std::unique_ptr<drop_view_statement> stmt]
     ;
 
 /**
- * DROP VIEW [IF EXISTS] <view_name>
+ * DROP NONMATERIALIZED VIEW [IF EXISTS] <view_name>
  */
 dropNonMaterializedViewStatement returns [std::unique_ptr<drop_non_materialized_view_statement> stmt]
     @init { bool if_exists = false; }
-    : K_DROP K_VIEW (K_IF K_EXISTS { if_exists = true; } )? cf=columnFamilyName
+    : K_DROP K_NONMATERIALIZED K_VIEW (K_IF K_EXISTS { if_exists = true; } )? cf=columnFamilyName
       { $stmt = std::make_unique<drop_non_materialized_view_statement>(cf, if_exists); }
     ;
 
@@ -2231,6 +2231,7 @@ K_COLUMNFAMILY:( C O L U M N F A M I L Y
 K_TABLES:      ( C O L U M N F A M I L I E S
                  | T A B L E S );
 K_MATERIALIZED:M A T E R I A L I Z E D;
+K_NONMATERIALIZED:N O N M A T E R I A L I Z E D;
 K_VIEW:        V I E W;
 K_INDEX:       I N D E X;
 K_CUSTOM:      C U S T O M;
