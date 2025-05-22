@@ -41,8 +41,7 @@ future<exceptions::coordinator_result<storage_proxy_coordinator_query_result>> q
         on_internal_error(nmv_log, format("table {}.{} ({}) is not a non-materialized view", view_schema->ks_name(), view_schema->cf_name(), view_schema->id()));
     }
 
-    //const table_id base_table_id = view_schema->nonmaterialized_view_info()->raw().base_id();
-    const table_id base_table_id = db.find_column_family(view_schema->ks_name(), view_schema->nonmaterialized_view_info()->raw().base_name()).schema()->id();
+    const table_id base_table_id = view_schema->nonmaterialized_view_info()->raw().base_id();
     auto& base_table = db.find_column_family(base_table_id);
 
     auto base_query_schema = base_table.schema();

@@ -181,43 +181,13 @@ def new_materialized_view(cql, table, select, pk, where, extra=""):
 @contextmanager
 def new_nonmaterialized_view(cql, table, select):
     keyspace, _, table = table.partition('.')
-    #nmv = keyspace + "." + unique_name()
-    #cql.execute(f"CREATE NONMATERIALIZED VIEW {nmv} AS SELECT {select} FROM {table}")
-
-    # FIXME HACK, remove once we have working CREATE NONMATERIALIZED_VIEW
-    nmv = f"{keyspace}.magic_nonmaterialized_view{table}"
-
-    col_list = []
-    partition_key_cols = []
-    clustering_key_cols = []
-
-    for col in cql.execute(f"SELECT column_name, kind, type FROM system_schema.columns WHERE keyspace_name = '{keyspace}' AND table_name = '{table}'"):
-        if col.column_name not in select:
-            continue
-        if col.kind == "static":
-            col_list.append(f"{col.column_name} {col.type} static")
-        else:
-            col_list.append(f"{col.column_name} {col.type}")
-        if col.kind == "partition_key":
-            partition_key_cols.append(col.column_name)
-        elif col.kind == "clustering":
-            clustering_key_cols.append(col.column_name)
-
-    col_list_str = ", ".join(col_list)
-    assert len(partition_key_cols) == 1
-    primary_key_str = ", ".join(partition_key_cols + clustering_key_cols)
-    stmt = f"CREATE TABLE {nmv} ({col_list_str}, PRIMARY KEY ({primary_key_str}))"
-    print(f"{col_list_str=}")
-    print(f"{partition_key_cols=}")
-    print(f"{clustering_key_cols=}")
-    print(f"{stmt=}")
-
-    cql.execute(stmt)
+    nmv = keyspace + "." + unique_name()
+    cql.execute(f"CREATE NONMATERIALIZED VIEW {nmv} AS SELECT {select} FROM {table}")
 
     try:
         yield nmv
     finally:
-        cql.execute(f"DROP TABLE {nmv}") # FIXME - DROP NONMATERIALIZED VIEW
+        cql.execute(f"DROP NONMATERIALIZED VIEW {nmv}")
 
 # A utility function for creating a new temporary secondary index of
 # an existing table.
