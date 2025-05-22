@@ -28,6 +28,7 @@
 #include "utils/runtime.hh"
 #include "gms/gossiper.hh"
 #include "view_info.hh"
+#include "nonmaterialized_view_info.hh"
 #include "schema/schema_builder.hh"
 #include "replica/database.hh"
 #include "replica/tablets.hh"
@@ -953,7 +954,7 @@ future<std::vector<mutation>> prepare_non_materialized_view_drop_announcement(st
         if (!view->is_nonmaterialized_view()) {
             throw exceptions::invalid_request_exception("Cannot use DROP NONMATERIALIZED VIEW on Table");
         }
-        if (db.find_column_family(view->view_info()->base_id()).get_index_manager().is_index(view_ptr(view))) {
+        if (db.find_column_family(view->nonmaterialized_view_info()->base_id()).get_index_manager().is_index(view_ptr(view))) {
             throw exceptions::invalid_request_exception("Cannot use DROP NONMATERIALIZED VIEW on Index");
         }
         auto keyspace = db.find_keyspace(ks_name).metadata();
