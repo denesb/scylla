@@ -2624,6 +2624,18 @@ view_ptr create_view_from_mutations(const schema_ctxt& ctxt, schema_mutations sm
     return view_ptr(builder.build());
 }
 
+view_ptr create_nonmaterialized_view_from_mutations(const schema_ctxt& ctxt, schema_mutations sm, schema_ptr base_schema, std::optional<table_schema_version> version)  {
+    auto table_rs = query::result_set(sm.columnfamilies_mutation());
+    auto builder = prepare_view_schema_builder_from_mutations(ctxt, sm, version, table_rs);
+    const query::result_set_row& row = table_rs.row(0);
+    // FIXME:
+    //auto include_all_columns = row.get_nonnull<bool>("include_all_columns");
+    //auto where_clause = row.get_nonnull<sstring>("where_clause");
+
+    builder.with_nonmaterialized_view_info(std::move(base_schema));
+    return view_ptr(builder.build());
+}
+
 view_ptr create_nonmaterialized_view_from_mutations(const schema_ctxt& ctxt, schema_mutations sm, std::optional<table_schema_version> version)  {
     auto table_rs = query::result_set(sm.columnfamilies_mutation());
     auto builder = prepare_view_schema_builder_from_mutations(ctxt, sm, version, table_rs);

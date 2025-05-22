@@ -56,17 +56,19 @@ namespace db {
 
 namespace schema_tables {
 
-enum class table_kind { table, view };
+enum class table_kind { table, view, nonmaterialized_view };
 
 static constexpr std::initializer_list<table_kind> all_table_kinds = {
     table_kind::table,
-    table_kind::view
+    table_kind::view,
+    table_kind::nonmaterialized_view,
 };
 
 static schema_ptr get_table_holder(table_kind k) {
     switch (k) {
         case table_kind::table: return tables();
         case table_kind::view: return views();
+        case table_kind::nonmaterialized_view: return nonmaterialized_views();
     }
     abort();
 }
@@ -84,6 +86,8 @@ template <> struct fmt::formatter<db::schema_tables::table_kind> {
             return fmt::format_to(ctx.out(), "table");
         case view:
             return fmt::format_to(ctx.out(), "view");
+        case nonmaterialized_view:
+            return fmt::format_to(ctx.out(), "nonmaterialized_view");
         }
         abort();
     }
@@ -560,6 +564,8 @@ static future<> merge_tables_and_views(distributed<service::storage_proxy>& prox
     const std::map<table_id, schema_mutations>& tables_after,
     const std::map<table_id, schema_mutations>& views_before,
     const std::map<table_id, schema_mutations>& views_after,
+    const std::map<table_id, schema_mutations>& nonmaterialized_views_before,
+    const std::map<table_id, schema_mutations>& nonmaterialized_views_after,
     bool reload,
     locator::tablet_metadata_change_hint tablet_hint)
 {
@@ -608,12 +614,51 @@ static future<> merge_tables_and_views(distributed<service::storage_proxy>& prox
 
         return vp;
     });
+    auto nonmaterialized_views_diff = diff_table_or_view(proxy, std::move(nonmaterialized_views_before), std::move(nonmaterialized_views_after), reload, [&] (schema_mutations sm, schema_diff_side side) {
+        query::result_set rs(sm.columnfamilies_mutation());
+        const query::result_set_row& view_row = rs.row(0);
+        auto ks_name = view_row.get_nonnull<sstring>("keyspace_name");
+        auto base_name = view_row.get_nonnull<sstring>("base_table_name");
+
+        schema_ptr base_schema;
+        for (auto&& altered : tables_diff.altered) {
+            // Chose the appropriate version of the base table schema: old -> old, new -> new.
+            schema_ptr s = side == schema_diff_side::left ? altered.old_schema : altered.new_schema;
+            if (s->ks_name() == ks_name && s->cf_name() == base_name) {
+                base_schema = s;
+                break;
+            }
+        }
+        if (!base_schema) {
+            for (auto&& s : tables_diff.created) {
+                if (s.get()->ks_name() == ks_name && s.get()->cf_name() == base_name) {
+                    base_schema = s;
+                    break;
+                }
+            }
+        }
+
+        if (!base_schema) {
+            base_schema = proxy.local().local_db().find_schema(ks_name, base_name);
+        }
+        view_ptr vp = create_nonmaterialized_view_from_mutations(proxy, std::move(sm), base_schema);
+
+        // Now when we have a referenced base - sanity check that we're not registering an old view
+        // (this could happen when we skip multiple major versions in upgrade, which is unsupported.)
+        //check_no_legacy_secondary_index_mv_schema(proxy.local().get_db().local(), vp, base_schema);
+
+        return vp;
+    });
 
     // First drop views and *only then* the tables, if interleaved it can lead
     // to a mv not finding its schema when snapshotting since the main table
     // was already dropped (see https://github.com/scylladb/scylla/issues/5614)
     auto& db = proxy.local().get_db();
     co_await max_concurrent_for_each(views_diff.dropped, max_concurrent, [&db, &sys_ks] (schema_diff::dropped_schema& dt) {
+        auto& s = *dt.schema.get();
+        return replica::database::drop_table_on_all_shards(db, sys_ks, s.ks_name(), s.cf_name());
+    });
+    co_await max_concurrent_for_each(nonmaterialized_views_diff.dropped, max_concurrent, [&db, &sys_ks] (schema_diff::dropped_schema& dt) {
         auto& s = *dt.schema.get();
         return replica::database::drop_table_on_all_shards(db, sys_ks, s.ks_name(), s.cf_name());
     });
@@ -641,11 +686,18 @@ static future<> merge_tables_and_views(distributed<service::storage_proxy>& prox
         co_await max_concurrent_for_each(views_diff.created, max_concurrent, [&] (global_schema_ptr& gs) -> future<> {
             co_await db.add_column_family_and_make_directory(gs, replica::database::is_new_cf::yes);
         });
+        co_await max_concurrent_for_each(nonmaterialized_views_diff.created, max_concurrent, [&] (global_schema_ptr& gs) -> future<> {
+            co_await db.add_column_family_and_make_directory(gs, replica::database::is_new_cf::yes);
+        });
     });
     co_await db.invoke_on_all([&](replica::database& db) -> future<> {
         std::vector<bool> columns_changed;
-        columns_changed.reserve(tables_diff.altered.size() + views_diff.altered.size());
+        columns_changed.reserve(tables_diff.altered.size() + views_diff.altered.size() + nonmaterialized_views_diff.altered.size());
         for (auto&& altered : boost::range::join(tables_diff.altered, views_diff.altered)) {
+            columns_changed.push_back(db.update_column_family(altered.new_schema));
+            co_await coroutine::maybe_yield();
+        }
+        for (auto&& altered : nonmaterialized_views_diff.altered) {
             columns_changed.push_back(db.update_column_family(altered.new_schema));
             co_await coroutine::maybe_yield();
         }
@@ -655,13 +707,16 @@ static future<> merge_tables_and_views(distributed<service::storage_proxy>& prox
         };
         // View drops are notified first, because a table can only be dropped if its views are already deleted
         co_await notify(views_diff.dropped, [&] (auto&& dt) { return db.get_notifier().drop_view(view_ptr(dt.schema)); });
+        co_await notify(nonmaterialized_views_diff.dropped, [&] (auto&& dt) { return db.get_notifier().drop_column_family(dt.schema); });
         co_await notify(tables_diff.dropped, [&] (auto&& dt) { return db.get_notifier().drop_column_family(dt.schema); });
         // Table creations are notified first, in case a view is created right after the table
         co_await notify(tables_diff.created, [&] (auto&& gs) { return db.get_notifier().create_column_family(gs); });
         co_await notify(views_diff.created, [&] (auto&& gs) { return db.get_notifier().create_view(view_ptr(gs)); });
+        co_await notify(nonmaterialized_views_diff.created, [&] (auto&& gs) { return db.get_notifier().create_column_family(gs);  });
         // Table altering is notified first, in case new base columns appear
         co_await notify(tables_diff.altered, [&] (auto&& altered) { return db.get_notifier().update_column_family(altered.new_schema, *it++); });
         co_await notify(views_diff.altered, [&] (auto&& altered) { return db.get_notifier().update_view(view_ptr(altered.new_schema), *it++); });
+        co_await notify(nonmaterialized_views_diff.altered, [&] (auto&& altered) { return db.get_notifier().update_column_family(altered.new_schema, *it++); });
     });
 
     // Insert column_mapping into history table for altered and created tables.
@@ -806,6 +861,7 @@ static future<> do_merge_schema(distributed<service::storage_proxy>& proxy, shar
     auto&& old_column_families = co_await read_tables_for_keyspaces(proxy, keyspaces, table_kind::table, affected_tables);
     auto&& old_types = co_await read_schema_for_keyspaces(proxy, TYPES, keyspaces);
     auto&& old_views = co_await read_tables_for_keyspaces(proxy, keyspaces, table_kind::view, affected_tables);
+    auto&& old_nonmaterialized_views = co_await read_tables_for_keyspaces(proxy, keyspaces, table_kind::nonmaterialized_view, affected_tables);
     auto old_functions = co_await read_schema_for_keyspaces(proxy, FUNCTIONS, keyspaces);
     auto old_aggregates = co_await read_schema_for_keyspaces(proxy, AGGREGATES, keyspaces);
     auto old_scylla_aggregates = co_await read_schema_for_keyspaces(proxy, SCYLLA_AGGREGATES, keyspaces);
@@ -818,6 +874,7 @@ static future<> do_merge_schema(distributed<service::storage_proxy>& proxy, shar
     auto&& new_column_families = co_await read_tables_for_keyspaces(proxy, keyspaces, table_kind::table, affected_tables);
     auto&& new_types = co_await read_schema_for_keyspaces(proxy, TYPES, keyspaces);
     auto&& new_views = co_await read_tables_for_keyspaces(proxy, keyspaces, table_kind::view, affected_tables);
+    auto&& new_nonmaterialized_views = co_await read_tables_for_keyspaces(proxy, keyspaces, table_kind::nonmaterialized_view, affected_tables);
     auto new_functions = co_await read_schema_for_keyspaces(proxy, FUNCTIONS, keyspaces);
     auto new_aggregates = co_await read_schema_for_keyspaces(proxy, AGGREGATES, keyspaces);
     auto new_scylla_aggregates = co_await read_schema_for_keyspaces(proxy, SCYLLA_AGGREGATES, keyspaces);
@@ -827,7 +884,9 @@ static future<> do_merge_schema(distributed<service::storage_proxy>& proxy, shar
     auto types_to_drop = co_await merge_types(proxy, std::move(old_types), std::move(new_types));
     co_await merge_tables_and_views(proxy, sys_ks,
         std::move(old_column_families), std::move(new_column_families),
-        std::move(old_views), std::move(new_views), reload, std::move(tablet_hint));
+        std::move(old_views), std::move(new_views),
+        std::move(old_nonmaterialized_views), std::move(new_nonmaterialized_views),
+        reload, std::move(tablet_hint));
     co_await merge_functions(proxy, std::move(old_functions), std::move(new_functions));
     co_await merge_aggregates(proxy, std::move(old_aggregates), std::move(new_aggregates), std::move(old_scylla_aggregates), std::move(new_scylla_aggregates));
     co_await types_to_drop.drop();
