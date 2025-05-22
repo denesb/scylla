@@ -1555,8 +1555,8 @@ schema_builder& schema_builder::with_view_info(table_id base_id, sstring base_na
     return *this;
 }
 
-schema_builder& schema_builder::with_nonmaterialized_view_info(schema_ptr base) {
-    _raw._nonmaterialized_view_info = raw_nonmaterialized_view_info(base->id(), base->cf_name());
+schema_builder& schema_builder::with_nonmaterialized_view_info(schema_ptr base, bool include_all_columns) {
+    _raw._nonmaterialized_view_info = raw_nonmaterialized_view_info(base->id(), base->cf_name(), include_all_columns);
     return *this;
 }
 
@@ -2111,9 +2111,10 @@ raw_view_info::raw_view_info(table_id base_id, sstring base_name, bool include_a
         , _where_clause(where_clause)
 { }
 
-raw_nonmaterialized_view_info::raw_nonmaterialized_view_info(table_id base_id, sstring base_name)
+raw_nonmaterialized_view_info::raw_nonmaterialized_view_info(table_id base_id, sstring base_name, bool include_all_columns)
     : _base_id(std::move(base_id))
     , _base_name(std::move(base_name))
+    , _include_all_columns(include_all_columns)
 { }
 
 column_computation_ptr column_computation::deserialize(bytes_view raw) {

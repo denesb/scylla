@@ -29,6 +29,10 @@ public:
         return _raw.base_name();
     }
 
+    bool include_all_columns() const {
+        return _raw.include_all_columns();
+    }
+
     friend bool operator==(const nonmaterialized_view_info& x, const nonmaterialized_view_info& y) {
         return x._raw == y._raw;
     }

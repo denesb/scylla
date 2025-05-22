@@ -397,6 +397,7 @@ const std::unordered_set<table_id>& schema_tables_holding_schema_mutations() {
         for (auto&& s : {
                 tables(),
                 views(),
+                nonmaterialized_views(),
                 columns(),
                 view_virtual_columns(),
                 computed_columns(),
@@ -2641,7 +2642,7 @@ view_ptr create_nonmaterialized_view_from_mutations(const schema_ctxt& ctxt, sch
     }
     auto base_id = table_id(row.get_nonnull<utils::UUID>("base_table_id"));
     auto base_schema = ctxt.get_db()->find_schema(base_id);
-    builder.with_nonmaterialized_view_info(base_schema);
+    builder.with_nonmaterialized_view_info(base_schema, true);
 
     return view_ptr(builder.build());
 }
@@ -2766,7 +2767,7 @@ static schema_mutations make_nonmaterialized_view_mutations(view_ptr view, api::
     // FIXME: fix this for allowing filtering
     //m.set_clustered_cell(ckey, "where_clause", view->view_info()->where_clause(), timestamp);
     //m.set_clustered_cell(ckey, "bloom_filter_fp_chance", view->bloom_filter_fp_chance(), timestamp);
-    //m.set_clustered_cell(ckey, "include_all_columns", view->view_info()->include_all_columns(), timestamp);
+    // m.set_clustered_cell(ckey, "include_all_columns", view->view_info()->include_all_columns(), timestamp);
     m.set_clustered_cell(ckey, "id", view->id().uuid(), timestamp);
 
     add_table_params_to_mutations(m, ckey, view, timestamp);

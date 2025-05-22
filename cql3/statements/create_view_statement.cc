@@ -381,7 +381,7 @@ std::pair<view_ptr, cql3::cql_warnings_vec> create_view_statement::prepare_view(
 #if 1
     builder.with_view_info(schema, included.empty(), std::move(where_clause_text));
 #else
-    builder.with_nonmaterialized_view_info(schema);
+    builder.with_nonmaterialized_view_info(schema, true);
 #endif
 
     return std::make_pair(view_ptr(builder.build()), std::move(warnings));

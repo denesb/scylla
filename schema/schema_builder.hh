@@ -280,7 +280,7 @@ public:
     schema_builder& with_view_info(schema_ptr base_schema, bool include_all_columns, sstring where_clause);
     schema_builder& with_view_info(table_id base_id, sstring base_name, bool include_all_columns, sstring where_clause, db::view::base_dependent_view_info base);
 
-    schema_builder& with_nonmaterialized_view_info(schema_ptr base);
+    schema_builder& with_nonmaterialized_view_info(schema_ptr base, bool include_all_columns);
 
     schema_builder& with_index(const index_metadata& im);
     schema_builder& without_index(const sstring& name);

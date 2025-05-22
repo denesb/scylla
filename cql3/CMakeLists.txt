@@ -54,6 +54,7 @@ target_sources(cql3
     statements/create_keyspace_statement.cc
     statements/create_table_statement.cc
     statements/create_view_statement.cc
+    statements/create_nonmaterialized_view_statement.cc
     statements/create_type_statement.cc
     statements/create_function_statement.cc
     statements/create_aggregate_statement.cc
@@ -64,6 +65,7 @@ target_sources(cql3
     statements/drop_type_statement.cc
     statements/drop_function_statement.cc
     statements/drop_aggregate_statement.cc
+    ../service/query_nonmaterialized_view.cc
     statements/schema_altering_statement.cc
     statements/ks_prop_defs.cc
     statements/function_statement.cc

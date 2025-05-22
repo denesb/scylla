@@ -13,6 +13,7 @@
 #include "keys.hh"
 #include "data_dictionary/data_dictionary.hh"
 #include "exceptions/exceptions.hh"
+#include "utils/assert.hh"
 
 namespace validation {
 
@@ -61,6 +62,7 @@ validate_column_family(data_dictionary::database db, const sstring& keyspace_nam
 
     auto t = db.try_find_table(keyspace_name, cf_name);
     if (!t) {
+        SCYLLA_ASSERT(false);
         throw exceptions::invalid_request_exception(format("unconfigured table {}", cf_name));
     }
 

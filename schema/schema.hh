@@ -425,8 +425,9 @@ bool operator==(const raw_view_info&, const raw_view_info&);
 class raw_nonmaterialized_view_info final {
     table_id _base_id;
     sstring _base_name;
+    bool _include_all_columns;
 public:
-    raw_nonmaterialized_view_info(table_id base_id, sstring base_name);
+    raw_nonmaterialized_view_info(table_id base_id, sstring base_name, bool include_all_columns);
 
     const table_id& base_id() const {
         return _base_id;
@@ -434,6 +435,10 @@ public:
 
     const sstring& base_name() const {
         return _base_name;
+    }
+
+    bool include_all_columns() const {
+        return _include_all_columns;
     }
 
     friend bool operator==(const raw_nonmaterialized_view_info&, const raw_nonmaterialized_view_info&);

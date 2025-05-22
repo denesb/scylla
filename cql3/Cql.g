@@ -27,6 +27,7 @@ options {
 #include "cql3/statements/create_index_statement.hh"
 #include "cql3/statements/create_table_statement.hh"
 #include "cql3/statements/create_view_statement.hh"
+#include "cql3/statements/create_nonmaterialized_view_statement.hh"
 #include "cql3/statements/create_type_statement.hh"
 #include "cql3/statements/create_function_statement.hh"
 #include "cql3/statements/create_aggregate_statement.hh"
@@ -387,6 +388,7 @@ cqlStatement returns [std::unique_ptr<raw::parsed_statement> stmt]
     | st49=describeStatement           { $stmt = std::move(st49); }
     | st50=listEffectiveServiceLevelStatement { $stmt = std::move(st50); }
     | st51=dropNonMaterializedViewStatement { $stmt = std::move(st51); }
+    | st52=createNonMaterializedViewStatement { $stmt = std::move(st52); }
     ;
 
 /*
@@ -972,6 +974,30 @@ createViewStatement returns [std::unique_ptr<create_view_statement> expr]
                 if_not_exists);
         }
         ( K_WITH cfamProperty[{ $expr->properties() }] ( K_AND cfamProperty[{ $expr->properties() }] )*)?
+    ;
+
+/**
+ * CREATE VIEW <viewName> AS
+ *  SELECT <columns>
+ *  FROM <CF>
+ *  WHERE KEY = "key1" AND COL > 1 AND COL < 100;
+ */
+createNonMaterializedViewStatement returns [std::unique_ptr<create_nonmaterialized_view_statement> expr]
+    @init {
+        bool if_not_exists = false;
+        expression wclause = conjunction{};
+    }
+    : K_CREATE K_VIEW (K_IF K_NOT K_EXISTS { if_not_exists = true; })? cf=columnFamilyName K_AS
+        K_SELECT sclause=selectClause K_FROM basecf=columnFamilyName
+        // (K_WHERE w=whereClause { wclause = std::move(w); } )?
+        {
+             $expr = std::make_unique<create_nonmaterialized_view_statement>(
+                std::move(cf),
+                std::move(basecf),
+                std::move(sclause),
+                std::move(wclause),
+                if_not_exists);
+        }
     ;
 
 #if 0
