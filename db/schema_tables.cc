@@ -2047,7 +2047,6 @@ static void make_drop_table_or_view_mutations(schema_ptr schema_table,
     mutations.emplace_back(m1);
 }
 
-// FIXME: drop from system_schema.nonmaterialized_views instead of system_schema.views
 static void make_drop_table_or_non_materialized_view_mutations(schema_ptr schema_table,
             schema_ptr table_or_view,
             api::timestamp_type timestamp,
