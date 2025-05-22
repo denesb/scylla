@@ -378,7 +378,7 @@ std::pair<view_ptr, cql3::cql_warnings_vec> create_view_statement::prepare_view(
     }
 
     auto where_clause_text = util::relations_to_where_clause(_where_clause);
-#if 0
+#if 1
     builder.with_view_info(schema, included.empty(), std::move(where_clause_text));
 #else
     builder.with_nonmaterialized_view_info(schema);
@@ -392,7 +392,7 @@ create_view_statement::prepare_schema_mutations(query_processor& qp, const query
     std::vector<mutation> m;
     auto [definition, warnings] = prepare_view(qp.db());
     try {
-#if 0
+#if 1
         m = co_await service::prepare_new_view_announcement(qp.proxy(), std::move(definition), ts);
 #else
         m = co_await service::prepare_new_nonmaterialized_view_announcement(qp.proxy(), std::move(definition), ts);
