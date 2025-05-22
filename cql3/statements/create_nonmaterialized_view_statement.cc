@@ -140,7 +140,7 @@ std::pair<view_ptr, cql3::cql_warnings_vec> create_nonmaterialized_view_statemen
 
     schema_builder builder{keyspace(), column_family(), std::nullopt};
     for (auto* cdef: included) {
-        builder.with_column(cdef->name(), cdef->type, column_kind::partition_key);
+        builder.with_column(cdef->name(), cdef->type, cdef->kind);
     }
 
     auto where_clause_text = util::relations_to_where_clause(_where_clause);
