@@ -658,6 +658,7 @@ struct appending_hash<raw_nonmaterialized_view_info>  {
     void operator()(H& h, const raw_nonmaterialized_view_info& x) const noexcept {
         feed_hash(h, x.base_id());
         feed_hash(h, x.base_name());
+        feed_hash(h, x.include_all_columns());
     }
 };
 
@@ -2339,14 +2340,15 @@ auto fmt::formatter<raw_view_info>::format(const raw_view_info& view, fmt::forma
 bool operator==(const raw_nonmaterialized_view_info& x, const raw_nonmaterialized_view_info& y) {
     // Keep consistent with appending_hash<raw_nonmaterialized_view_info>
     return x._base_id == y._base_id
-        && x._base_name == y._base_name;
+        && x._base_name == y._base_name
+        && x._include_all_columns == y._include_all_columns;
 }
 
 auto fmt::formatter<raw_nonmaterialized_view_info>::format(const raw_nonmaterialized_view_info& view, fmt::format_context& ctx) const
         -> decltype(ctx.out()) {
     return fmt::format_to(ctx.out(),
-                          "NonMaterializedViewInfo{{baseTableId={}, baseTableName={}}}",
-                          view._base_id, view._base_name);
+                          "NonMaterializedViewInfo{{baseTableId={}, baseTableName={}, includeAllColumns={}}}",
+                          view._base_id, view._base_name, view._include_all_columns);
 }
 
 auto fmt::formatter<view_ptr>::format(const view_ptr& view, fmt::format_context& ctx) const

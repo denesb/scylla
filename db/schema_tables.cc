@@ -2628,10 +2628,10 @@ view_ptr create_nonmaterialized_view_from_mutations(const schema_ctxt& ctxt, sch
     auto builder = prepare_view_schema_builder_from_mutations(ctxt, sm, version, table_rs);
     const query::result_set_row& row = table_rs.row(0);
     // FIXME:
-    //auto include_all_columns = row.get_nonnull<bool>("include_all_columns");
+    auto include_all_columns = row.get_nonnull<bool>("include_all_columns");
     //auto where_clause = row.get_nonnull<sstring>("where_clause");
 
-    builder.with_nonmaterialized_view_info(std::move(base_schema), false);
+    builder.with_nonmaterialized_view_info(std::move(base_schema), include_all_columns);
     return view_ptr(builder.build());
 }
 
@@ -2642,7 +2642,7 @@ view_ptr create_nonmaterialized_view_from_mutations(const schema_ctxt& ctxt, sch
     auto id = table_id(row.get_nonnull<utils::UUID>("base_table_id"));
     auto base_name = row.get_nonnull<sstring>("base_table_name");
     // FIXME: add them for filtering
-    //auto include_all_columns = row.get_nonnull<bool>("include_all_columns");
+    auto include_all_columns = row.get_nonnull<bool>("include_all_columns");
     //auto where_clause = row.get_nonnull<sstring>("where_clause");
 
     if (!ctxt.get_db()) {
@@ -2653,7 +2653,7 @@ view_ptr create_nonmaterialized_view_from_mutations(const schema_ctxt& ctxt, sch
     }
     auto base_id = table_id(row.get_nonnull<utils::UUID>("base_table_id"));
     auto base_schema = ctxt.get_db()->find_schema(base_id);
-    builder.with_nonmaterialized_view_info(base_schema, true);
+    builder.with_nonmaterialized_view_info(base_schema, include_all_columns);
 
     return view_ptr(builder.build());
 }
@@ -2778,7 +2778,7 @@ static schema_mutations make_nonmaterialized_view_mutations(view_ptr view, api::
     // FIXME: fix this for allowing filtering
     //m.set_clustered_cell(ckey, "where_clause", view->view_info()->where_clause(), timestamp);
     //m.set_clustered_cell(ckey, "bloom_filter_fp_chance", view->bloom_filter_fp_chance(), timestamp);
-    // m.set_clustered_cell(ckey, "include_all_columns", view->view_info()->include_all_columns(), timestamp);
+    m.set_clustered_cell(ckey, "include_all_columns", nonmaterialized_view_info_ptr->include_all_columns(), timestamp);
     m.set_clustered_cell(ckey, "id", view->id().uuid(), timestamp);
 
     add_table_params_to_mutations(m, ckey, view, timestamp);
