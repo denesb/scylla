@@ -25,6 +25,7 @@ class schema_mutations {
     std::optional<canonical_mutation> scylla_tables_canonical_mutation()[[version 2.0]];
     std::optional<canonical_mutation> view_virtual_columns_canonical_mutation()[[version 2.4]];
     std::optional<canonical_mutation> computed_columns_canonical_mutation()[[version 3.2]];
+    bool is_nonmaterialized_view()[[version 2025.3]];
 };
 
 class schema stub [[writable]] {

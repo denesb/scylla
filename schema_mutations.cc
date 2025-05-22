@@ -11,8 +11,17 @@
 #include "db/schema_tables.hh"
 #include "utils/hashers.hh"
 #include "utils/UUID_gen.hh"
-// FIXME: seems unused, maybe used in tests. if it's used, we need to handle the is_view flag properly.
-#if 1
+
+schema_ptr schema_mutations::get_schema_for_kind(bool is_view, std::optional<bool> is_nonmaterialized_view) {
+    if (is_nonmaterialized_view && *is_nonmaterialized_view) {
+        return db::schema_tables::nonmaterialized_views();
+    } else if (is_view) {
+        return db::schema_tables::views();
+    } else {
+        return db::schema_tables::tables();
+    }
+}
+
 schema_mutations::schema_mutations(canonical_mutation columnfamilies,
                                    canonical_mutation columns,
                                    bool is_view,
@@ -20,8 +29,9 @@ schema_mutations::schema_mutations(canonical_mutation columnfamilies,
                                    std::optional<canonical_mutation> dropped_columns,
                                    std::optional<canonical_mutation> scylla_tables,
                                    std::optional<canonical_mutation> view_virtual_columns,
-                                   std::optional<canonical_mutation> computed_columns)
-    : _columnfamilies(columnfamilies.to_mutation(is_view ? db::schema_tables::views() : db::schema_tables::tables()))
+                                   std::optional<canonical_mutation> computed_columns,
+                                   std::optional<bool> is_nonmaterialized_view)
+    : _columnfamilies(columnfamilies.to_mutation(get_schema_for_kind(is_view, is_nonmaterialized_view)))
     , _columns(columns.to_mutation(db::schema_tables::columns()))
     , _view_virtual_columns(view_virtual_columns ? mutation_opt{view_virtual_columns.value().to_mutation(db::schema_tables::view_virtual_columns())} : std::nullopt)
     , _computed_columns(computed_columns ? mutation_opt{computed_columns.value().to_mutation(db::schema_tables::computed_columns())} : std::nullopt)
@@ -29,7 +39,6 @@ schema_mutations::schema_mutations(canonical_mutation columnfamilies,
     , _dropped_columns(dropped_columns ? mutation_opt{dropped_columns.value().to_mutation(db::schema_tables::dropped_columns())} : std::nullopt)
     , _scylla_tables(scylla_tables ? mutation_opt{scylla_tables.value().to_mutation(db::schema_tables::scylla_tables())} : std::nullopt)
 {}
-#endif
 
 void schema_mutations::copy_to(std::vector<mutation>& dst) const {
     dst.push_back(_columnfamilies);

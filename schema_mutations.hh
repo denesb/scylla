@@ -24,6 +24,8 @@ class schema_mutations {
     mutation_opt _indices;
     mutation_opt _dropped_columns;
     mutation_opt _scylla_tables;
+
+    static schema_ptr get_schema_for_kind(bool is_view, std::optional<bool> is_nonmaterialized_view);
 public:
     schema_mutations(mutation columnfamilies, mutation columns, mutation_opt view_virtual_columns, mutation_opt computed_columns, mutation_opt indices, mutation_opt dropped_columns,
         mutation_opt scylla_tables)
@@ -42,7 +44,8 @@ public:
                      std::optional<canonical_mutation> dropped_columns,
                      std::optional<canonical_mutation> scylla_tables,
                      std::optional<canonical_mutation> view_virtual_columns,
-                     std::optional<canonical_mutation> computed_columns);
+                     std::optional<canonical_mutation> computed_columns,
+                     std::optional<bool> is_nonmaterialized_view);
 
     schema_mutations(schema_mutations&&) = default;
     schema_mutations& operator=(schema_mutations&&) = default;
