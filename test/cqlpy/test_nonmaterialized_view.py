@@ -6,7 +6,7 @@
 
 import pytest
 
-from .util import new_test_table, new_nonmaterialized_view
+from .util import new_test_table, new_nonmaterialized_view, create_nonmaterialized_view
 
 def values(res):
     return [tuple(r._asdict().values()) for r in res]
@@ -149,3 +149,33 @@ def test_exclude_all_regular_and_static_columns(cql, test_keyspace):
             assert values(cql.execute(f"SELECT * FROM {nmv}")) == view_rows
             assert values(cql.execute(f"SELECT * FROM {nmv} WHERE pk = 1")) == view_rows
             assert values(cql.execute(f"SELECT ck FROM {nmv} WHERE pk = 1")) == [r[1] for r in view_rows]
+
+def test_drop_nonmaterialized_view(cql, test_keyspace):
+    schema = 'pk int, ck int, v1 text, v2 text, primary key (pk, ck)'
+    with new_test_table(cql, test_keyspace, schema) as table:
+        expected_data = []
+
+        insert_stmt = cql.prepare(f"INSERT INTO {table} (pk, ck, v1, v2) VALUES (?, ?, ?, ?)")
+
+        rows = []
+        view_rows_v1 = []
+        view_rows_v2 = []
+
+        for ck in range(0, 10):
+            row = (1, ck, f'v1-{ck}', f'v2-{ck}')
+            cql.execute(insert_stmt, row)
+            rows.append(row)
+            view_rows_v1.append((1, ck, f'v1-{ck}'))
+            view_rows_v2.append((1, ck, f'v2-{ck}'))
+
+        assert values(cql.execute(f"SELECT * FROM {table}")) == rows
+
+        nmv = create_nonmaterialized_view(cql, table, "pk, ck, v1")
+        res = values(cql.execute(f"SELECT * FROM system_schema.nonmaterialized_views"))
+        assert len(res) == 1
+        print(f"{nmv=}")
+        print(f"{res=}")
+        cql.execute(f"DROP NONMATERIALIZED VIEW {nmv}")
+        res = values(cql.execute(f"SELECT * FROM system_schema.nonmaterialized_views"))
+        assert len(res) == 0
+        print(f"{res=}")

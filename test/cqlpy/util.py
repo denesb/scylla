@@ -189,6 +189,12 @@ def new_nonmaterialized_view(cql, table, select):
     finally:
         cql.execute(f"DROP NONMATERIALIZED VIEW {nmv}")
 
+def create_nonmaterialized_view(cql, table, select):
+    keyspace, _, table = table.partition('.')
+    nmv = keyspace + "." + unique_name()
+    cql.execute(f"CREATE NONMATERIALIZED VIEW {nmv} AS SELECT {select} FROM {table}")
+    return nmv
+
 # A utility function for creating a new temporary secondary index of
 # an existing table.
 @contextmanager
