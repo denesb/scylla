@@ -987,7 +987,7 @@ createNonMaterializedViewStatement returns [std::unique_ptr<create_nonmaterializ
         bool if_not_exists = false;
         expression wclause = conjunction{};
     }
-    : K_CREATE K_VIEW (K_IF K_NOT K_EXISTS { if_not_exists = true; })? cf=columnFamilyName K_AS
+    : K_CREATE K_NONMATERIALIZED K_VIEW (K_IF K_NOT K_EXISTS { if_not_exists = true; })? cf=columnFamilyName K_AS
         K_SELECT sclause=selectClause K_FROM basecf=columnFamilyName
         // (K_WHERE w=whereClause { wclause = std::move(w); } )?
         {
