@@ -179,3 +179,101 @@ def test_drop_nonmaterialized_view(cql, test_keyspace):
         res = values(cql.execute(f"SELECT * FROM system_schema.nonmaterialized_views"))
         assert len(res) == 0
         print(f"{res=}")
+
+def test_exclude_keys(cql, test_keyspace):
+    schema = 'pk int, ck int, s1 text static, s2 text static, v1 text, v2 text, primary key (pk, ck)'
+    with new_test_table(cql, test_keyspace, schema) as table:
+        expected_data = []
+
+        cql.execute(f"INSERT INTO {table} (pk, s1, s2) VALUES (9, 's1', 's2')")
+
+        insert_stmt = cql.prepare(f"INSERT INTO {table} (pk, ck, v1, v2) VALUES (?, ?, ?, ?)")
+
+        rows = []
+        view_rows = []
+
+        for ck in range(0, 10):
+            cql.execute(insert_stmt, (9, ck, f'v1-{ck}', f'v2-{ck}'))
+            rows.append((9, ck, 's1', 's2', f'v1-{ck}', f'v2-{ck}'))
+            view_rows.append(('s1', f'v1-{ck}'))
+
+        assert values(cql.execute(f"SELECT * FROM {table}")) == rows
+
+        with new_nonmaterialized_view(cql, table, "s1, v1") as nmv:
+            assert values(cql.execute(f"SELECT * FROM {nmv}")) == view_rows
+
+def test_column_selection(cql, test_keyspace):
+    schema = 'pk int, ck int, s1 text static, s2 text static, v1 text, v2 text, primary key (pk, ck)'
+    with new_test_table(cql, test_keyspace, schema) as table:
+        expected_data = []
+
+        cql.execute(f"INSERT INTO {table} (pk, s1, s2) VALUES (9, 's1', 's2')")
+
+        insert_stmt = cql.prepare(f"INSERT INTO {table} (pk, ck, v1, v2) VALUES (?, ?, ?, ?)")
+
+        rows = []
+        view_rows = []
+
+        for ck in range(0, 10):
+            cql.execute(insert_stmt, (9, ck, f'v1-{ck}', f'v2-{ck}'))
+            rows.append((9, ck, 's1', 's2', f'v1-{ck}', f'v2-{ck}'))
+            view_rows.append((9, ck))
+
+        assert values(cql.execute(f"SELECT * FROM {table}")) == rows
+
+        with new_nonmaterialized_view(cql, table, "pk, ck") as nmv:
+            assert values(cql.execute(f"SELECT pk, ck FROM {nmv}")) == view_rows
+
+def test_failed_select(cql, test_keyspace):
+    schema = 'pk int, ck int, s1 text static, s2 text static, v1 text, v2 text, primary key (pk, ck)'
+    with new_test_table(cql, test_keyspace, schema) as table:
+        expected_data = []
+
+        cql.execute(f"INSERT INTO {table} (pk, s1, s2) VALUES (9, 's1', 's2')")
+
+        insert_stmt = cql.prepare(f"INSERT INTO {table} (pk, ck, v1, v2) VALUES (?, ?, ?, ?)")
+
+        rows = []
+        view_rows = []
+
+        for ck in range(0, 10):
+            cql.execute(insert_stmt, (9, ck, f'v1-{ck}', f'v2-{ck}'))
+            rows.append((9, ck, 's1', 's2', f'v1-{ck}', f'v2-{ck}'))
+            view_rows.append((9, ck))
+
+        assert values(cql.execute(f"SELECT * FROM {table}")) == rows
+
+        with new_nonmaterialized_view(cql, table, "pk, ck") as nmv:
+            try:
+                assert values(cql.execute(f"SELECT pk, ck, s1 FROM {nmv}")) == view_rows
+                pytest.fail("Accessed a column not in the view")
+            except:
+                return
+
+def test_insert_after_view_is_created(cql, test_keyspace):
+    schema = 'pk int, ck int, s1 text static, s2 text static, v1 text, v2 text, primary key (pk, ck)'
+    with new_test_table(cql, test_keyspace, schema) as table:
+        expected_data = []
+
+        cql.execute(f"INSERT INTO {table} (pk, s1, s2) VALUES (9, 's1', 's2')")
+
+        insert_stmt = cql.prepare(f"INSERT INTO {table} (pk, ck, v1, v2) VALUES (?, ?, ?, ?)")
+
+        rows = []
+        view_rows = []
+
+        for ck in range(0, 10):
+            cql.execute(insert_stmt, (9, ck, f'v1-{ck}', f'v2-{ck}'))
+            rows.append((9, ck, 's1', 's2', f'v1-{ck}', f'v2-{ck}'))
+            view_rows.append((9, ck))
+
+        assert values(cql.execute(f"SELECT * FROM {table}")) == rows
+
+        with new_nonmaterialized_view(cql, table, "pk, ck") as nmv:
+            ck = 20
+            cql.execute(insert_stmt, (9, ck, f'v1-{ck}', f'v2-{ck}'))
+            rows.append((9, ck, 's1', 's2', f'v1-{ck}', f'v2-{ck}'))
+            view_rows.append((9, ck))
+
+            assert values(cql.execute(f"SELECT * FROM {table}")) == rows
+            assert values(cql.execute(f"SELECT pk, ck FROM {nmv}")) == view_rows
