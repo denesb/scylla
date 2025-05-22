@@ -2632,7 +2632,7 @@ view_ptr create_nonmaterialized_view_from_mutations(const schema_ctxt& ctxt, sch
     //auto include_all_columns = row.get_nonnull<bool>("include_all_columns");
     //auto where_clause = row.get_nonnull<sstring>("where_clause");
 
-    builder.with_nonmaterialized_view_info(std::move(base_schema));
+    builder.with_nonmaterialized_view_info(std::move(base_schema), false);
     return view_ptr(builder.build());
 }
 
