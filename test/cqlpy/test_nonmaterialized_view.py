@@ -41,8 +41,8 @@ def test_exclude_one_regular_column(cql, test_keyspace):
         with new_nonmaterialized_view(cql, table, "pk, ck, v2") as nmv:
             assert values(cql.execute(f"SELECT * FROM {nmv}")) == view_rows_v2
             assert values(cql.execute(f"SELECT * FROM {nmv} WHERE pk = 1")) == view_rows_v2
-            assert values(cql.execute(f"SELECT pk, ck FROM {nmv} WHERE pk = 1")) == [r[:1] for r in view_rows_v2]
-            assert values(cql.execute(f"SELECT v2 FROM {nmv} WHERE pk = 1")) == [r[-1:] for r in view_rows_v2]
+            assert values(cql.execute(f"SELECT pk, ck FROM {nmv} WHERE pk = 1")) == [r[0:2] for r in view_rows_v2]
+            assert values(cql.execute(f"SELECT v2 FROM {nmv} WHERE pk = 1")) == [(r[2],) for r in view_rows_v2]
 
 
 def test_exclude_all_regular_columns(cql, test_keyspace):
@@ -66,7 +66,7 @@ def test_exclude_all_regular_columns(cql, test_keyspace):
             assert values(cql.execute(f"SELECT * FROM {table}")) == rows
             assert values(cql.execute(f"SELECT * FROM {nmv}")) == view_rows
             assert values(cql.execute(f"SELECT * FROM {nmv} WHERE pk = 1")) == view_rows
-            assert values(cql.execute(f"SELECT ck FROM {nmv} WHERE pk = 1")) == [r[1] for r in view_rows]
+            assert values(cql.execute(f"SELECT ck FROM {nmv} WHERE pk = 1")) == [(r[1],) for r in view_rows]
 
 
 def test_exclude_one_static_column(cql, test_keyspace):
@@ -92,13 +92,13 @@ def test_exclude_one_static_column(cql, test_keyspace):
 
         with new_nonmaterialized_view(cql, table, "pk, ck, s1, v") as nmv:
             assert values(cql.execute(f"SELECT * FROM {nmv}")) == view_rows_s1
-            assert values(cql.execute(f"SELECT * FROM {nmv} WHERE pk = 1")) == view_rows_s1
-            assert values(cql.execute(f"SELECT s1, v FROM {nmv} WHERE pk = 1")) == [r[-2:] for r in view_rows_s1]
+            assert values(cql.execute(f"SELECT * FROM {nmv} WHERE pk = 9")) == view_rows_s1
+            assert values(cql.execute(f"SELECT s1, v FROM {nmv} WHERE pk = 9")) == [r[-2:] for r in view_rows_s1]
 
         with new_nonmaterialized_view(cql, table, "pk, ck, s2, v") as nmv:
             assert values(cql.execute(f"SELECT * FROM {nmv}")) == view_rows_s2
-            assert values(cql.execute(f"SELECT * FROM {nmv} WHERE pk = 1")) == view_rows_s2
-            assert values(cql.execute(f"SELECT s2, v FROM {nmv} WHERE pk = 1")) == [r[-2:] for r in view_rows_s2]
+            assert values(cql.execute(f"SELECT * FROM {nmv} WHERE pk = 9")) == view_rows_s2
+            assert values(cql.execute(f"SELECT s2, v FROM {nmv} WHERE pk = 9")) == [r[-2:] for r in view_rows_s2]
 
 
 def test_exclude_all_static_columns(cql, test_keyspace):
@@ -122,8 +122,8 @@ def test_exclude_all_static_columns(cql, test_keyspace):
 
         with new_nonmaterialized_view(cql, table, "pk, ck, v") as nmv:
             assert values(cql.execute(f"SELECT * FROM {nmv}")) == view_rows
-            assert values(cql.execute(f"SELECT * FROM {nmv} WHERE pk = 1")) == view_rows
-            assert values(cql.execute(f"SELECT s2, v FROM {nmv} WHERE pk = 1")) == [r[-2:] for r in view_rows]
+            assert values(cql.execute(f"SELECT * FROM {nmv} WHERE pk = 9")) == view_rows
+            assert values(cql.execute(f"SELECT v FROM {nmv} WHERE pk = 9")) == [(r[2],) for r in view_rows]
 
 
 def test_exclude_all_regular_and_static_columns(cql, test_keyspace):
@@ -147,8 +147,8 @@ def test_exclude_all_regular_and_static_columns(cql, test_keyspace):
 
         with new_nonmaterialized_view(cql, table, "pk, ck") as nmv:
             assert values(cql.execute(f"SELECT * FROM {nmv}")) == view_rows
-            assert values(cql.execute(f"SELECT * FROM {nmv} WHERE pk = 1")) == view_rows
-            assert values(cql.execute(f"SELECT ck FROM {nmv} WHERE pk = 1")) == [r[1] for r in view_rows]
+            assert values(cql.execute(f"SELECT * FROM {nmv} WHERE pk = 9")) == view_rows
+            assert values(cql.execute(f"SELECT ck FROM {nmv} WHERE pk = 9")) == [(r[1],) for r in view_rows]
 
 def test_drop_nonmaterialized_view(cql, test_keyspace):
     schema = 'pk int, ck int, v1 text, v2 text, primary key (pk, ck)'
