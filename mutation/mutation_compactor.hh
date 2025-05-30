@@ -331,8 +331,14 @@ private:
 public:
     compact_mutation_state(compact_mutation_state&&) = delete; // Because 'this' is captured
 
-    compact_mutation_state(const schema& s, gc_clock::time_point query_time, const query::partition_slice& slice, uint64_t limit,
-              uint32_t partition_limit, mutation_fragment_stream_validation_level validation_level = mutation_fragment_stream_validation_level::token)
+    compact_mutation_state(
+            const schema& s,
+            gc_clock::time_point query_time,
+            const query::partition_slice& slice,
+            uint64_t limit,
+            uint32_t partition_limit,
+            const tombstone_gc_state& gc_state,
+            mutation_fragment_stream_validation_level validation_level = mutation_fragment_stream_validation_level::token)
         : _schema(s)
         , _query_time(query_time)
         , _can_gc(always_gc)
@@ -680,9 +686,9 @@ class compact_mutation {
 public:
     // Can only be used for compact_for_sstables::no
     compact_mutation(const schema& s, gc_clock::time_point query_time, const query::partition_slice& slice, uint64_t limit,
-              uint32_t partition_limit,
+              uint32_t partition_limit, const tombstone_gc_state& gc_state,
               Consumer consumer, GCConsumer gc_consumer = GCConsumer())
-        : _state(make_lw_shared<compact_mutation_state<SSTableCompaction>>(s, query_time, slice, limit, partition_limit))
+        : _state(make_lw_shared<compact_mutation_state<SSTableCompaction>>(s, query_time, slice, limit, partition_limit, gc_state))
         , _consumer(std::move(consumer))
         , _gc_consumer(std::move(gc_consumer)) {
     }
