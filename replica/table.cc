@@ -4152,7 +4152,7 @@ dht::shard_replica_set table::shard_for_writes(dht::token t) const {
 }
 
 tombstone_gc_state table::get_tombstone_gc_state() const {
-    return _compaction_manager.get_tombstone_gc_state();
+    return tombstone_gc_state(_compaction_manager.get_shared_tombstone_gc_state());
 }
 
 } // namespace replica

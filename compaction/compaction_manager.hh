@@ -160,8 +160,7 @@ private:
     class strategy_control;
     std::unique_ptr<strategy_control> _strategy_control;
 
-    per_table_history_maps _reconcile_history_maps;
-    tombstone_gc_state _tombstone_gc_state;
+    shared_tombstone_gc_state _shared_tombstone_gc_state;
 private:
     // Requires task->_compaction_state.gate to be held and task to be registered in _tasks.
     future<compaction_stats_opt> perform_task(shared_ptr<compaction::compaction_task_executor> task, throw_if_stopping do_throw_if_stopping);
@@ -435,12 +434,12 @@ public:
 
     compaction::strategy_control& get_strategy_control() const noexcept;
 
-    tombstone_gc_state& get_tombstone_gc_state() noexcept {
-        return _tombstone_gc_state;
+    shared_tombstone_gc_state& get_shared_tombstone_gc_state() noexcept {
+        return _shared_tombstone_gc_state;
     };
 
-    const tombstone_gc_state& get_tombstone_gc_state() const noexcept {
-        return _tombstone_gc_state;
+    const shared_tombstone_gc_state& get_shared_tombstone_gc_state() const noexcept {
+        return _shared_tombstone_gc_state;
     };
 
     // Uncoditionally erase sst from `sstables_requiring_cleanup`
