@@ -23,11 +23,11 @@
 
 extern logging::logger dblog;
 
-repair_history_map_ptr tombstone_gc_state::get_or_create_repair_history_for_table(const table_id& id) {
-    if (!_reconcile_history_maps) {
-        return {};
-    }
-    auto& reconcile_history_maps = _reconcile_history_maps->_repair_maps;
+shared_tombstone_gc_state::shared_tombstone_gc_state() { }
+shared_tombstone_gc_state::~shared_tombstone_gc_state() { }
+
+repair_history_map_ptr shared_tombstone_gc_state::get_or_create_repair_history_for_table(const table_id& id) {
+    auto& reconcile_history_maps = _reconcile_history_maps._repair_maps;
     auto it = reconcile_history_maps.find(id);
     if (it != reconcile_history_maps.end()) {
         return it->second;
@@ -48,14 +48,11 @@ repair_history_map_ptr tombstone_gc_state::get_repair_history_for_table(const ta
     return {};
 }
 
-seastar::lw_shared_ptr<gc_clock::time_point> tombstone_gc_state::get_or_create_group0_gc_time() {
-    if (!_reconcile_history_maps) {
-        return {};
+seastar::lw_shared_ptr<gc_clock::time_point> shared_tombstone_gc_state::get_or_create_group0_gc_time() {
+    if (!_reconcile_history_maps._group0_gc_time) {
+        _reconcile_history_maps._group0_gc_time = seastar::make_lw_shared<gc_clock::time_point>();
     }
-    if (!_reconcile_history_maps->_group0_gc_time) {
-        _reconcile_history_maps->_group0_gc_time = seastar::make_lw_shared<gc_clock::time_point>();
-    }
-    return _reconcile_history_maps->_group0_gc_time;
+    return _reconcile_history_maps._group0_gc_time;
 }
 
 seastar::lw_shared_ptr<gc_clock::time_point> tombstone_gc_state::get_group0_gc_time() const {
@@ -78,8 +75,8 @@ gc_clock::time_point tombstone_gc_state::get_gc_before_for_group0(schema_ptr s) 
     return check_min(s, gc_before);
 }
 
-void tombstone_gc_state::drop_repair_history_for_table(const table_id& id) {
-    _reconcile_history_maps->_repair_maps.erase(id);
+void shared_tombstone_gc_state::drop_repair_history_for_table(const table_id& id) {
+    _reconcile_history_maps._repair_maps.erase(id);
 }
 
 // This is useful for a sstable to query a gc_before for a range. The range is
@@ -170,8 +167,8 @@ bool tombstone_gc_state::cheap_to_get_gc_before(const schema& s) const noexcept 
 }
 
 gc_clock::time_point tombstone_gc_state::check_min(schema_ptr s, gc_clock::time_point t) const {
-    if (_gc_min_source && t != gc_clock::time_point::min()) {
-        return std::min(t, _gc_min_source(s->id()));
+    if (_gc_min_source && *_gc_min_source && t != gc_clock::time_point::min()) {
+        return std::min(t, (*_gc_min_source)(s->id()));
     }
     return t;
 }
@@ -226,7 +223,7 @@ gc_clock::time_point tombstone_gc_state::get_gc_before_for_key(schema_ptr s, con
     std::abort();
 }
 
-void tombstone_gc_state::update_repair_time(table_id id, const dht::token_range& range, gc_clock::time_point repair_time) {
+void shared_tombstone_gc_state::update_repair_time(table_id id, const dht::token_range& range, gc_clock::time_point repair_time) {
     auto m = get_or_create_repair_history_for_table(id);
     if (!m) {
         on_fatal_internal_error(dblog, "repair_history_map not found/created");
@@ -234,22 +231,22 @@ void tombstone_gc_state::update_repair_time(table_id id, const dht::token_range&
     *m += std::make_pair(locator::token_metadata::range_to_interval(range), repair_time);
 }
 
-void tombstone_gc_state::insert_pending_repair_time_update(table_id id,
+void shared_tombstone_gc_state::insert_pending_repair_time_update(table_id id,
         const dht::token_range& range, gc_clock::time_point repair_time, shard_id shard) {
     _pending_updates[id].push_back(range_repair_time{range, repair_time, shard});
 }
 
-future<> tombstone_gc_state::flush_pending_repair_time_update(replica::database& db) {
+future<> shared_tombstone_gc_state::flush_pending_repair_time_update(replica::database& db) {
     auto pending_updates = std::exchange(_pending_updates, {});
 
     co_await db.container().invoke_on_all([&pending_updates] (replica::database &localdb) -> future<> {
-        auto& gc_state = localdb.get_compaction_manager().get_tombstone_gc_state();
+        auto& shared_gc_state = localdb.get_compaction_manager().get_shared_tombstone_gc_state();
         for (auto& x : pending_updates) {
             auto& table = x.first;
             for (auto& update : x.second) {
                 co_await coroutine::maybe_yield();
                 if (update.shard == this_shard_id()) {
-                    gc_state.update_repair_time(table, update.range, update.time);
+                    shared_gc_state.update_repair_time(table, update.range, update.time);
                     dblog.debug("Flush pending repair time for tombstone gc: table={} range={} repair_time={}",
                             table, update.range, update.time);
                 }
@@ -258,7 +255,7 @@ future<> tombstone_gc_state::flush_pending_repair_time_update(replica::database&
     });
 };
 
-void tombstone_gc_state::update_group0_refresh_time(gc_clock::time_point refresh_time) {
+void shared_tombstone_gc_state::update_group0_refresh_time(gc_clock::time_point refresh_time) {
     auto m = get_or_create_group0_gc_time();
     if (!m) {
         on_fatal_internal_error(dblog, "group0_gc_time not found/created");
