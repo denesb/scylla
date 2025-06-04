@@ -126,6 +126,7 @@ public:
 
     // returns a tombstone_gc_state copy with the commitlog check disabled (i.e.) without _gc_min_source.
     [[nodiscard]] tombstone_gc_state with_commitlog_check_disabled() const { return tombstone_gc_state(_mode, _reconcile_history_maps); }
+    bool is_commitlog_check_disabled() const noexcept { return !_reconcile_history_maps; }
 
     void insert_pending_repair_time_update(table_id id, const dht::token_range& range, gc_clock::time_point repair_time, shard_id shard);
     future<> flush_pending_repair_time_update(replica::database& db);
