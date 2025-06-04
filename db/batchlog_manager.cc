@@ -160,9 +160,9 @@ db_clock::duration db::batchlog_manager::get_batch_log_timeout() const {
 future<> db::batchlog_manager::cleanup_batches() {
     // Replaying batches could have generated tombstones, flush to disk,
     // where they can be compacted away.
-    if (!_qp.proxy().get_db().local().get_config().batchlog_cleanup_with_memtable_rollover()) {
-        return replica::database::flush_table_on_all_shards(_qp.proxy().get_db(), system_keyspace::NAME, system_keyspace::BATCHLOG);
-    }
+    //if (!_qp.proxy().get_db().local().get_config().batchlog_cleanup_with_memtable_rollover()) {
+    //    return replica::database::flush_table_on_all_shards(_qp.proxy().get_db(), system_keyspace::NAME, system_keyspace::BATCHLOG);
+    //}
     return _qp.proxy().get_db().invoke_on_all([] (replica::database& db) -> future<> {
         auto& table = db.find_column_family(system_keyspace::NAME, system_keyspace::BATCHLOG);
 
@@ -208,7 +208,7 @@ future<> db::batchlog_manager::cleanup_batches() {
             mt_list->erase(old);
         });
 
-        blogger.debug("batchlog cleanup: rolled over {}/{} partitions", stats.rolled_over_partitions, stats.total_partitions);
+        blogger.info("batchlog cleanup: rolled over {}/{} partitions", stats.rolled_over_partitions, stats.total_partitions);
     });
 }
 
