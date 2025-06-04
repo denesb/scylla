@@ -61,6 +61,10 @@ struct range_repair_time {
 };
 
 class tombstone_gc_state {
+    enum class mode { no_gc, gc_all, gc_expired };
+
+private:
+    mode _mode{mode::gc_expired};
     gc_time_min_source _gc_min_source;
     per_table_history_maps* _reconcile_history_maps;
     [[nodiscard]] gc_clock::time_point check_min(schema_ptr, gc_clock::time_point) const;
@@ -76,9 +80,23 @@ class tombstone_gc_state {
 private:
     std::unordered_map<table_id, utils::chunked_vector<range_repair_time>> _pending_updates;
 
+private:
+    tombstone_gc_state(mode m, per_table_history_maps* maps) noexcept
+        : _mode(m)
+        , _reconcile_history_maps(maps)
+    { }
+
 public:
     tombstone_gc_state() = delete;
-    explicit tombstone_gc_state(per_table_history_maps* maps) noexcept : _reconcile_history_maps(maps) {}
+
+    static tombstone_gc_state no_gc() { return tombstone_gc_state(mode::no_gc, nullptr); }
+
+    static tombstone_gc_state gc_all() { return tombstone_gc_state(mode::gc_all, nullptr); }
+
+    // To be used by tests only -- only non-repair mode gc works.
+    static tombstone_gc_state for_tests() { return tombstone_gc_state(mode::gc_expired, nullptr); }
+
+    explicit tombstone_gc_state(per_table_history_maps* maps) noexcept : tombstone_gc_state(mode::gc_expired, maps) {}
 
     explicit operator bool() const noexcept {
         return _reconcile_history_maps != nullptr;
@@ -107,7 +125,7 @@ public:
     void update_group0_refresh_time(gc_clock::time_point refresh_time);
 
     // returns a tombstone_gc_state copy with the commitlog check disabled (i.e.) without _gc_min_source.
-    [[nodiscard]] tombstone_gc_state with_commitlog_check_disabled() const { return tombstone_gc_state(_reconcile_history_maps); }
+    [[nodiscard]] tombstone_gc_state with_commitlog_check_disabled() const { return tombstone_gc_state(_mode, _reconcile_history_maps); }
 
     void insert_pending_repair_time_update(table_id id, const dht::token_range& range, gc_clock::time_point repair_time, shard_id shard);
     future<> flush_pending_repair_time_update(replica::database& db);
