@@ -19,6 +19,10 @@ namespace replica {
 class database;
 }
 
+namespace db {
+class rp_set;
+}
+
 namespace dht {
 
 class decorated_key;
@@ -52,7 +56,7 @@ public:
 
 class tombstone_gc_options;
 
-using gc_time_min_source = std::function<gc_clock::time_point(const table_id&)>;
+using gc_time_min_source = std::function<gc_clock::time_point(const table_id&, const db::rp_set*)>;
 
 struct range_repair_time {
     dht::token_range range;
@@ -62,6 +66,7 @@ struct range_repair_time {
 
 class tombstone_gc_state {
     gc_time_min_source _gc_min_source;
+    const db::rp_set* _exclude = nullptr; // used to restrict commitlog checks
     per_table_history_maps* _reconcile_history_maps;
     [[nodiscard]] gc_clock::time_point check_min(schema_ptr, gc_clock::time_point) const;
 
@@ -108,6 +113,11 @@ public:
 
     // returns a tombstone_gc_state copy with the commitlog check disabled (i.e.) without _gc_min_source.
     [[nodiscard]] tombstone_gc_state with_commitlog_check_disabled() const { return tombstone_gc_state(_reconcile_history_maps); }
+    [[nodiscard]] tombstone_gc_state with_commitlog_check_restricted(const db::rp_set& exclude) const {
+        auto copy = *this;
+        copy._exclude = &exclude;
+        return copy;
+    }
 
     void insert_pending_repair_time_update(table_id id, const dht::token_range& range, gc_clock::time_point repair_time, shard_id shard);
     future<> flush_pending_repair_time_update(replica::database& db);

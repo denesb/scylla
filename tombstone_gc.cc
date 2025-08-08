@@ -162,7 +162,7 @@ bool tombstone_gc_state::cheap_to_get_gc_before(const schema& s) const noexcept 
 
 gc_clock::time_point tombstone_gc_state::check_min(schema_ptr s, gc_clock::time_point t) const {
     if (_gc_min_source && t != gc_clock::time_point::min()) {
-        return std::min(t, _gc_min_source(s->id()));
+        return std::min(t, _gc_min_source(s->id(), _exclude));
     }
     return t;
 }
