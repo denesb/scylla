@@ -84,6 +84,23 @@ private:
 public:
     tombstone_gc_state() = delete;
     explicit tombstone_gc_state(per_table_history_maps* maps) noexcept : _reconcile_history_maps(maps) {}
+    tombstone_gc_state(const tombstone_gc_state& o)
+        : _gc_min_source(o._gc_min_source)
+        , _exclude(o._exclude)
+        , _reconcile_history_maps(o._reconcile_history_maps)
+    {
+        // Not copying _pending_updates they have to be applied only once.
+    }
+    tombstone_gc_state& operator=(const tombstone_gc_state& o)
+    {
+        if (this != &o) {
+            _gc_min_source = o._gc_min_source;
+            _exclude = o._exclude;
+            _reconcile_history_maps = o._reconcile_history_maps;
+            _pending_updates.clear(); // Not copying _pending_updates they have to be applied only once.
+        }
+        return *this;
+    }
 
     explicit operator bool() const noexcept {
         return _reconcile_history_maps != nullptr;
