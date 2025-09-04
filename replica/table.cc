@@ -4581,7 +4581,8 @@ future<uint64_t> table::estimated_partitions_in_range(dht::token_range tr) const
 }
 
 tombstone_gc_state table::get_tombstone_gc_state() const {
-    return tombstone_gc_state(_compaction_manager.get_shared_tombstone_gc_state());
+    //FIXME: consider ongoing RF++
+    return tombstone_gc_state(_compaction_manager.get_shared_tombstone_gc_state(), _erm ? _erm->get_replication_factor() : 0);
 }
 
 } // namespace replica
