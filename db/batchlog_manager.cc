@@ -173,18 +173,20 @@ db::batchlog_manager::replay_all_failed_batches(post_replay_cleanup cleanup, boo
 
     batchlog_replay_stats stats;
 
-    const api::timestamp_type truncate_time = service::client_state(service::client_state::internal_tag()).get_timestamp() - 1;
+    const api::timestamp_type truncate_time = service::client_state(service::client_state::internal_tag()).get_timestamp() - get_batch_log_timeout().count() * 1000000 - 1;
 
     auto batch = [this, limiter, &stats, cleanup](const cql3::untyped_result_set::row& row) -> future<stop_iteration> {
         auto written_at = row.get_as<db_clock::time_point>("written_at");
         auto id = row.get_as<utils::UUID>("id");
         // enough time for the actual write + batchlog entry mutation delivery (two separate requests).
+        /*
         auto timeout = get_batch_log_timeout();
         if (db_clock::now() < written_at + timeout) {
             blogger.debug("Skipping replay of {}, too fresh", id);
             ++stats.skipped_batches;
             co_return stop_iteration::no;
         }
+        */
 
         if (utils::get_local_injector().is_enabled("skip_batch_replay")) {
             blogger.debug("Skipping batch replay due to skip_batch_replay injection");
@@ -300,7 +302,9 @@ db::batchlog_manager::replay_all_failed_batches(post_replay_cleanup cleanup, boo
             auto schema = _qp.db().find_schema(system_keyspace::NAME, system_keyspace::BATCHLOG);
             auto key = partition_key::from_singular(*schema, id);
             mutation m(schema, key);
-            auto now = service::client_state(service::client_state::internal_tag()).get_timestamp();
+            const auto writetime = row.get_as<api::timestamp_type>("writetime(data)");
+            const auto now = writetime + 1;
+            //auto now = service::client_state(service::client_state::internal_tag()).get_timestamp();
             m.partition().apply_delete(*schema, clustering_key_prefix::make_empty(), tombstone(now, gc_clock::now()));
             co_await _qp.proxy().mutate_locally(m, tracing::trace_state_ptr(), db::commitlog::force_sync::no);
             co_return stop_iteration::no;
@@ -313,7 +317,7 @@ db::batchlog_manager::replay_all_failed_batches(post_replay_cleanup cleanup, boo
 
         co_await utils::get_local_injector().inject("add_delay_to_batch_replay", std::chrono::milliseconds(1000));
         stats.tracing_session_id = co_await _qp.query_internal_with_tracing(
-                format("SELECT id, data, written_at, version FROM {}.{} BYPASS CACHE", system_keyspace::NAME, system_keyspace::BATCHLOG),
+                format("SELECT id, data, writetime(data), written_at, version FROM {}.{} BYPASS CACHE", system_keyspace::NAME, system_keyspace::BATCHLOG),
                 db::consistency_level::ONE,
                 {},
                 page_size,
@@ -325,8 +329,11 @@ db::batchlog_manager::replay_all_failed_batches(post_replay_cleanup cleanup, boo
 
         if (cleanup == post_replay_cleanup::yes) {
             auto table_tombstone = tombstone(truncate_time, gc_clock::now());
+            blogger.debug("Setting batchlog table tombstone to {}", table_tombstone);
             co_await _qp.proxy().get_db().invoke_on_all([&table_tombstone] (auto& db) {
-                db.find_column_family(system_keyspace::NAME, system_keyspace::BATCHLOG).set_table_tombstone(table_tombstone);
+                auto& table = db.find_column_family(system_keyspace::NAME, system_keyspace::BATCHLOG);
+                table.set_table_tombstone(table_tombstone);
+                return table.flush();
             });
             stats.cleanup_duration = std::chrono::duration_cast<std::chrono::milliseconds>(gc_clock::now() - replay_end);
         }
