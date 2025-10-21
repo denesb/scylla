@@ -124,7 +124,7 @@ const uint32_t db::batchlog_manager::page_size;
 db::batchlog_manager::batchlog_manager(cql3::query_processor& qp, db::system_keyspace& sys_ks, batchlog_manager_config config)
         : _qp(qp)
         , _sys_ks(sys_ks)
-        , _write_request_timeout(std::chrono::duration_cast<db_clock::duration>(config.write_request_timeout))
+        , _replay_timeout(config.replay_timeout)
         , _replay_rate(config.replay_rate)
         , _delay(config.delay)
         , _replay_cleanup_after_replays(config.replay_cleanup_after_replays)
@@ -237,11 +237,6 @@ future<size_t> db::batchlog_manager::count_all_batches() const {
     });
 }
 
-db_clock::duration db::batchlog_manager::get_batch_log_timeout() const {
-    // enough time for the actual write + BM removal mutation
-    return _write_request_timeout * 2;
-}
-
 future<> db::batchlog_manager::maybe_migrate_v1_to_v2() {
     if (_migration_done) {
         return make_ready_future<>();
@@ -323,7 +318,7 @@ future<db::all_batches_replayed> db::batchlog_manager::replay_all_failed_batches
         auto id = row.get_as<utils::UUID>("id");
         // enough time for the actual write + batchlog entry mutation delivery (two separate requests).
         auto now = db_clock::now();
-        auto timeout = get_batch_log_timeout();
+        auto timeout = _replay_timeout;
 
         if (utils::get_local_injector().is_enabled("skip_batch_replay")) {
             blogger.debug("Skipping batch replay due to skip_batch_replay injection");
@@ -443,7 +438,7 @@ future<db::all_batches_replayed> db::batchlog_manager::replay_all_failed_batches
             for (int32_t i = 0; i < 16; ++i) {
                 int32_t batchlog_shard = batchlog_chunk_base + i;
 
-                min_written_at_per_shard.emplace(batchlog_shard, db_clock::now() - get_batch_log_timeout());
+                min_written_at_per_shard.emplace(batchlog_shard, db_clock::now() - _replay_timeout);
 
                 co_await _qp.query_internal(
                         format("SELECT * FROM {}.{} WHERE version = ? AND stage = ? AND shard = ? BYPASS CACHE", system_keyspace::NAME, system_keyspace::BATCHLOG_V2),
