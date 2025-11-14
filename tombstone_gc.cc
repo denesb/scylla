@@ -275,8 +275,8 @@ tombstone_gc_state_snapshot::tombstone_gc_state_snapshot(shared_tombstone_gc_sta
     : _shared_state(std::move(shared_state)), _query_time(gc_clock::now())
 { }
 
-gc_clock::time_point tombstone_gc_state_snapshot::get_gc_before_for_key(schema_ptr s, const dht::decorated_key& dk, bool check_commitlog) const {
-    return tombstone_gc_state(_shared_state, check_commitlog).get_gc_before_for_key(s, dk, _query_time);
+gc_clock::time_point tombstone_gc_state_snapshot::get_gc_before_for_key(schema_ptr s, const dht::decorated_key& dk, size_t table_replication_factor, bool check_commitlog) const {
+    return tombstone_gc_state(_shared_state, table_replication_factor, check_commitlog).get_gc_before_for_key(s, dk, _query_time);
 }
 
 static bool is_local_replication_table(const locator::abstract_replication_strategy& rs) {

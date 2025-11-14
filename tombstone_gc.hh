@@ -111,7 +111,7 @@ public:
 
     gc_clock::time_point query_time() const noexcept { return _query_time; }
 
-    [[nodiscard]] gc_clock::time_point get_gc_before_for_key(schema_ptr s, const dht::decorated_key& dk, bool check_commitlog) const;
+    [[nodiscard]] gc_clock::time_point get_gc_before_for_key(schema_ptr s, const dht::decorated_key& dk, size_t table_replication_factor, bool check_commitlog) const;
 };
 
 class tombstone_gc_state {
