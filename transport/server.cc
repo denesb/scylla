@@ -284,7 +284,7 @@ cql_server::cql_server(distributed<cql3::query_processor>& qp, auth::service& au
                         sm::description("Counts a number of served requests.")),
 
         sm::make_gauge("requests_serving", _stats.requests_serving,
-                        sm::description("Holds a number of requests that are being processed right now.")),
+                        sm::description("Holds a number of requests that are being processed or have responses queued for sending.")),
 
         sm::make_gauge("requests_blocked_memory_current", [this] { return _memory_available.waiters(); },
                         sm::description(
@@ -505,8 +505,6 @@ future<foreign_ptr<std::unique_ptr<cql_server::response>>>
         auto stop_trace = defer([&] {
             tracing::stop_foreground(trace_state);
         });
-        --_server._stats.requests_serving;
-
         return seastar::futurize_invoke([&] () {
             if (f.failed()) {
                 return make_exception_future<foreign_ptr<std::unique_ptr<cql_server::response>>>(std::move(f).get_exception());
@@ -797,6 +795,7 @@ future<> cql_server::connection::process_request() {
 
             _pending_requests_gate.enter();
             auto leave = defer([this] {
+                --_server._stats.requests_serving;
                 _shedding_timer.cancel();
                 _shed_incoming_requests = false;
                 _pending_requests_gate.leave();
