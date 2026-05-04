@@ -92,10 +92,15 @@ future<lw_shared_ptr<cache::role_record>> cache::fetch_role(const role_name_t& r
         auto rs = co_await fetch(q);
         for (const auto& r : *rs) {
             auto resource = r.get_as<sstring>("resource");
-            auto perms_strings = r.get_set<sstring>("permissions");
-            std::unordered_set<sstring> perms_set(perms_strings.begin(), perms_strings.end());
-            auto pset = permissions::from_strings(perms_set);
-            rec->permissions[std::move(resource)] = std::move(pset);
+            if (r.has("permissions")) {
+                auto perms_strings = r.get_set<sstring>("permissions");
+                std::unordered_set<sstring> perms_set(perms_strings.begin(), perms_strings.end());
+                auto pset = permissions::from_strings(perms_set);
+                rec->permissions[std::move(resource)] = std::move(pset);
+            } else {
+                logger.warn("Role {} has no permissions for resource {}, treating as NONE", role, resource);
+                rec->permissions[std::move(resource)] = permissions::NONE;
+            }
             co_await coroutine::maybe_yield();
         }
     }
