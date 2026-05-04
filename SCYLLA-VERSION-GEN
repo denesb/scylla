@@ -95,7 +95,7 @@ else
 		# Do not use any special characters like - or _ in the name above!
 		# These characters either have special meaning or are illegal in
 		# version strings.
-		SCYLLA_BUILD=1.logRaftServerCreationIssue
+		SCYLLA_BUILD=2.logRaftServerCreationIssue
 		SCYLLA_RELEASE=$SCYLLA_BUILD.$DATE.$GIT_COMMIT
 	elif [ -f "$OUTPUT_DIR/SCYLLA-RELEASE-FILE" ]; then
 		echo "setting SCYLLA_RELEASE only makes sense in clean builds" 1>&2
