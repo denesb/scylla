@@ -5646,4 +5646,184 @@ SEASTAR_THREAD_TEST_CASE(test_cache_read_concurrent_to_nonpopulating_reader) {
         .produces_end_of_stream();
 }
 
+// Tests that all mutation sources correctly handle a singular clustering range
+// with an empty key on a schema that has no clustering columns.
+//
+// On such a schema every partition holds exactly one "static" clustered row,
+// addressed by clustering_key::make_empty().  The fix in
+// statement_restrictions::build_get_clustering_bounds_fn() returns
+// clustering_range::make_singular(clustering_key_prefix::make_empty()) instead
+// of make_open_ended_both_sides() for this schema shape, so that
+// is_single_row() can short-circuit may_need_paging() to false and avoid
+// unnecessary pager allocation.  These tests verify that every underlying
+// mutation source actually returns the expected row when given that singular
+// range.
+//
+// Refs: https://github.com/scylladb/scylladb/pull/29852
+
+static schema_ptr make_no_ck_schema() {
+    return schema_builder("ks", "cf_no_ck")
+        .with_column("pk", bytes_type, column_kind::partition_key)
+        .with_column("v", bytes_type, column_kind::regular_column)
+        .build();
+}
+
+// Build a mutation on a no-clustering-column schema.
+static mutation make_no_ck_mutation(schema_ptr s, bytes pk_value, bytes v_value, api::timestamp_type ts = 1) {
+    mutation m(s, partition_key::from_single_value(*s, pk_value));
+    m.set_clustered_cell(clustering_key::make_empty(), "v", data_value(v_value), ts);
+    return m;
+}
+
+// Build a partition_slice that restricts to the single row in a no-CK partition,
+// using the same clustering range that statement_restrictions now produces for
+// schemas with no clustering columns.
+static query::partition_slice make_singular_empty_ck_slice(const schema& s) {
+    return partition_slice_builder(s)
+        .with_range(query::clustering_range::make_singular(clustering_key_prefix::make_empty()))
+        .build();
+}
+
+SEASTAR_THREAD_TEST_CASE(test_singular_empty_ck_range_memtable) {
+    // Verify that replica::memtable returns the expected row when queried
+    // with a singular empty-key clustering range on a no-clustering-column schema.
+    auto s = make_no_ck_schema();
+    tests::reader_concurrency_semaphore_wrapper semaphore;
+
+    auto m = make_no_ck_mutation(s, bytes("pk1"), bytes("val1"));
+    auto mt = make_lw_shared<replica::memtable>(s);
+    mt->apply(m);
+
+    auto pr = dht::partition_range::make_singular(m.decorated_key());
+    auto slice = make_singular_empty_ck_slice(*s);
+
+    // The singular range must find the row.
+    assert_that(mt->make_mutation_reader(s, semaphore.make_permit(), pr, slice))
+        .produces(m, slice.row_ranges(*s, m.key()))
+        .produces_end_of_stream();
+}
+
+SEASTAR_THREAD_TEST_CASE(test_singular_empty_ck_range_memtable_absent_key) {
+    // Verify that querying a partition that does not exist returns nothing,
+    // not a spurious row.
+    auto s = make_no_ck_schema();
+    tests::reader_concurrency_semaphore_wrapper semaphore;
+
+    auto m = make_no_ck_mutation(s, bytes("pk1"), bytes("val1"));
+    auto mt = make_lw_shared<replica::memtable>(s);
+    mt->apply(m);
+
+    auto other_pk = partition_key::from_single_value(*s, bytes("pk_not_there"));
+    auto pr = dht::partition_range::make_singular(dht::decorate_key(*s, other_pk));
+    auto slice = make_singular_empty_ck_slice(*s);
+
+    assert_that(mt->make_mutation_reader(s, semaphore.make_permit(), pr, slice))
+        .produces_end_of_stream();
+}
+
+SEASTAR_THREAD_TEST_CASE(test_singular_empty_ck_range_cache_populated) {
+    // Verify that row_cache returns the expected row (from cache after a warm
+    // read) when queried with a singular empty-key clustering range.
+    auto s = make_no_ck_schema();
+    tests::reader_concurrency_semaphore_wrapper semaphore;
+
+    auto m = make_no_ck_mutation(s, bytes("pk1"), bytes("val1"));
+    memtable_snapshot_source underlying(s);
+    underlying.apply(m);
+
+    cache_tracker tracker;
+    row_cache cache(s, snapshot_source([&] { return underlying(); }), tracker);
+
+    auto pr = dht::partition_range::make_singular(m.decorated_key());
+    auto slice = make_singular_empty_ck_slice(*s);
+
+    // First read populates the cache.
+    assert_that(cache.make_reader(s, semaphore.make_permit(), pr, slice))
+        .produces(m, slice.row_ranges(*s, m.key()))
+        .produces_end_of_stream();
+
+    // Second read comes from cache.
+    assert_that(cache.make_reader(s, semaphore.make_permit(), pr, slice))
+        .produces(m, slice.row_ranges(*s, m.key()))
+        .produces_end_of_stream();
+}
+
+SEASTAR_THREAD_TEST_CASE(test_singular_empty_ck_range_cache_invalidated) {
+    // Verify that after cache invalidation the row is re-fetched from the
+    // underlying source and still correctly returned.
+    auto s = make_no_ck_schema();
+    tests::reader_concurrency_semaphore_wrapper semaphore;
+
+    auto m = make_no_ck_mutation(s, bytes("pk1"), bytes("val1"));
+    memtable_snapshot_source underlying(s);
+    underlying.apply(m);
+
+    cache_tracker tracker;
+    row_cache cache(s, snapshot_source([&] { return underlying(); }), tracker);
+
+    auto pr = dht::partition_range::make_singular(m.decorated_key());
+    auto slice = make_singular_empty_ck_slice(*s);
+
+    // Populate.
+    assert_that(cache.make_reader(s, semaphore.make_permit(), pr, slice))
+        .produces(m, slice.row_ranges(*s, m.key()))
+        .produces_end_of_stream();
+
+    // Invalidate and re-read.
+    cache.invalidate(row_cache::external_updater([] {})).get();
+
+    assert_that(cache.make_reader(s, semaphore.make_permit(), pr, slice))
+        .produces(m, slice.row_ranges(*s, m.key()))
+        .produces_end_of_stream();
+}
+
+SEASTAR_TEST_CASE(test_singular_empty_ck_range_sstable) {
+    // Verify that an sstable-backed mutation source returns the expected row
+    // when queried with a singular empty-key clustering range on a no-CK schema.
+    // Tests all writable sstable versions.
+    return test_env::do_with_async([] (test_env& env) {
+        for (const auto version : writable_sstable_versions) {
+            auto s = make_no_ck_schema();
+
+            auto dk = tests::generate_partition_key(s);
+            mutation m(s, dk);
+            m.set_clustered_cell(clustering_key::make_empty(), "v", data_value(bytes("val1")), 1);
+            auto sst = make_sstable_containing(env.make_sstable(s, version), {m}).get();
+
+            auto pr = dht::partition_range::make_singular(dk);
+            auto slice = make_singular_empty_ck_slice(*s);
+
+            assert_that(sst->as_mutation_source().make_mutation_reader(s, env.make_reader_permit(), pr, slice))
+                .produces(m, slice.get_all_ranges())
+                .produces_end_of_stream();
+        }
+    });
+}
+
+SEASTAR_TEST_CASE(test_singular_empty_ck_range_sstable_absent_key) {
+    // Verify that querying a partition that does not exist in the sstable
+    // returns nothing when using a singular empty-key clustering range.
+    return test_env::do_with_async([] (test_env& env) {
+        for (const auto version : writable_sstable_versions) {
+            auto s = make_no_ck_schema();
+
+            // Write one key to the sstable.
+            auto dk = tests::generate_partition_key(s);
+            mutation m(s, dk);
+            m.set_clustered_cell(clustering_key::make_empty(), "v", data_value(bytes("val1")), 1);
+            auto sst = make_sstable_containing(env.make_sstable(s, version), {m}).get();
+
+            // Query for a different key that is not in the sstable.
+            auto other_dks = tests::generate_partition_keys(2, s);
+            // Pick a key that is not the one we wrote.
+            auto other_dk = (other_dks[0].key() != dk.key()) ? other_dks[0] : other_dks[1];
+            auto pr = dht::partition_range::make_singular(other_dk);
+            auto slice = make_singular_empty_ck_slice(*s);
+
+            assert_that(sst->as_mutation_source().make_mutation_reader(s, env.make_reader_permit(), pr, slice))
+                .produces_end_of_stream();
+        }
+    });
+}
+
 BOOST_AUTO_TEST_SUITE_END()

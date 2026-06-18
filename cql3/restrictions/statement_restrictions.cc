@@ -2444,6 +2444,14 @@ build_range_from_raw_bounds_fn(
 get_clustering_bounds_fn_t
 statement_restrictions::build_get_clustering_bounds_fn() const {
     if (_clustering_prefix_restrictions.empty()) {
+        // For tables with no clustering columns the primary key fully identifies
+        // a single row, so use a singular empty range.  This lets may_need_paging()
+        // short-circuit via is_single_row() and avoids unnecessary pager allocation.
+        if (_schema->clustering_key_size() == 0) {
+            return [] (const query_options&) -> std::vector<query::clustering_range> {
+                return {query::clustering_range::make_singular(clustering_key_prefix::make_empty())};
+            };
+        }
         return [&] (const query_options& options) -> std::vector<query::clustering_range> {
             return {query::clustering_range::make_open_ended_both_sides()};
         };
