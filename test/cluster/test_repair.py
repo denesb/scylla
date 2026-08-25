@@ -446,3 +446,228 @@ async def test_repair_rejects_equal_start_and_end_token(manager):
     with pytest.raises(HTTPError, match="Start and end tokens must be different"):
         await manager.api.client.post_json(f"/storage_service/repair_async/ks",
                                            host=servers[0].ip_addr, params=params)
+
+
+# ---------------------------------------------------------------------------
+# CUSTOMER-656: repair of a token range that spans several vnode ranges with
+# different replica sets.
+#
+# repair_options::ranges is taken verbatim (repair/repair.cc, "ranges = options.ranges"),
+# and get_neighbors() derives the participants from the range's *end token* only:
+#
+#     dht::token tok = range.end() ? range.end()->value() : dht::maximum_token();
+#     auto ret = erm.get_natural_replicas(tok);
+#
+# So a caller (e.g. Scylla Manager) that asks for a merged range silently gets the
+# replica set of the last sub-range. The "all replicas participated" guard in
+# repair/row_level.cc only compares a *count*:
+#
+#     size_t repaired_replicas = _all_live_peer_nodes.size() + 1;
+#     if (_shard_task.get_total_rf() != repaired_replicas) { co_return; }
+#
+# The count still matches RF, so system.repair_history is recorded for the whole
+# merged range even though a real replica of the first sub-range never took part.
+# With tombstone_gc = {'mode': 'repair'} that unlocks tombstone GC on a range that
+# was never actually repaired against all of its replicas -> data resurrection.
+# ---------------------------------------------------------------------------
+
+# Four single-token nodes, interleaving the two DCs, so that two adjacent vnode
+# ranges share their dc1 replicas but differ in their dc2 replica -- the same
+# shape as the customer cluster (FRA RF=3 identical, GRA RF=1 differing).
+_RING = [
+    # (dc, rack, token)
+    ("dc1", "rack1", -4611686018427387904),
+    ("dc2", "rack1", -2305843009213693952),
+    ("dc1", "rack2", 0),
+    ("dc2", "rack1", 2305843009213693952),
+]
+
+
+async def _add_ring(manager: ManagerClient, cmdline: list[str]):
+    """Bring up the fixed ring above and return the servers in ring-token order."""
+    servers = []
+    for dc, rack, token in _RING:
+        servers.append(await manager.server_add(
+            config={
+                "tablets_mode_for_new_keyspaces": "disabled",
+                "num_tokens": 1,
+                "initial_token": str(token),
+            },
+            property_file={"dc": dc, "rack": rack},
+            cmdline=cmdline))
+    return servers
+
+
+def _find_split_replica_set(ring) -> tuple[int, int, int, set[str], set[str]]:
+    """Find two adjacent, non-wrapping ranges (a, b] and (b, c] whose replica sets differ.
+
+    Returns (a, b, c, replicas_of_ab, replicas_of_bc).
+    """
+    entries = [(int(e["start_token"]), int(e["end_token"]), frozenset(e["endpoints"])) for e in ring]
+    entries = [e for e in entries if e[0] < e[1]]  # drop the wrapping range
+    entries.sort()
+    for (a, b, eps_ab), (b2, c, eps_bc) in zip(entries, entries[1:]):
+        if b == b2 and eps_ab != eps_bc:
+            return a, b, c, set(eps_ab), set(eps_bc)
+    pytest.fail(f"No two adjacent ranges with differing replica sets in {entries}")
+
+
+async def _repair_range(manager: ManagerClient, node_ip: str, ks: str, table: str, start: int, end: int):
+    await manager.api.repair(node_ip, ks, table, ranges=f"{start}:{end}")
+
+
+async def _repair_history(cql, host) -> list[tuple[int, int]]:
+    rows = list(cql.execute("SELECT range_start, range_end FROM system.repair_history", host=host))
+    return sorted((r.range_start, r.range_end) for r in rows)
+
+
+async def test_repair_history_not_recorded_for_range_spanning_replica_sets(manager: ManagerClient):
+    """Repairing a range that spans two different replica sets must not claim the
+    whole range as repaired.
+
+    The ring is built so that two adjacent vnode ranges (a, b] and (b, c] have the
+    same dc1 replicas but a different dc2 replica. We ask for the merged range
+    (a, c]. Its end token c selects the replica set of (b, c], so the dc2 replica of
+    (a, b] is left out of the repair -- yet system.repair_history ends up claiming
+    (a, c] was repaired on the nodes that did participate.
+
+    Invariant asserted: if a node recorded (s, e] as repaired, then every natural
+    replica of every token in (s, e] must have recorded it too, because the history
+    is broadcast to exactly the set of participants. A correct implementation either
+    rejects such a range or splits it into per-replica-set sub-ranges.
+    """
+    cmdline = ["--smp", "1", "--hinted-handoff-enabled", "0"]
+    servers = await _add_ring(manager, cmdline)
+    by_ip = {s.ip_addr: s for s in servers}
+
+    cql = manager.get_cql()
+    hosts = await wait_for_cql_and_get_hosts(cql, servers, time.time() + 60)
+    host_by_ip = {h.address: h for h in hosts}
+    assert set(by_ip) <= set(host_by_ip), f"driver hosts {sorted(host_by_ip)} != servers {sorted(by_ip)}"
+
+    async with new_test_keyspace(manager,
+            "WITH replication = {'class': 'NetworkTopologyStrategy', 'dc1': 2, 'dc2': 1} "
+            "AND tablets = {'enabled': false}") as ks:
+        cql.execute(f"CREATE TABLE {ks}.tbl (pk int, ck int, PRIMARY KEY (pk, ck)) "
+                    "WITH tombstone_gc = {'mode': 'repair', 'propagation_delay_in_seconds': '0'}")
+
+        ring = await manager.api.describe_ring(servers[0].ip_addr, ks)
+        a, b, c, eps_ab, eps_bc = _find_split_replica_set(ring)
+        logger.info(f"({a}, {b}] -> {sorted(eps_ab)}")
+        logger.info(f"({b}, {c}] -> {sorted(eps_bc)}")
+
+        # The replica that owns the first sub-range but not the second one.
+        excluded = eps_ab - eps_bc
+        assert len(excluded) == 1, f"expected exactly one differing replica, got {excluded}"
+        excluded_ip = excluded.pop()
+
+        # Repair must be driven by a node that replicates the whole merged range.
+        coordinator_ip = next(iter(eps_ab & eps_bc))
+        logger.info(f"Repairing merged range ({a}, {c}] from {coordinator_ip}; "
+                    f"{excluded_ip} is a replica of ({a}, {b}] only")
+
+        await _repair_range(manager, coordinator_ip, ks, "tbl", a, c)
+
+        history = {ip: await _repair_history(cql, host_by_ip[ip]) for ip in by_ip}
+        for ip, rows in history.items():
+            logger.info(f"repair_history on {ip}: {rows}")
+
+        # Nobody may claim to have repaired a range whose replicas did not all take part.
+        over_extended = [(ip, s, e) for ip, rows in history.items() for (s, e) in rows
+                         if s <= a and e >= c]
+        assert not over_extended, (
+            f"repair_history claims the merged range ({a}, {c}] was repaired on "
+            f"{[ip for ip, _, _ in over_extended]}, but replica {excluded_ip} of "
+            f"sub-range ({a}, {b}] did not participate (its history: {history[excluded_ip]})")
+
+
+@pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
+async def test_data_resurrection_from_repair_range_spanning_replica_sets(manager: ManagerClient):
+    """End-to-end reproducer for the customer's data resurrection.
+
+    1. Insert a row whose token falls into the first of two adjacent vnode ranges
+       with differing replica sets.
+    2. Delete it while the dc2 replica of that sub-range rejects writes (database_apply
+       injection) and hints are off, so that replica keeps the live row and no tombstone.
+    3. Repair the *merged* range. That replica does not own the merged range's end
+       token, so it is not a participant and keeps its live row -- but repair_history
+       is recorded for the whole merged range anyway.
+    4. tombstone_gc = repair now considers the tombstone collectable on the nodes
+       that did participate; a major compaction purges it.
+    5. The stale live row on the excluded replica is the only surviving version:
+       the deleted row comes back.
+    """
+    # repair_hints_batchlog_flush_cache_time_in_ms defaults to 60s; with the cache on,
+    # repair records the batchlog manager's last_replay time instead of "now", which can
+    # be tens of seconds stale -- older than our tombstone, so nothing would ever be
+    # collectable. Disabling the cache makes the recorded repair time the actual repair time.
+    cmdline = ["--smp", "1", "--hinted-handoff-enabled", "0", "--enable-cache", "0",
+               "--repair-hints-batchlog-flush-cache-time-in-ms", "0"]
+    servers = await _add_ring(manager, cmdline)
+    by_ip = {s.ip_addr: s for s in servers}
+
+    cql = manager.get_cql()
+    hosts = await wait_for_cql_and_get_hosts(cql, servers, time.time() + 60)
+    host_by_ip = {h.address: h for h in hosts}
+
+    async with new_test_keyspace(manager,
+            "WITH replication = {'class': 'NetworkTopologyStrategy', 'dc1': 2, 'dc2': 1} "
+            "AND tablets = {'enabled': false}") as ks:
+        table = f"{ks}.tbl"
+        cql.execute(f"CREATE TABLE {table} (pk int, ck int, PRIMARY KEY (pk, ck)) "
+                    "WITH tombstone_gc = {'mode': 'repair', 'propagation_delay_in_seconds': '0'}")
+
+        ring = await manager.api.describe_ring(servers[0].ip_addr, ks)
+        a, b, c, eps_ab, eps_bc = _find_split_replica_set(ring)
+        excluded_ip = (eps_ab - eps_bc).pop()
+        coordinator_ip = next(iter(eps_ab & eps_bc))
+        participants = [by_ip[ip] for ip in eps_bc]
+
+        # Pick a key that lands in (a, b] -- the sub-range whose replica set is dropped.
+        # Probe by writing throw-away keys, reading their tokens, then wiping the table.
+        await asyncio.gather(*[cql.run_async(f"INSERT INTO {table} (pk, ck) VALUES ({k}, 0)")
+                               for k in range(200)])
+        pk = next((r[0] for r in cql.execute(f"SELECT pk, token(pk) FROM {table}")
+                   if a < r[1] <= b), None)
+        assert pk is not None, f"no key among the probes has a token in ({a}, {b}]"
+        cql.execute(f"TRUNCATE {table}")
+        logger.info(f"Using pk={pk}, excluded replica {excluded_ip}, coordinator {coordinator_ip}")
+
+        cql.execute(SimpleStatement(f"INSERT INTO {table} (pk, ck) VALUES ({pk}, 0)",
+                                    consistency_level=ConsistencyLevel.ALL))
+
+        # Make the excluded replica reject the delete, so it keeps the live row and never
+        # sees a tombstone. The other two replicas satisfy CL=TWO, so the delete succeeds.
+        await manager.api.enable_injection(excluded_ip, "database_apply", one_shot=False,
+                                           parameters={"ks_name": ks, "cf_name": "tbl", "what": "throw"})
+        cql.execute(SimpleStatement(f"DELETE FROM {table} WHERE pk = {pk} AND ck = 0",
+                                    consistency_level=ConsistencyLevel.TWO))
+        await manager.api.disable_injection(excluded_ip, "database_apply")
+
+        # gc_before is derived from the repair time; keep the tombstone strictly older.
+        time.sleep(2)
+
+        logger.info(f"Repairing merged range ({a}, {c}] from {coordinator_ip}")
+        await _repair_range(manager, coordinator_ip, ks, "tbl", a, c)
+
+        # Purge the tombstone on the nodes that consider the range repaired.
+        # consider_only_existing_data makes the major compaction skip the commitlog check
+        # (which would otherwise clamp gc_before to the age of the still-active segment);
+        # gc_before itself still comes from the repair history, which is what is under test.
+        for server in participants:
+            await manager.api.keyspace_flush(server.ip_addr, ks, "tbl")
+            await manager.api.keyspace_compaction(server.ip_addr, ks, "tbl",
+                                                  consider_only_existing_data=True)
+
+        # Diagnostics only -- deliberately not asserted. Once the bug is fixed the
+        # tombstone may legitimately be either purged (repair split into correct
+        # sub-ranges, so the excluded replica got the tombstone) or still present
+        # (repair rejected the range). Either way the row must stay deleted.
+        for ip, host in host_by_ip.items():
+            frags = list(cql.execute(
+                f"SELECT * FROM MUTATION_FRAGMENTS({table}) WHERE pk = {pk}", host=host))
+            logger.info(f"mutation fragments on {ip}: {frags}")
+
+        rows = list(cql.execute(SimpleStatement(f"SELECT * FROM {table} WHERE pk = {pk}",
+                                                consistency_level=ConsistencyLevel.ALL)))
+        assert rows == [], f"deleted row was resurrected: {rows}"
