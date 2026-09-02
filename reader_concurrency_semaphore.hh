@@ -325,7 +325,7 @@ private:
     void evict(reader_permit::impl&, evict_reason reason) noexcept;
 
     enum class reason { all_ok = 0, ready_list, need_cpu_permits, memory_resources };
-    reason has_available_units(const resources& r) const;
+    reason has_available_units(memory_resources r) const;
 
     bool cpu_concurrency_limit_reached() const;
 
