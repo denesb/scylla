@@ -20,6 +20,7 @@
 #include <sys/sdt.h>
 #include "read_context.hh"
 #include "real_dirty_memory_accounter.hh"
+#include "readers/restricted.hh"
 #include "readers/delegating.hh"
 #include "readers/forwardable.hh"
 #include "readers/nonforwardable.hh"
@@ -50,9 +51,11 @@ static schema_ptr to_query_domain(const query::partition_slice& slice, schema_pt
 mutation_reader
 row_cache::create_underlying_reader(read_context& ctx, mutation_source& src, const dht::partition_range& pr) {
     schema_ptr entry_schema = to_query_domain(ctx.slice(), _schema);
-    auto reader = src.make_mutation_reader(entry_schema, ctx.permit(), pr, ctx.slice(), ctx.trace_state(), streamed_mutation::forwarding::yes);
-    ctx.on_underlying_created();
-    return reader;
+    return make_restricted_reader(entry_schema, ctx.permit(), [&ctx, &src, &pr] (schema_ptr schema, reader_permit permit) {
+        auto reader = src.make_mutation_reader(std::move(schema), std::move(permit), pr, ctx.slice(), ctx.trace_state(), streamed_mutation::forwarding::yes);
+        ctx.on_underlying_created();
+        return reader;
+    });
 }
 
 static thread_local mutation_application_stats dummy_app_stats;
