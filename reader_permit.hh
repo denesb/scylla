@@ -87,6 +87,7 @@ public:
         waiting_for_admission,
         waiting_for_memory,
         waiting_for_execution,
+        waiting_for_disk,
         active,
         active_need_cpu,
         active_await,
@@ -145,6 +146,8 @@ public:
     const schema_ptr& get_schema() const;
     std::string_view get_op_name() const;
     state get_state() const;
+
+    future<> wait_disk_admission();
 
     bool needs_readmission() const;
 
