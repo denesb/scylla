@@ -70,6 +70,7 @@
 #include "readers/multi_range.hh"
 #include "readers/combined.hh"
 #include "readers/compacting.hh"
+#include "readers/restricted.hh"
 #include "replica/schema_describe_helper.hh"
 #include "repair/incremental.hh"
 
@@ -273,7 +274,9 @@ table::make_mutation_reader(schema_ptr s,
             readers.emplace_back(std::move(*reader_opt));
         }
     } else {
-        readers.emplace_back(make_sstable_reader(s, permit, _sstables, range, slice, std::move(trace_state), fwd, fwd_mr));
+        readers.emplace_back(make_restricted_reader(s, permit, [this, &range, &slice, trace_state = std::move(trace_state), fwd, fwd_mr] (schema_ptr schema, reader_permit permit) mutable {
+            return make_sstable_reader(std::move(schema), std::move(permit), _sstables, range, slice, std::move(trace_state), fwd, fwd_mr);
+        }));
     }
 
     auto rd = make_combined_reader(s, permit, std::move(readers), fwd, fwd_mr);
