@@ -396,7 +396,7 @@ public:
         if (_state == reader_permit::state::waiting_for_memory) {
             on_permit_active();
         }
-        consume(reader_resources::with_memory(std::exchange(_requested_memory, memory_resources{})));
+        consume(std::exchange(_requested_memory, memory_resources{}));
     }
 
     void on_admitted_to_disk() {
@@ -483,7 +483,7 @@ public:
     future<resource_units> request_memory(memory_resources memory) {
         _requested_memory += memory;
         return _semaphore.request_memory(*this, memory).then([this, memory] {
-            return resource_units(reader_permit(shared_from_this()), reader_resources::with_memory(memory), resource_units::already_consumed_tag{});
+            return resource_units(reader_permit(shared_from_this()), memory, resource_units::already_consumed_tag{});
         });
     }
 
@@ -617,7 +617,7 @@ public:
         }
         ++_sstables_read;
         ++_semaphore._stats.sstables_read;
-        consume({count_resources(1), memory_resources{}});
+        consume(count_resources(1));
     }
 
     void on_finish_sstable_read() noexcept {
@@ -626,7 +626,7 @@ public:
         if (!_sstables_read) {
             --_semaphore._stats.disk_reads;
         }
-        signal({count_resources(1), memory_resources{}});
+        signal(count_resources(1));
     }
 
     bool on_oom_kill() noexcept {
@@ -693,7 +693,7 @@ void reader_permit::signal(reader_resources res) {
 }
 
 reader_permit::resource_units reader_permit::consume_memory(memory_resources memory) {
-    return consume_resources(reader_resources::with_memory(memory));
+    return consume_resources(memory);
 }
 
 reader_permit::resource_units reader_permit::consume_resources(reader_resources res) {
@@ -1896,7 +1896,7 @@ void reader_concurrency_semaphore::on_permit_not_awaits() noexcept {
 
 future<reader_permit> reader_concurrency_semaphore::obtain_permit(schema_ptr schema, const char* const op_name, memory_resources memory_credit,
         db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr) {
-    auto permit = reader_permit(*this, std::move(schema), std::string_view(op_name), reader_resources::with_memory(memory_credit), timeout, std::move(trace_ptr));
+    auto permit = reader_permit(*this, std::move(schema), std::string_view(op_name), memory_credit, timeout, std::move(trace_ptr));
     return do_wait_admission(*permit).then([permit] () mutable {
         return std::move(permit);
     });
@@ -1904,7 +1904,7 @@ future<reader_permit> reader_concurrency_semaphore::obtain_permit(schema_ptr sch
 
 future<reader_permit> reader_concurrency_semaphore::obtain_permit(schema_ptr schema, sstring&& op_name, memory_resources memory_credit,
         db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr) {
-    auto permit = reader_permit(*this, std::move(schema), std::move(op_name), reader_resources::with_memory(memory_credit), timeout, std::move(trace_ptr));
+    auto permit = reader_permit(*this, std::move(schema), std::move(op_name), memory_credit, timeout, std::move(trace_ptr));
     return do_wait_admission(*permit).then([permit] () mutable {
         return std::move(permit);
     });
@@ -1922,7 +1922,7 @@ reader_permit reader_concurrency_semaphore::make_tracking_only_permit(schema_ptr
 
 future<> reader_concurrency_semaphore::with_permit(schema_ptr schema, const char* const op_name, memory_resources memory_credit,
         db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr, reader_permit_opt& permit_holder, read_func func) {
-    permit_holder = reader_permit(*this, std::move(schema), std::string_view(op_name), reader_resources::with_memory(memory_credit), timeout, std::move(trace_ptr));
+    permit_holder = reader_permit(*this, std::move(schema), std::string_view(op_name), memory_credit, timeout, std::move(trace_ptr));
     auto permit = *permit_holder;
     permit->func() = std::move(func);
     return do_wait_admission(*permit);

@@ -33,9 +33,10 @@ struct reader_resources {
     count_resources count;
     memory_resources memory;
 
-    static reader_resources with_memory(memory_resources memory) { return reader_resources(count_resources{}, memory); }
-
     reader_resources() = default;
+
+    reader_resources(count_resources count) : count(count) { }
+    reader_resources(memory_resources memory) : memory(memory) { }
 
     reader_resources(count_resources count, memory_resources memory)
         : count(count)
@@ -296,10 +297,10 @@ class tracking_allocator_base {
 protected:
     tracking_allocator_base(reader_permit permit) noexcept : _permit(std::move(permit)) { }
     void consume(size_t memory) {
-        _permit.consume(reader_resources::with_memory(memory_resources(memory)));
+        _permit.consume(memory_resources(memory));
     }
     void signal(size_t memory) {
-        _permit.signal(reader_resources::with_memory(memory_resources(memory)));
+        _permit.signal(memory_resources(memory));
     }
 };
 
