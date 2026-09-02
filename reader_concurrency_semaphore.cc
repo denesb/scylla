@@ -1496,26 +1496,6 @@ void reader_concurrency_semaphore::close_reader(mutation_reader reader) {
     });
 }
 
-reader_concurrency_semaphore::reason reader_concurrency_semaphore::has_available_units(memory_resources r) const {
-    if (_resources.memory.value() > 0 && _resources.memory >= r) {
-        return reason::all_ok;
-    }
-
-    // Special case: when there is no active reader (based on memory) admit one
-    // regardless of availability of memory.
-    if (_resources.memory == _initial_resources.memory) {
-        return reason::all_ok;
-    }
-
-    {
-        const memory_resources needed_from_shared = r - _resources.memory;
-        if (memory_resources(_shared_pool.available_memory()) >= needed_from_shared) {
-            return reason::all_ok;
-        }
-    }
-    return reason::memory_resources;
-}
-
 bool reader_concurrency_semaphore::cpu_concurrency_limit_reached() const {
     return (_stats.need_cpu_permits - _stats.awaits_permits) >= _cpu_concurrency();
 }
@@ -1613,7 +1593,23 @@ reader_concurrency_semaphore::can_admit_read(const reader_permit::impl& permit) 
         return reason::need_cpu_permits;
     }
 
-    return has_available_units(permit.admission_credit());
+    // Special case: when there is no active reader (based on memory) admit one
+    // regardless of availability of memory.
+    if (_resources.memory == _initial_resources.memory) {
+        return reason::all_ok;
+    }
+
+    const auto memory_required = permit.admission_credit();
+    if (_resources.memory.value() > 0 && _resources.memory >= memory_required) {
+        return reason::all_ok;
+    }
+
+    const memory_resources needed_from_shared = memory_required - _resources.memory;
+    if (memory_resources(_shared_pool.available_memory()) >= needed_from_shared) {
+        return reason::all_ok;
+    }
+
+    return reason::memory_resources;
 }
 
 bool
