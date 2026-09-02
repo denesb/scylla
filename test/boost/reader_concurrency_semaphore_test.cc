@@ -171,7 +171,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_abandoned_handle_clos
 SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_readmission_preserves_units) {
     simple_schema s;
     const auto initial_resources = reader_concurrency_semaphore::resources{10, 1024 * 1024};
-    const auto base_resources = reader_concurrency_semaphore::resources{1, 1024};
+    const auto base_resources = reader_concurrency_semaphore::resources{0, 1024};
     reader_concurrency_semaphore semaphore(reader_concurrency_semaphore::for_tests{}, get_name(), initial_resources.count, initial_resources.memory);
 
     auto stop_sem = deferred_stop(semaphore);
@@ -552,7 +552,7 @@ SEASTAR_TEST_CASE(reader_concurrency_semaphore_timeout) {
 
 SEASTAR_THREAD_TEST_CASE(reader_concurrency_semaphore_abort) {
     const auto preemptive_abort_factor = 1.0f;
-    reader_concurrency_semaphore semaphore(reader_concurrency_semaphore::for_tests{}, get_name(), 1, 2 * replica::new_reader_base_cost,
+    reader_concurrency_semaphore semaphore(reader_concurrency_semaphore::for_tests{}, get_name(), 1, replica::new_reader_base_cost,
             100, utils::updateable_value(std::numeric_limits<uint32_t>::max()), utils::updateable_value(std::numeric_limits<uint32_t>::max()),
             utils::updateable_value<uint32_t>(1), utils::updateable_value<float>(preemptive_abort_factor));
     auto stop_sem = deferred_stop(semaphore);
@@ -568,9 +568,9 @@ SEASTAR_THREAD_TEST_CASE(reader_concurrency_semaphore_abort) {
         BOOST_REQUIRE_EQUAL(semaphore.get_stats().waiters, 1);
         BOOST_REQUIRE_EQUAL(semaphore.get_stats().reads_enqueued_for_admission, 1);
         BOOST_REQUIRE_EQUAL(semaphore.get_stats().reads_enqueued_for_memory, 0);
-        BOOST_REQUIRE_EQUAL(semaphore.get_stats().reads_queued_because_count_resources, 1);
-        BOOST_REQUIRE_EQUAL(semaphore.get_stats().reads_queued_because_memory_resources, 0);
-        BOOST_REQUIRE_EQUAL(semaphore.available_resources().memory, replica::new_reader_base_cost);
+        BOOST_REQUIRE_EQUAL(semaphore.get_stats().reads_queued_because_count_resources, 0);
+        BOOST_REQUIRE_EQUAL(semaphore.get_stats().reads_queued_because_memory_resources, 1);
+        BOOST_REQUIRE_EQUAL(semaphore.available_resources().memory, 0);
 
         permit1 = {};
         BOOST_REQUIRE(eventually_true([&] { return permit2_fut.available(); }));
@@ -579,7 +579,7 @@ SEASTAR_THREAD_TEST_CASE(reader_concurrency_semaphore_abort) {
     }
 
     // All units should have been deposited back.
-    REQUIRE_EVENTUALLY_EQUAL<ssize_t>([&] { return semaphore.available_resources().memory; }, 2 * replica::new_reader_base_cost);
+    REQUIRE_EVENTUALLY_EQUAL<ssize_t>([&] { return semaphore.available_resources().memory; }, replica::new_reader_base_cost);
 }
 
 SEASTAR_TEST_CASE(reader_concurrency_semaphore_max_queue_length) {
@@ -1174,7 +1174,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_evict_inactive_reads_
     simple_schema ss;
     const auto& s = ss.schema();
 
-    const auto initial_resources = reader_concurrency_semaphore::resources{2, 32 * 1024};
+    const auto initial_resources = reader_concurrency_semaphore::resources{2, 2 * 1024};
     reader_concurrency_semaphore semaphore(reader_concurrency_semaphore::for_tests{}, get_name(), initial_resources.count, initial_resources.memory);
     auto stop_sem = deferred_stop(semaphore);
 
@@ -1211,7 +1211,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_evict_inactive_reads_
     // * 1 inactive read (not evicted)
     // * 1 need_cpu (but not awaiting) read on the ready list
     // * 1 waiter
-    // * no more count resources left
+    // * no more memory resources left
     auto p3_fut = semaphore.obtain_permit(s, get_name(), 1024, db::no_timeout, {});
     BOOST_REQUIRE_EQUAL(semaphore.get_stats().waiters, 2); // (waiters includes _ready_list entries)
     BOOST_REQUIRE_EQUAL(semaphore.get_stats().reads_enqueued_for_admission, 1);
@@ -1219,7 +1219,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_evict_inactive_reads_
     BOOST_REQUIRE_EQUAL(semaphore.get_stats().awaits_permits, 0);
     BOOST_REQUIRE_EQUAL(semaphore.get_stats().inactive_reads, 1);
     BOOST_REQUIRE_EQUAL(semaphore.get_stats().permit_based_evictions, 0);
-    BOOST_REQUIRE_EQUAL(semaphore.available_resources().count, 0);
+    BOOST_REQUIRE_EQUAL(semaphore.available_resources().memory, 0);
     BOOST_REQUIRE(irh1);
 
     // Start the read emptying the ready list, this should not be enough to admit p3
@@ -1229,7 +1229,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_evict_inactive_reads_
     BOOST_REQUIRE_EQUAL(semaphore.get_stats().awaits_permits, 0);
     BOOST_REQUIRE_EQUAL(semaphore.get_stats().inactive_reads, 1);
     BOOST_REQUIRE_EQUAL(semaphore.get_stats().permit_based_evictions, 0);
-    BOOST_REQUIRE_EQUAL(semaphore.available_resources().count, 0);
+    BOOST_REQUIRE_EQUAL(semaphore.available_resources().memory, 0);
     BOOST_REQUIRE(irh1);
 
     // Marking p2 as awaits should eventually allow p3 to be admitted by evicting p1
@@ -1239,7 +1239,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_evict_inactive_reads_
     BOOST_REQUIRE_EQUAL(semaphore.get_stats().awaits_permits, 1);
     BOOST_REQUIRE_EQUAL(semaphore.get_stats().inactive_reads, 0);
     BOOST_REQUIRE_EQUAL(semaphore.get_stats().permit_based_evictions, 1);
-    BOOST_REQUIRE_EQUAL(semaphore.available_resources().count, 0);
+    BOOST_REQUIRE_EQUAL(semaphore.available_resources().memory, 0);
     BOOST_REQUIRE(!irh1);
 
     p3_fut.get();
@@ -1257,25 +1257,25 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_set_resources) {
 
     auto permit1 = semaphore.obtain_permit(nullptr, get_name(), 1024, db::no_timeout, {}).get();
     auto permit2 = semaphore.obtain_permit(nullptr, get_name(), 1024, db::no_timeout, {}).get();
-    BOOST_REQUIRE_EQUAL(semaphore.available_resources(), reader_resources(2, 2 * 1024));
+    BOOST_REQUIRE_EQUAL(semaphore.available_resources(), reader_resources(4, 2 * 1024));
     BOOST_REQUIRE_EQUAL(semaphore.initial_resources(), reader_resources(4, 4 * 1024));
 
     semaphore.set_resources({8, 8 * 1024}, 42);
-    BOOST_REQUIRE_EQUAL(semaphore.available_resources(), reader_resources(6, 6 * 1024));
+    BOOST_REQUIRE_EQUAL(semaphore.available_resources(), reader_resources(8, 6 * 1024));
     BOOST_REQUIRE_EQUAL(semaphore.initial_resources(), reader_resources(8, 8 * 1024));
     BOOST_REQUIRE_EQUAL(semaphore.unreduced_memory(), 42);
 
     semaphore.set_resources({2, 2 * 1024});
-    BOOST_REQUIRE_EQUAL(semaphore.available_resources(), reader_resources(0, 0));
+    BOOST_REQUIRE_EQUAL(semaphore.available_resources(), reader_resources(2, 0));
     BOOST_REQUIRE_EQUAL(semaphore.initial_resources(), reader_resources(2, 2 * 1024));
 
     semaphore.set_resources({3, 128});
-    BOOST_REQUIRE_EQUAL(semaphore.available_resources(), reader_resources(1, 128 - 2 * 1024));
+    BOOST_REQUIRE_EQUAL(semaphore.available_resources(), reader_resources(3, 128 - 2 * 1024));
     BOOST_REQUIRE_EQUAL(semaphore.initial_resources(), reader_resources(3, 128));
 
-    semaphore.set_resources({1, 3 * 1024});
-    BOOST_REQUIRE_EQUAL(semaphore.available_resources(), reader_resources(-1, 1024));
-    BOOST_REQUIRE_EQUAL(semaphore.initial_resources(), reader_resources(1, 3 * 1024));
+    semaphore.set_resources({1, 2 * 1024});
+    BOOST_REQUIRE_EQUAL(semaphore.available_resources(), reader_resources(1, 0));
+    BOOST_REQUIRE_EQUAL(semaphore.initial_resources(), reader_resources(1, 2 * 1024));
 
     auto permit3_fut = semaphore.obtain_permit(nullptr, get_name(), 1024, db::no_timeout, {});
     BOOST_REQUIRE_EQUAL(semaphore.get_stats().reads_enqueued_for_admission, 1);
@@ -1283,7 +1283,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_set_resources) {
 
     semaphore.set_resources({4, 4 * 1024});
     REQUIRE_EVENTUALLY_EQUAL<uint64_t>([&] { return semaphore.get_stats().waiters; }, 0);
-    BOOST_REQUIRE_EQUAL(semaphore.available_resources(), reader_resources(1, 1024));
+    BOOST_REQUIRE_EQUAL(semaphore.available_resources(), reader_resources(4, 1024));
     BOOST_REQUIRE_EQUAL(semaphore.initial_resources(), reader_resources(4, 4 * 1024));
     permit3_fut.get();
 }
@@ -2371,7 +2371,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_blessed_read_goes_ina
     permit_res.emplace_back(permit.request_memory(1024).get());
     permit_res.emplace_back(permit.request_memory(1024).get());
     permit_res.emplace_back(permit.request_memory(1024).get());
-    BOOST_REQUIRE_EQUAL(semaphore.consumed_resources(), reader_resources(1, 3 * 1024));
+    BOOST_REQUIRE_EQUAL(semaphore.consumed_resources(), reader_resources(0, 3 * 1024));
     BOOST_REQUIRE_EQUAL(semaphore.get_blessed_permit(), 0);
 
     // permit is the blessed one
@@ -2474,7 +2474,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_no_unnecessary_evicti
 
     // There are available resources
     {
-        BOOST_REQUIRE_EQUAL(semaphore.available_resources().count, 1);
+        BOOST_REQUIRE_EQUAL(semaphore.available_resources().count, 2);
         BOOST_REQUIRE_EQUAL(semaphore.available_resources().memory, 3 * 1024);
 
         auto handle = semaphore.register_inactive_read(make_empty_mutation_reader(s, permit1));
@@ -2490,10 +2490,11 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_no_unnecessary_evicti
 
     // Count resources are on the limit but no one wants more
     {
-        auto permit2 = semaphore.obtain_permit(nullptr, get_name(), 1024, db::no_timeout, {}).get();
+        // Admission doesn't consume count resources, only disk reads do.
+        auto count_units = permit1.consume_resources(reader_resources(2, 0));
 
         BOOST_REQUIRE_EQUAL(semaphore.available_resources().count, 0);
-        BOOST_REQUIRE_EQUAL(semaphore.available_resources().memory, 2 * 1024);
+        BOOST_REQUIRE_EQUAL(semaphore.available_resources().memory, 3 * 1024);
 
         auto handle = semaphore.register_inactive_read(make_empty_mutation_reader(s, permit1));
         BOOST_REQUIRE(handle);
@@ -2511,7 +2512,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_no_unnecessary_evicti
         // 1K of this is covered by permit1's admission credit.
         auto units = permit1.consume_memory(4 * 1024);
 
-        BOOST_REQUIRE_EQUAL(semaphore.available_resources().count, 1);
+        BOOST_REQUIRE_EQUAL(semaphore.available_resources().count, 2);
         BOOST_REQUIRE_EQUAL(semaphore.available_resources().memory, 0);
 
         auto handle = semaphore.register_inactive_read(make_empty_mutation_reader(s, permit1));
@@ -2565,47 +2566,6 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_necessary_evicting) {
 
     auto permit1 = semaphore.obtain_permit(nullptr, get_name(), 1024, db::no_timeout, {}).get();
 
-    // No count resources - obtaining new permit
-    {
-        auto permit2 = semaphore.obtain_permit(nullptr, get_name(), 1024, db::no_timeout, {}).get();
-
-        BOOST_REQUIRE_EQUAL(semaphore.available_resources().count, 0);
-        BOOST_REQUIRE_EQUAL(semaphore.available_resources().memory, 2 * 1024);
-
-        auto handle = semaphore.register_inactive_read(make_empty_mutation_reader(s, permit1));
-        BOOST_REQUIRE(handle);
-        BOOST_REQUIRE_EQUAL(semaphore.get_stats().inactive_reads, 1);
-
-        auto new_permit = semaphore.obtain_permit(nullptr, get_name(), 1024, db::no_timeout, {}).get();
-        BOOST_REQUIRE(!handle);
-        BOOST_REQUIRE_EQUAL(semaphore.get_stats().inactive_reads, 0);
-        BOOST_REQUIRE_EQUAL(semaphore.get_stats().permit_based_evictions, ++evicted_reads);
-    }
-
-    BOOST_REQUIRE(permit1.needs_readmission());
-    permit1.wait_readmission().get();
-
-    // No count resources - waiter
-    {
-        auto permit2 = semaphore.obtain_permit(nullptr, get_name(), 1024, db::no_timeout, {}).get();
-
-        BOOST_REQUIRE_EQUAL(semaphore.available_resources().count, 0);
-        BOOST_REQUIRE_EQUAL(semaphore.available_resources().memory, 2 * 1024);
-
-        auto new_permit_fut = semaphore.obtain_permit(nullptr, get_name(), 1024, db::no_timeout, {});
-        BOOST_REQUIRE_EQUAL(semaphore.get_stats().waiters, 1);
-
-        auto handle = semaphore.register_inactive_read(make_empty_mutation_reader(s, permit1));
-        BOOST_REQUIRE(!handle);
-        BOOST_REQUIRE_EQUAL(semaphore.get_stats().inactive_reads, 0);
-        BOOST_REQUIRE_EQUAL(semaphore.get_stats().permit_based_evictions, ++evicted_reads);
-
-        new_permit_fut.get();
-    }
-
-    BOOST_REQUIRE(permit1.needs_readmission());
-    permit1.wait_readmission().get();
-
     // No memory resources
     {
         // Shrink the memory down to permit1's admission credit, so that
@@ -2613,7 +2573,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_necessary_evicting) {
         // free memory up.
         semaphore.set_resources({initial_resources.count, 1024});
 
-        BOOST_REQUIRE_EQUAL(semaphore.available_resources().count, 1);
+        BOOST_REQUIRE_EQUAL(semaphore.available_resources().count, initial_resources.count);
         BOOST_REQUIRE_EQUAL(semaphore.available_resources().memory, 0);
 
         auto handle = semaphore.register_inactive_read(make_empty_mutation_reader(s, permit1));
@@ -2635,7 +2595,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_necessary_evicting) {
     {
         semaphore.set_resources({initial_resources.count, 1024});
 
-        BOOST_REQUIRE_EQUAL(semaphore.available_resources().count, 1);
+        BOOST_REQUIRE_EQUAL(semaphore.available_resources().count, initial_resources.count);
         BOOST_REQUIRE_EQUAL(semaphore.available_resources().memory, 0);
 
         auto new_permit_fut = semaphore.obtain_permit(nullptr, get_name(), 1024, db::no_timeout, {});
@@ -2654,41 +2614,13 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_necessary_evicting) {
     BOOST_REQUIRE(permit1.needs_readmission());
     permit1.wait_readmission().get();
 
-    // No count resources - waiter blocked on something else too
-    {
-        auto permit2 = semaphore.obtain_permit(nullptr, get_name(), 1024, db::no_timeout, {}).get();
-
-        BOOST_REQUIRE_EQUAL(semaphore.available_resources().count, 0);
-        BOOST_REQUIRE_EQUAL(semaphore.available_resources().memory, 2 * 1024);
-
-        std::optional<reader_permit::need_cpu_guard> ncpu_guard{permit2};
-
-        auto new_permit_fut = semaphore.obtain_permit(nullptr, get_name(), 1024, db::no_timeout, {});
-        BOOST_REQUIRE_EQUAL(semaphore.get_stats().waiters, 1);
-
-        auto handle = semaphore.register_inactive_read(make_empty_mutation_reader(s, permit1));
-        BOOST_REQUIRE(handle);
-        BOOST_REQUIRE_EQUAL(semaphore.get_stats().inactive_reads, 1);
-
-        ncpu_guard.reset();
-        REQUIRE_EVENTUALLY_EQUAL<bool>([&] { return bool(handle); }, false);
-        BOOST_REQUIRE_EQUAL(semaphore.get_stats().inactive_reads, 0);
-        BOOST_REQUIRE_EQUAL(semaphore.get_stats().permit_based_evictions, ++evicted_reads);
-
-        new_permit_fut.get();
-    }
-
-    BOOST_REQUIRE(permit1.needs_readmission());
-    permit1.wait_readmission().get();
-
     // No memory resources - waiter blocked on something else too
     {
-        // Room for one more permit, but only enough memory for the two permits'
-        // admission credit.
-        semaphore.set_resources({initial_resources.count + 1, 2 * 1024});
+        // Only enough memory for the two permits' admission credit.
+        semaphore.set_resources({initial_resources.count, 2 * 1024});
         auto permit2 = semaphore.obtain_permit(nullptr, get_name(), 1024, db::no_timeout, {}).get();
 
-        BOOST_REQUIRE_EQUAL(semaphore.available_resources().count, 1);
+        BOOST_REQUIRE_EQUAL(semaphore.available_resources().count, initial_resources.count);
         BOOST_REQUIRE_EQUAL(semaphore.available_resources().memory, 0);
 
         std::optional<reader_permit::need_cpu_guard> ncpu_guard{permit2};
@@ -3055,7 +2987,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_release_credited_reso
             reader_concurrency_semaphore_shared_pool::empty_pool());
     auto stop_sem = deferred_stop(semaphore);
 
-    const auto expected_credited_resources = reader_resources{1, 1024};
+    const auto expected_credited_resources = reader_resources{0, 1024};
     const auto expected_available_resources = total_resources - expected_credited_resources;
     const auto expected_consumed_resources = expected_credited_resources;
 
@@ -3128,7 +3060,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_readmission_tops_up_c
             reader_concurrency_semaphore_shared_pool::empty_pool());
     auto stop_sem = deferred_stop(semaphore);
 
-    const auto admission_credit = reader_resources{1, 1024};
+    const auto admission_credit = reader_resources{0, 1024};
 
     auto permit = semaphore.obtain_permit(s.schema(), test_name, admission_credit.memory, db::no_timeout, {}).get();
 
