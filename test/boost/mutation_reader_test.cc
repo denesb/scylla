@@ -67,6 +67,7 @@
 #include "readers/filtering.hh"
 #include "readers/evictable.hh"
 #include "readers/queue.hh"
+#include "readers/restricted.hh"
 
 BOOST_AUTO_TEST_SUITE(mutation_reader_test)
 
@@ -4721,6 +4722,28 @@ SEASTAR_TEST_CASE(test_multishard_reader_buffer_hint_small_partitions) {
             BOOST_REQUIRE_EQUAL(shard_semaphore->get_stats().permit_based_evictions, reads_from_shard);
         }
     });
+}
+
+SEASTAR_THREAD_TEST_CASE(test_restricted_reader) {
+    auto populator = [] (schema_ptr s, const utils::chunked_vector<mutation>& muts) {
+        return mutation_source([muts] (
+                schema_ptr schema,
+                reader_permit permit,
+                const dht::partition_range& range,
+                const query::partition_slice& slice,
+                tracing::trace_state_ptr,
+                streamed_mutation::forwarding fwd_sm,
+                mutation_reader::forwarding) {
+            return make_restricted_reader(std::move(schema), std::move(permit), [&muts, &range, &slice, fwd_sm] (schema_ptr schema, reader_permit permit) {
+                auto rd = make_mutation_reader_from_mutations(std::move(schema), std::move(permit), squash_mutations(muts), range, slice);
+                if (fwd_sm == streamed_mutation::forwarding::yes) {
+                    return make_forwardable(std::move(rd));
+                }
+                return rd;
+            });
+        });
+    };
+    run_mutation_source_tests(populator, true);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
