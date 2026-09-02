@@ -304,7 +304,7 @@ private:
 
     sstring _name;
     size_t _max_queue_length = std::numeric_limits<size_t>::max();
-    size_t _unreduced_memory = 0;
+    memory_resources _unreduced_memory;
     utils::updateable_value<uint32_t> _serialize_limit_multiplier;
     utils::updateable_value<uint32_t> _kill_limit_multiplier;
     utils::updateable_value<uint32_t> _cpu_concurrency;
@@ -361,7 +361,7 @@ private:
     // one, until:
     // * The blessed read finishes and a new blessed permit is chosen.
     // * Memory consumption falls below the limit.
-    future<> request_memory(reader_permit::impl& permit, size_t memory);
+    future<> request_memory(reader_permit::impl& permit, memory_resources memory);
 
     bool can_admit_one_disk_read() const noexcept;
 
@@ -397,7 +397,7 @@ private:
     // Throttling thus engages only on consumption the semaphore must cover from
     // its own dedicated memory. May be negative when the pool can fully fund the
     // current consumption.
-    ssize_t oom_protection_consumed_memory() const noexcept;
+    memory_resources oom_protection_consumed_memory() const noexcept;
 
     // Throws std::bad_alloc if memory consumed is oom_kill_limit_multiply_threshold more than the memory limit.
     void consume(reader_permit::impl& permit, resources r);
@@ -416,7 +416,7 @@ public:
     /// The semaphore's name has to be unique!
     reader_concurrency_semaphore(
             utils::updateable_value<int> count,
-            ssize_t memory,
+            memory_resources memory,
             sstring name,
             size_t max_queue_length,
             utils::updateable_value<uint32_t> serialize_limit_multiplier,
@@ -428,7 +428,7 @@ public:
 
     reader_concurrency_semaphore(
             int count,
-            ssize_t memory,
+            memory_resources memory,
             sstring name,
             size_t max_queue_length,
             utils::updateable_value<uint32_t> serialize_limit_multiplier,
@@ -454,7 +454,7 @@ public:
     struct for_tests{};
     reader_concurrency_semaphore(for_tests, sstring name,
             int count = std::numeric_limits<int>::max(),
-            ssize_t memory = std::numeric_limits<ssize_t>::max(),
+            memory_resources memory = memory_resources(std::numeric_limits<ssize_t>::max()),
             size_t max_queue_length = std::numeric_limits<size_t>::max(),
             utils::updateable_value<uint32_t> serialize_limit_multipler = utils::updateable_value(std::numeric_limits<uint32_t>::max()),
             utils::updateable_value<uint32_t> kill_limit_multipler = utils::updateable_value(std::numeric_limits<uint32_t>::max()),
@@ -555,8 +555,8 @@ public:
     ///
     /// Some permits cannot be associated with any table, so passing nullptr as
     /// the schema parameter is allowed.
-    future<reader_permit> obtain_permit(schema_ptr schema, const char* const op_name, size_t memory_credit, db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr);
-    future<reader_permit> obtain_permit(schema_ptr schema, sstring&& op_name, size_t memory_credit, db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr);
+    future<reader_permit> obtain_permit(schema_ptr schema, const char* const op_name, memory_resources memory_credit, db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr);
+    future<reader_permit> obtain_permit(schema_ptr schema, sstring&& op_name, memory_resources memory_credit, db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr);
 
     /// Make a tracking only permit
     ///
@@ -593,7 +593,7 @@ public:
     ///
     /// Some permits cannot be associated with any table, so passing nullptr as
     /// the schema parameter is allowed.
-    future<> with_permit(schema_ptr schema, const char* const op_name, size_t memory_credit, db::timeout_clock::time_point timeout,
+    future<> with_permit(schema_ptr schema, const char* const op_name, memory_resources memory_credit, db::timeout_clock::time_point timeout,
             tracing::trace_state_ptr trace_ptr, reader_permit_opt& permit_holder, read_func func);
 
     /// Run the function through the semaphore's execution stage with a pre-admitted permit
@@ -609,9 +609,9 @@ public:
     ///
     /// After this call, \ref initial_resources() will reflect the new value.
     /// Available resources will be adjusted by the delta.
-    void set_resources(resources r, size_t unreduced_memory = 0);
+    void set_resources(resources r, memory_resources unreduced_memory = {});
 
-    size_t unreduced_memory() const noexcept {
+    memory_resources unreduced_memory() const noexcept {
         return _unreduced_memory;
     }
 
@@ -620,7 +620,7 @@ public:
     }
 
     bool is_unlimited() const {
-        return _initial_resources == reader_resources{std::numeric_limits<int>::max(), std::numeric_limits<ssize_t>::max()};
+        return _initial_resources == reader_resources{count_resources(std::numeric_limits<int>::max()), memory_resources(std::numeric_limits<ssize_t>::max())};
     }
 
     const resources available_resources() const {

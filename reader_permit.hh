@@ -14,6 +14,7 @@
 #include "db/timeout_clock.hh"
 #include "schema/schema_fwd.hh"
 #include "tracing/trace_state.hh"
+#include "utils/tagged_integer.hh"
 
 namespace query {
 
@@ -25,15 +26,18 @@ namespace seastar {
     class file;
 } // namespace seastar
 
-struct reader_resources {
-    int count = 0;
-    ssize_t memory = 0;
+using memory_resources = utils::tagged_integer<struct memory_resources_tag, ssize_t>;
+using count_resources = utils::tagged_integer<struct count_resources_tag, ssize_t>;
 
-    static reader_resources with_memory(ssize_t memory) { return reader_resources(0, memory); }
+struct reader_resources {
+    count_resources count;
+    memory_resources memory;
+
+    static reader_resources with_memory(memory_resources memory) { return reader_resources(count_resources{}, memory); }
 
     reader_resources() = default;
 
-    reader_resources(int count, ssize_t memory)
+    reader_resources(count_resources count, memory_resources memory)
         : count(count)
         , memory(memory) {
     }
@@ -59,7 +63,7 @@ struct reader_resources {
     }
 
     bool non_zero() const {
-        return count > 0 || memory > 0;
+        return count.value() > 0 || memory.value() > 0;
     }
 };
 
@@ -154,11 +158,11 @@ public:
     // Call only when needs_readmission() = true.
     future<> wait_readmission();
 
-    resource_units consume_memory(size_t memory = 0);
+    resource_units consume_memory(memory_resources memory = {});
 
     resource_units consume_resources(reader_resources res);
 
-    future<resource_units> request_memory(size_t memory);
+    future<resource_units> request_memory(memory_resources memory);
 
     reader_resources consumed_resources() const;
 
@@ -282,7 +286,7 @@ temporary_buffer<Char> make_tracked_temporary_buffer(temporary_buffer<Char> buf,
 
 inline temporary_buffer<char> make_new_tracked_temporary_buffer(size_t size, reader_permit& permit) {
     auto buf = temporary_buffer<char>(size);
-    return temporary_buffer<char>(buf.get_write(), buf.size(), make_object_deleter(buf.release(), permit.consume_memory(size)));
+    return temporary_buffer<char>(buf.get_write(), buf.size(), make_object_deleter(buf.release(), permit.consume_memory(memory_resources(size))));
 }
 
 file make_tracked_file(file f, reader_permit p);
@@ -292,10 +296,10 @@ class tracking_allocator_base {
 protected:
     tracking_allocator_base(reader_permit permit) noexcept : _permit(std::move(permit)) { }
     void consume(size_t memory) {
-        _permit.consume(reader_resources::with_memory(memory));
+        _permit.consume(reader_resources::with_memory(memory_resources(memory)));
     }
     void signal(size_t memory) {
-        _permit.signal(reader_resources::with_memory(memory));
+        _permit.signal(reader_resources::with_memory(memory_resources(memory)));
     }
 };
 

@@ -432,7 +432,7 @@ public:
     }
 
     size_t memory_usage() const {
-        return _data->_memory.resources().memory;
+        return _data->_memory.resources().memory.value();
     }
 
     reader_permit permit() const {
