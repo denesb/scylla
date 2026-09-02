@@ -14,6 +14,7 @@
 #include <seastar/core/coroutine.hh>
 #include <seastar/coroutine/maybe_yield.hh>
 #include <seastar/core/metrics.hh>
+#include <algorithm>
 #include <utility>
 
 #include "reader_concurrency_semaphore.hh"
@@ -233,6 +234,7 @@ private:
             case state::waiting_for_admission:
             case state::waiting_for_memory:
             case state::waiting_for_execution:
+            case state::waiting_for_disk:
                 _pr.set_exception(ex);
                 maybe_dump_reader_permit_diagnostics(_semaphore, "timed out", this);
                 _semaphore.dequeue_permit(*this);
@@ -376,6 +378,10 @@ public:
         on_permit_inactive(reader_permit::state::waiting_for_execution);
     }
 
+    void on_waiting_for_disk() {
+        on_permit_inactive(reader_permit::state::waiting_for_disk);
+    }
+
     void on_admission() {
         SCYLLA_ASSERT(_state != reader_permit::state::active_await);
         on_permit_active();
@@ -393,6 +399,12 @@ public:
             on_permit_active();
         }
         consume({0, std::exchange(_requested_memory, 0)});
+    }
+
+    void on_admitted_to_disk() {
+        if (_state == reader_permit::state::waiting_for_disk) {
+            on_permit_active();
+        }
     }
 
     void on_executing() {
@@ -512,6 +524,10 @@ public:
         }
     }
 
+    future<> wait_disk_admission() {
+        return _semaphore.do_wait_disk_admission(*this);
+    }
+
     bool needs_readmission() const {
         return _state == reader_permit::state::evicted;
     }
@@ -622,6 +638,10 @@ reader_permit::state reader_permit::get_state() const {
     return _impl->get_state();
 }
 
+future<> reader_permit::wait_disk_admission() {
+    return _impl->wait_disk_admission();
+}
+
 bool reader_permit::needs_readmission() const {
     return _impl->needs_readmission();
 }
@@ -730,6 +750,9 @@ auto fmt::formatter<reader_permit::state>::format(reader_permit::state s, fmt::f
             break;
         case reader_permit::state::waiting_for_execution:
             name = "waiting_for_execution";
+            break;
+        case reader_permit::state::waiting_for_disk:
+            name = "waiting_for_disk";
             break;
         case reader_permit::state::active:
             name = "active";
@@ -891,8 +914,10 @@ static void do_dump_reader_permit_diagnostics(std::ostream& os, const reader_con
             "total_reads_shed_due_to_overload: {}\n"
             "total_reads_killed_due_to_kill_limit: {}\n"
             "reads_admitted: {}\n"
+            "reads_admitted_to_disk: {}\n"
             "reads_enqueued_for_admission: {}\n"
             "reads_enqueued_for_memory: {}\n"
+            "reads_enqueued_for_disk: {}\n"
             "reads_admitted_immediately: {}\n"
             "reads_queued_because_ready_list: {}\n"
             "reads_queued_because_need_cpu_permits: {}\n"
@@ -914,8 +939,10 @@ static void do_dump_reader_permit_diagnostics(std::ostream& os, const reader_con
             stats.total_reads_shed_due_to_overload,
             stats.total_reads_killed_due_to_kill_limit,
             stats.reads_admitted,
+            stats.reads_admitted_to_disk,
             stats.reads_enqueued_for_admission,
             stats.reads_enqueued_for_memory,
+            stats.reads_enqueued_for_disk,
             stats.reads_admitted_immediately,
             stats.reads_queued_because_ready_list,
             stats.reads_queued_because_need_cpu_permits,
@@ -1021,6 +1048,7 @@ future<> reader_concurrency_semaphore::execution_loop() noexcept {
         }
 
         maybe_admit_waiters();
+        maybe_admit_disk_waiters(evict_inactive_reads::yes);
 
         while (!_ready_list.empty()) {
             auto& permit = _ready_list.front();
@@ -1127,6 +1155,10 @@ void reader_concurrency_semaphore::signal(const resources& r) noexcept {
         _resources.memory = std::min(_resources.memory, _initial_resources.memory);
     }
     maybe_wake_execution_loop();
+
+    if (r.count) {
+        maybe_admit_disk_waiters(evict_inactive_reads::no);
+    }
 }
 
 namespace sm = seastar::metrics;
@@ -1264,7 +1296,7 @@ reader_concurrency_semaphore::inactive_read_handle reader_concurrency_semaphore:
         _blessed_permit = nullptr;
         maybe_wake_execution_loop();
     }
-    if (!should_evict_inactive_read()) {
+    if (!should_evict_inactive_read(*permit)) {
       try {
         permit->aux_data().ir.emplace(std::move(reader), range);
         permit->unlink();
@@ -1478,13 +1510,18 @@ future<> reader_concurrency_semaphore::enqueue_waiter(reader_permit::impl& permi
         permit.on_waiting_for_admission();
         _wait_list.push_to_admission_queue(permit);
         ++_stats.reads_enqueued_for_admission;
-    } else {
+    } else if (wait == wait_on::memory) {
         permit.on_waiting_for_memory();
         auto& ad = permit.aux_data();
         ad.fut.emplace(std::move(fut));
         fut = ad.fut->get_future();
         _wait_list.push_to_memory_queue(permit);
         ++_stats.reads_enqueued_for_memory;
+    } else {
+        permit.on_waiting_for_disk();
+        permit.unlink();
+        _disk_wait_list.push_back(permit);
+        ++_stats.reads_enqueued_for_disk;
     }
     ++_stats.waiters;
     return fut;
@@ -1499,11 +1536,15 @@ void reader_concurrency_semaphore::evict_readers_in_background() {
     // This is safe since stop() closes _gate;
     (void)with_gate(_close_readers_gate, [this] {
         return repeat([this] {
-            if (_inactive_reads.empty() || !should_evict_inactive_read()) {
+            auto it = std::ranges::find_if(_inactive_reads, [this] (const reader_permit::impl& permit) {
+                return should_evict_inactive_read(permit);
+            });
+            if (it == _inactive_reads.end()) {
                 _evicting = false;
                 return make_ready_future<stop_iteration>(stop_iteration::yes);
             }
-            return detach_inactive_reader(_inactive_reads.front(), evict_reason::permit).close().then([] {
+
+            return detach_inactive_reader(*it, evict_reason::permit).close().then([] {
                 return stop_iteration::no;
             });
         });
@@ -1555,15 +1596,28 @@ reader_concurrency_semaphore::can_admit_read(const reader_permit::impl& permit) 
     return {can_admit::yes, reason::all_ok};
 }
 
-bool reader_concurrency_semaphore::should_evict_inactive_read() const noexcept {
-    if (_resources.memory < 0 || _resources.count < 0) {
+bool
+reader_concurrency_semaphore::can_admit_one_disk_read() const noexcept {
+    // The disk wait list is not active yet.
+    return true;
+}
+
+bool reader_concurrency_semaphore::should_evict_inactive_read(const reader_permit::impl& permit) const noexcept {
+    if (_resources.memory < 0 && permit.resources().memory) {
         return true;
     }
-    if (_wait_list.empty()) {
-        return false;
+    if (_resources.count < 0 && permit.resources().count) {
+        return true;
     }
-    const auto r = can_admit_read(_wait_list.front()).why;
-    return r == reason::memory_resources || r == reason::count_resources;
+    if (!_wait_list.empty()) {
+        if (const auto reason = can_admit_read(_wait_list.front()).why; reason == reason::memory_resources || reason == reason::count_resources) {
+            return true;
+        }
+    }
+    if (!_disk_wait_list.empty() && !can_admit_one_disk_read() && permit.resources().count) {
+        return true;
+    }
+    return false;
 }
 
 future<> reader_concurrency_semaphore::do_wait_admission(reader_permit::impl& permit) {
@@ -1692,6 +1746,24 @@ void reader_concurrency_semaphore::maybe_admit_waiters() noexcept {
     }
 }
 
+void reader_concurrency_semaphore::maybe_admit_disk_waiters(evict_inactive_reads evict_reads) noexcept {
+    while (!_disk_wait_list.empty() && can_admit_one_disk_read()) {
+        auto& permit = _disk_wait_list.front();
+        dequeue_permit(permit);
+        try {
+            permit.on_admitted_to_disk();
+            ++_stats.reads_admitted_to_disk;
+            permit.promise().set_value();
+        } catch (...) {
+            permit.promise().set_exception(std::current_exception());
+        }
+    }
+    if (evict_reads && !_disk_wait_list.empty()) {
+        // Evicting readers will trigger another call to `maybe_admit_disk_waiters()` from `signal()`.
+        evict_readers_in_background();
+    }
+}
+
 void reader_concurrency_semaphore::maybe_wake_execution_loop() noexcept {
     if (!_wait_list.empty()) {
         _ready_list_cv.signal();
@@ -1721,11 +1793,29 @@ future<> reader_concurrency_semaphore::request_memory(reader_permit::impl& permi
     return enqueue_waiter(permit, wait_on::memory);
 }
 
+future<> reader_concurrency_semaphore::do_wait_disk_admission(reader_permit::impl& permit) {
+    if (_disk_wait_list.empty() && can_admit_one_disk_read()) {
+        permit.on_admitted_to_disk();
+        ++_stats.reads_admitted_to_disk;
+        tracing::trace(permit.trace_state(), "[reader concurrency semaphore {}] admitted to disk immediately", _name);
+        return make_ready_future<>();
+    }
+
+    auto fut = enqueue_waiter(permit, wait_on::disk);
+    ++_stats.reads_queued_because_count_resources;
+    tracing::trace(permit.trace_state(), "[reader concurrency semaphore {}] queued because of {}", _name, _disk_wait_list.empty() ? "count resources" : "non-empty wait list");
+
+    maybe_admit_disk_waiters(evict_inactive_reads::yes);
+
+    return fut;
+}
+
 void reader_concurrency_semaphore::dequeue_permit(reader_permit::impl& permit) {
     switch (permit.get_state()) {
         case reader_permit::state::waiting_for_admission:
         case reader_permit::state::waiting_for_memory:
         case reader_permit::state::waiting_for_execution:
+        case reader_permit::state::waiting_for_disk:
             if (_stats.waiters > 0) {
                 --_stats.waiters;
             } else {
@@ -1848,6 +1938,7 @@ void reader_concurrency_semaphore::set_resources(resources r, size_t unreduced_m
     _initial_resources = r;
     _resources += delta;
     maybe_wake_execution_loop();
+    maybe_admit_disk_waiters(evict_inactive_reads::yes);
 }
 
 void reader_concurrency_semaphore::broken(std::exception_ptr ex) {
@@ -1856,6 +1947,11 @@ void reader_concurrency_semaphore::broken(std::exception_ptr ex) {
     }
     while (!_wait_list.empty()) {
         auto& permit = _wait_list.front();
+        permit.promise().set_exception(ex);
+        dequeue_permit(permit);
+    }
+    while (!_disk_wait_list.empty()) {
+        auto& permit = _disk_wait_list.front();
         permit.promise().set_exception(ex);
         dequeue_permit(permit);
     }
@@ -1871,6 +1967,7 @@ void reader_concurrency_semaphore::foreach_permit(noncopyable_function<void(cons
     std::ranges::for_each(_permit_list, std::ref(func));
     std::ranges::for_each(_wait_list._admission_queue, std::ref(func));
     std::ranges::for_each(_wait_list._memory_queue, std::ref(func));
+    std::ranges::for_each(_disk_wait_list, std::ref(func));
     std::ranges::for_each(_ready_list, std::ref(func));
     std::ranges::for_each(_inactive_reads, std::ref(func));
 }

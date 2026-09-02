@@ -202,10 +202,14 @@ public:
         uint64_t total_reads_killed_due_to_kill_limit = 0;
         // Total number of reads admitted, via all admission paths.
         uint64_t reads_admitted = 0;
+        // Total number of reads admitted to disk.
+        uint64_t reads_admitted_to_disk = 0;
         // Total number of reads enqueued to wait for admission.
         uint64_t reads_enqueued_for_admission = 0;
         // Total number of reads enqueued to wait for memory.
         uint64_t reads_enqueued_for_memory = 0;
+        // Total number of reads enqueued to wait for disk.
+        uint64_t reads_enqueued_for_disk = 0;
         // Total number of reads admitted immediately, without queueing
         uint64_t reads_admitted_immediately = 0;
         // Total number of reads enqueued because ready_list wasn't empty
@@ -294,6 +298,7 @@ private:
 
     wait_queue _wait_list;
     permit_list_type _ready_list;
+    permit_list_type _disk_wait_list;
     condition_variable _ready_list_cv;
     permit_list_type _inactive_reads;
     // Stores permits that are not in any of the above list.
@@ -330,7 +335,7 @@ private:
 
     // Add the permit to the wait queue and return the future which resolves when
     // the permit is admitted (popped from the queue).
-    enum class wait_on { admission, memory };
+    enum class wait_on { admission, memory, disk };
     future<> enqueue_waiter(reader_permit::impl& permit, wait_on wait);
     void evict_readers_in_background();
     future<> do_wait_admission(reader_permit::impl& permit);
@@ -344,9 +349,11 @@ private:
     struct admit_result { can_admit decision; reason why; };
     admit_result can_admit_read(const reader_permit::impl& permit) const noexcept;
 
-    bool should_evict_inactive_read() const noexcept;
+    bool should_evict_inactive_read(const reader_permit::impl& permit) const noexcept;
 
+    using evict_inactive_reads = bool_class<class evict_inactive_reads>;
     void maybe_admit_waiters() noexcept;
+    void maybe_admit_disk_waiters(evict_inactive_reads evict) noexcept;
 
     void maybe_wake_execution_loop() noexcept;
 
@@ -359,6 +366,10 @@ private:
     // * The blessed read finishes and a new blessed permit is chosen.
     // * Memory consumption falls below the limit.
     future<> request_memory(reader_permit::impl& permit, size_t memory);
+
+    bool can_admit_one_disk_read() const noexcept;
+
+    future<> do_wait_disk_admission(reader_permit::impl& permit);
 
     void dequeue_permit(reader_permit::impl&);
 
