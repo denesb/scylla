@@ -403,6 +403,8 @@ public:
         if (_state == reader_permit::state::waiting_for_disk) {
             on_permit_active();
         }
+
+        credit({1, 0});
     }
 
     void on_executing() {
@@ -615,6 +617,7 @@ public:
         }
         ++_sstables_read;
         ++_semaphore._stats.sstables_read;
+        consume({1, 0});
     }
 
     void on_finish_sstable_read() noexcept {
@@ -623,6 +626,7 @@ public:
         if (!_sstables_read) {
             --_semaphore._stats.disk_reads;
         }
+        signal({1, 0});
     }
 
     bool on_oom_kill() noexcept {
@@ -1127,7 +1131,8 @@ void reader_concurrency_semaphore::consume(reader_permit::impl& permit, resource
     // We check whether we even reached the memory limit first.
     // This is a cheap check and should be false most of the time, providing a
     // cheap short-circuit.
-    if (_resources.memory <= 0 && std::cmp_greater_equal(oom_protection_consumed_memory() + r.memory, get_kill_limit())) [[unlikely]] {
+    // Only do the check if `r` contains memory resources at all.
+    if (r.memory && _resources.memory <= 0 && std::cmp_greater_equal(oom_protection_consumed_memory() + r.memory, get_kill_limit())) [[unlikely]] {
         // Don't kill unless kill limit is reached also when shared pool is out from the calculations
         if (std::cmp_greater_equal(consumed_resources().memory + r.memory, _unreduced_memory * _kill_limit_multiplier())) {
             if (permit.on_oom_kill()) {
@@ -1492,18 +1497,14 @@ void reader_concurrency_semaphore::close_reader(mutation_reader reader) {
 }
 
 reader_concurrency_semaphore::reason reader_concurrency_semaphore::has_available_units(const resources& r) const {
-    if (_resources.non_zero() && _resources.count >= r.count && _resources.memory >= r.memory) {
+    if (_resources.memory > 0 && _resources.memory >= r.memory) {
         return reason::all_ok;
     }
 
-    // Special case: when there is no active reader (based on count) admit one
+    // Special case: when there is no active reader (based on memory) admit one
     // regardless of availability of memory.
-    if (_resources.count == _initial_resources.count) {
+    if (_resources.memory == _initial_resources.memory) {
         return reason::all_ok;
-    }
-
-    if (_resources.count < r.count) {
-        return reason::count_resources;
     }
 
     {
@@ -1617,8 +1618,7 @@ reader_concurrency_semaphore::can_admit_read(const reader_permit::impl& permit) 
 
 bool
 reader_concurrency_semaphore::can_admit_one_disk_read() const noexcept {
-    // The disk wait list is not active yet.
-    return true;
+    return _resources.count > 0;
 }
 
 bool reader_concurrency_semaphore::should_evict_inactive_read(const reader_permit::impl& permit) const noexcept {
@@ -1628,10 +1628,8 @@ bool reader_concurrency_semaphore::should_evict_inactive_read(const reader_permi
     if (_resources.count < 0 && permit.resources().count) {
         return true;
     }
-    if (!_wait_list.empty()) {
-        if (const auto reason = can_admit_read(_wait_list.front()); reason == reason::memory_resources || reason == reason::count_resources) {
-            return true;
-        }
+    if (!_wait_list.empty() && can_admit_read(_wait_list.front()) == reason::memory_resources && permit.resources().memory) {
+        return true;
     }
     if (!_disk_wait_list.empty() && !can_admit_one_disk_read() && permit.resources().count) {
         return true;
@@ -1649,7 +1647,6 @@ future<> reader_concurrency_semaphore::do_wait_admission(reader_permit::impl& pe
         &stats::reads_queued_because_ready_list,
         &stats::reads_queued_because_need_cpu_permits,
         &stats::reads_queued_because_memory_resources,
-        &stats::reads_queued_because_count_resources
     };
 
     static const char* result_as_string[] = {
@@ -1657,7 +1654,6 @@ future<> reader_concurrency_semaphore::do_wait_admission(reader_permit::impl& pe
         "queued because of non-empty ready list",
         "queued because of need_cpu permits",
         "queued because of memory resources",
-        "queued because of count resources"
     };
 
     const auto why = can_admit_read(permit);
@@ -1900,7 +1896,7 @@ void reader_concurrency_semaphore::on_permit_not_awaits() noexcept {
 
 future<reader_permit> reader_concurrency_semaphore::obtain_permit(schema_ptr schema, const char* const op_name, size_t memory_credit,
         db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr) {
-    auto permit = reader_permit(*this, std::move(schema), std::string_view(op_name), {1, static_cast<ssize_t>(memory_credit)}, timeout, std::move(trace_ptr));
+    auto permit = reader_permit(*this, std::move(schema), std::string_view(op_name), {0, static_cast<ssize_t>(memory_credit)}, timeout, std::move(trace_ptr));
     return do_wait_admission(*permit).then([permit] () mutable {
         return std::move(permit);
     });
@@ -1908,7 +1904,7 @@ future<reader_permit> reader_concurrency_semaphore::obtain_permit(schema_ptr sch
 
 future<reader_permit> reader_concurrency_semaphore::obtain_permit(schema_ptr schema, sstring&& op_name, size_t memory_credit,
         db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr) {
-    auto permit = reader_permit(*this, std::move(schema), std::move(op_name), {1, static_cast<ssize_t>(memory_credit)}, timeout, std::move(trace_ptr));
+    auto permit = reader_permit(*this, std::move(schema), std::move(op_name), {0, static_cast<ssize_t>(memory_credit)}, timeout, std::move(trace_ptr));
     return do_wait_admission(*permit).then([permit] () mutable {
         return std::move(permit);
     });
@@ -1926,7 +1922,7 @@ reader_permit reader_concurrency_semaphore::make_tracking_only_permit(schema_ptr
 
 future<> reader_concurrency_semaphore::with_permit(schema_ptr schema, const char* const op_name, size_t memory_credit,
         db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr, reader_permit_opt& permit_holder, read_func func) {
-    permit_holder = reader_permit(*this, std::move(schema), std::string_view(op_name), {1, static_cast<ssize_t>(memory_credit)}, timeout, std::move(trace_ptr));
+    permit_holder = reader_permit(*this, std::move(schema), std::string_view(op_name), {0, static_cast<ssize_t>(memory_credit)}, timeout, std::move(trace_ptr));
     auto permit = *permit_holder;
     permit->func() = std::move(func);
     return do_wait_admission(*permit);
