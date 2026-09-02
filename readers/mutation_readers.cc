@@ -27,6 +27,7 @@
 #include "readers/mutation_source.hh"
 #include "readers/nonforwardable.hh"
 #include "readers/queue.hh"
+#include "readers/restricted.hh"
 #include "readers/reversing.hh"
 #include "readers/upgrading_consumer.hh"
 #include "tombstone_gc.hh"
@@ -1560,4 +1561,82 @@ mutation_reader make_compacting_reader(mutation_reader source, gc_clock::time_po
         max_purgeable_fn get_max_purgeable,
         const tombstone_gc_state& gc_state, streamed_mutation::forwarding fwd, tombstone_purge_stats* tombstone_stats) {
     return make_mutation_reader<compacting_reader>(std::move(source), compaction_time, get_max_purgeable, gc_state, fwd, tombstone_stats);
+}
+
+namespace {
+
+class restricted_reader : public mutation_reader::impl {
+    std::variant<underlying_reader_factory, mutation_reader> _underlying;
+
+private:
+    // Returned pointer is never null
+    future<mutation_reader*> get_or_admit_reader() {
+        if (auto reader = std::get_if<mutation_reader>(&_underlying); reader) [[likely]] {
+            return make_ready_future<mutation_reader*>(reader);
+        }
+        return _permit.wait_disk_admission().then([this] {
+            auto reader = std::get<underlying_reader_factory>(_underlying)(_schema, _permit);
+            _underlying = std::move(reader);
+            return &std::get<mutation_reader>(_underlying);
+        });
+    }
+
+public:
+    explicit restricted_reader(schema_ptr schema, reader_permit permit, underlying_reader_factory reader_factory)
+        : impl(std::move(schema), std::move(permit))
+        , _underlying(std::move(reader_factory))
+    { }
+
+    virtual future<> fill_buffer() override {
+        if (is_buffer_full()) {
+            return make_ready_future<>();
+        }
+        return get_or_admit_reader().then([this] (mutation_reader* reader) {
+            return reader->fill_buffer().then([this, reader] {
+                _end_of_stream = reader->is_end_of_stream();
+                reader->move_buffer_content_to(*this);
+            });
+        });
+    }
+
+    virtual future<> next_partition() override {
+        clear_buffer_to_next_partition();
+        if (!is_buffer_empty()) {
+            return make_ready_future<>();
+        }
+        return get_or_admit_reader().then([this] (mutation_reader* reader) {
+            return reader->next_partition().then([this, reader] {
+                _end_of_stream = reader->is_end_of_stream();
+            });
+        });
+    }
+
+    virtual future<> fast_forward_to(const dht::partition_range& pr) override {
+        _end_of_stream = false;
+        clear_buffer();
+        return get_or_admit_reader().then([&pr] (mutation_reader* reader) {
+            return reader->fast_forward_to(pr);
+        });
+    }
+
+    virtual future<> fast_forward_to(position_range pr) override {
+        _end_of_stream = false;
+        clear_buffer();
+        return get_or_admit_reader().then([pr = std::move(pr)] (mutation_reader* reader) {
+            return reader->fast_forward_to(std::move(pr));
+        });
+    }
+
+    virtual future<> close() noexcept override {
+        if (auto reader = std::get_if<mutation_reader>(&_underlying); reader) [[likely]] {
+            return reader->close();
+        }
+        return make_ready_future<>();
+    }
+};
+
+} // anonymous namespace
+
+mutation_reader make_restricted_reader(schema_ptr schema, reader_permit permit, underlying_reader_factory reader_factory) {
+    return make_mutation_reader<restricted_reader>(std::move(schema), std::move(permit), std::move(reader_factory));
 }
