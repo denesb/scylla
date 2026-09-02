@@ -155,7 +155,7 @@ private:
     sstring _op_name;
     std::string_view _op_name_view;
     // The resource estimate credited to the read when it is admitted, see credit().
-    const reader_resources _admission_credit;
+    const memory_resources _admission_credit;
     // How much of the credited resources is still outstanding, i.e. was consumed
     // on the read's behalf, but isn't backed by real consumption (yet).
     reader_resources _credited_resources;
@@ -265,7 +265,7 @@ private:
 public:
     struct value_tag {};
 
-    impl(reader_concurrency_semaphore& semaphore, schema_ptr schema, const std::string_view& op_name, reader_resources admission_credit, db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr)
+    impl(reader_concurrency_semaphore& semaphore, schema_ptr schema, const std::string_view& op_name, memory_resources admission_credit, db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr)
         : _created(db::timeout_clock::now())
         , _semaphore(semaphore)
         , _schema(std::move(schema))
@@ -277,7 +277,7 @@ public:
         set_timeout(timeout);
         _semaphore.on_permit_created(*this);
     }
-    impl(reader_concurrency_semaphore& semaphore, schema_ptr schema, sstring&& op_name, reader_resources admission_credit, db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr)
+    impl(reader_concurrency_semaphore& semaphore, schema_ptr schema, sstring&& op_name, memory_resources admission_credit, db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr)
         : _created(db::timeout_clock::now())
         , _semaphore(semaphore)
         , _schema(std::move(schema))
@@ -491,7 +491,7 @@ public:
         return _resources;
     }
 
-    reader_resources admission_credit() const {
+    memory_resources admission_credit() const {
         return _admission_credit;
     }
 
@@ -642,13 +642,13 @@ reader_permit::reader_permit(shared_ptr<impl> impl) : _impl(std::move(impl))
 }
 
 reader_permit::reader_permit(reader_concurrency_semaphore& semaphore, schema_ptr schema, std::string_view op_name,
-        reader_resources admission_credit, db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr)
+        memory_resources admission_credit, db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr)
     : _impl(::seastar::make_shared<reader_permit::impl>(semaphore, std::move(schema), op_name, admission_credit, timeout, std::move(trace_ptr)))
 {
 }
 
 reader_permit::reader_permit(reader_concurrency_semaphore& semaphore, schema_ptr schema, sstring&& op_name,
-        reader_resources admission_credit, db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr)
+        memory_resources admission_credit, db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr)
     : _impl(::seastar::make_shared<reader_permit::impl>(semaphore, std::move(schema), std::move(op_name), admission_credit, timeout, std::move(trace_ptr)))
 {
 }
@@ -1496,8 +1496,8 @@ void reader_concurrency_semaphore::close_reader(mutation_reader reader) {
     });
 }
 
-reader_concurrency_semaphore::reason reader_concurrency_semaphore::has_available_units(const resources& r) const {
-    if (_resources.memory.value() > 0 && _resources.memory >= r.memory) {
+reader_concurrency_semaphore::reason reader_concurrency_semaphore::has_available_units(memory_resources r) const {
+    if (_resources.memory.value() > 0 && _resources.memory >= r) {
         return reason::all_ok;
     }
 
@@ -1508,7 +1508,7 @@ reader_concurrency_semaphore::reason reader_concurrency_semaphore::has_available
     }
 
     {
-        const memory_resources needed_from_shared = r.memory - _resources.memory;
+        const memory_resources needed_from_shared = r - _resources.memory;
         if (memory_resources(_shared_pool.available_memory()) >= needed_from_shared) {
             return reason::all_ok;
         }
