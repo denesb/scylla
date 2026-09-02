@@ -389,14 +389,14 @@ public:
         SCYLLA_ASSERT(_state != reader_permit::state::active_await);
         on_permit_active();
 
-        top_up_credit({count_resources(0), _admission_credit.memory});
+        top_up_credit(_admission_credit.memory);
     }
 
     void on_granted_memory() {
         if (_state == reader_permit::state::waiting_for_memory) {
             on_permit_active();
         }
-        consume(reader_resources::with_memory(std::exchange(_requested_memory, memory_resources{})));
+        consume(std::exchange(_requested_memory, memory_resources{}));
     }
 
     void on_admitted_to_disk() {
@@ -404,7 +404,7 @@ public:
             on_permit_active();
         }
 
-        top_up_credit({_admission_credit.count, memory_resources(0)});
+        top_up_credit(_admission_credit.count);
     }
 
     void on_executing() {
@@ -494,7 +494,7 @@ public:
     future<resource_units> request_memory(memory_resources memory) {
         _requested_memory += memory;
         return _semaphore.request_memory(*this, memory).then([this, memory] {
-            return resource_units(reader_permit(shared_from_this()), reader_resources::with_memory(memory), resource_units::already_consumed_tag{});
+            return resource_units(reader_permit(shared_from_this()), memory, resource_units::already_consumed_tag{});
         });
     }
 
@@ -628,7 +628,7 @@ public:
         }
         ++_sstables_read;
         ++_semaphore._stats.sstables_read;
-        consume({count_resources(1), memory_resources{}});
+        consume(count_resources(1));
     }
 
     void on_finish_sstable_read() noexcept {
@@ -637,7 +637,7 @@ public:
         if (!_sstables_read) {
             --_semaphore._stats.disk_reads;
         }
-        signal({count_resources(1), memory_resources{}});
+        signal(count_resources(1));
     }
 
     bool on_oom_kill() noexcept {
@@ -704,7 +704,7 @@ void reader_permit::signal(reader_resources res) {
 }
 
 reader_permit::resource_units reader_permit::consume_memory(memory_resources memory) {
-    return consume_resources(reader_resources::with_memory(memory));
+    return consume_resources(memory);
 }
 
 reader_permit::resource_units reader_permit::consume_resources(reader_resources res) {

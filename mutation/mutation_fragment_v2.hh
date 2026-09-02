@@ -153,7 +153,7 @@ public:
         : _data(std::make_unique<data>(std::move(permit), kind::clustering_row))
     {
         new (&_data->_clustering_row) clustering_row(std::forward<Args>(args)...);
-        _data->_memory.reset_to(reader_resources::with_memory(memory_resources(calculate_memory_usage(s))));
+        _data->_memory.reset_to(memory_resources(calculate_memory_usage(s)));
     }
 
     mutation_fragment_v2(const schema& s, reader_permit permit, static_row&& r);
@@ -218,19 +218,19 @@ public:
 
     void mutate_as_static_row(const schema& s, std::invocable<static_row&> auto&& fn) {
         fn(_data->_static_row);
-        _data->_memory.reset_to(reader_resources::with_memory(memory_resources(calculate_memory_usage(s))));
+        _data->_memory.reset_to(memory_resources(calculate_memory_usage(s)));
     }
     void mutate_as_clustering_row(const schema& s, std::invocable<clustering_row&> auto&& fn) {
         fn(_data->_clustering_row);
-        _data->_memory.reset_to(reader_resources::with_memory(memory_resources(calculate_memory_usage(s))));
+        _data->_memory.reset_to(memory_resources(calculate_memory_usage(s)));
     }
     void mutate_as_range_tombstone_change(const schema& s, std::invocable<range_tombstone_change&> auto&& fn) {
         fn(_data->_range_tombstone_chg);
-        _data->_memory.reset_to(reader_resources::with_memory(memory_resources(calculate_memory_usage(s))));
+        _data->_memory.reset_to(memory_resources(calculate_memory_usage(s)));
     }
     void mutate_as_partition_start(const schema& s, std::invocable<partition_start&> auto&& fn) {
         fn(_data->_partition_start);
-        _data->_memory.reset_to(reader_resources::with_memory(memory_resources(calculate_memory_usage(s))));
+        _data->_memory.reset_to(memory_resources(calculate_memory_usage(s)));
     }
 
     static_row&& as_static_row() && { return std::move(_data->_static_row); }
