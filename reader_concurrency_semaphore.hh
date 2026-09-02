@@ -324,9 +324,6 @@ private:
     [[nodiscard]] mutation_reader detach_inactive_reader(reader_permit::impl&, evict_reason reason) noexcept;
     void evict(reader_permit::impl&, evict_reason reason) noexcept;
 
-    enum class reason { all_ok = 0, ready_list, need_cpu_permits, memory_resources };
-    reason has_available_units(memory_resources r) const;
-
     bool cpu_concurrency_limit_reached() const;
 
     [[nodiscard]] std::exception_ptr check_queue_size(std::string_view queue_name);
@@ -343,6 +340,7 @@ private:
     // responsibility.
     // A return value of reason::all_ok means the permit can be admitted, any
     // other value is the reason why it cannot be.
+    enum class reason { all_ok = 0, ready_list, need_cpu_permits, memory_resources };
     reason can_admit_read(const reader_permit::impl& permit) const noexcept;
 
     bool should_evict_inactive_read(const reader_permit::impl& permit) const noexcept;
