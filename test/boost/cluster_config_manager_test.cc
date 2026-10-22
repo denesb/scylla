@@ -32,6 +32,8 @@
 #include "replica/database.hh"
 #include "test/lib/cql_test_env.hh"
 #include "test/lib/eventually.hh"
+#include "transport/messages/result_message.hh"
+#include "types/types.hh"
 
 BOOST_AUTO_TEST_SUITE(cluster_config_manager_test)
 
@@ -304,6 +306,131 @@ SEASTAR_TEST_CASE(test_cluster_config_registry_map_value_falls_back_to_key_defau
         BOOST_REQUIRE(db::cluster_config_registry::to_map(*opt, sstring("{not json")).stored().empty());
         BOOST_REQUIRE(db::cluster_config_registry::to_map(*opt, encode({{"from_the_future", "1"}})).stored().empty());
         BOOST_REQUIRE_EQUAL(db::cluster_config_registry::to_map(*opt, encode({{"count", "many"}})).get_integer("count"), 10);
+    });
+}
+
+// A map-valued option is set with the CQL map syntax at every scope, and a map stored at a
+// scope replaces the whole map of broader scopes: the keys it does not set read as their
+// defaults, not as the broader scope's values.
+SEASTAR_TEST_CASE(test_cluster_config_manager_resolves_map_option_as_a_whole) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        auto clear_test_options = inject_map_test_option(e);
+
+        e.execute_cql("CREATE KEYSPACE ks_cfg WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 1}").get();
+        e.execute_cql("CREATE TABLE ks_cfg.tbl (pk int PRIMARY KEY, v int)").get();
+        e.execute_cql("ALTER CLUSTER WITH test_map_option = {'count': '1', 'label': 'cluster'}").get();
+        e.execute_cql("ALTER KEYSPACE ks_cfg WITH test_map_option = {'count': '2', 'flag': 'FALSE'}").get();
+
+        const auto* opt = db::cluster_config_registry::find("test_map_option");
+        BOOST_REQUIRE(opt != nullptr);
+
+        with_config_manager(e, [&] (sharded<db::cluster_config_manager>& mgr) {
+            auto& manager = mgr.local();
+            db::cluster_config_manager::lookup_context ctx;
+            ctx.keyspace_name = "ks_cfg";
+            ctx.table_name = "tbl";
+
+            // Stored in canonical form.
+            BOOST_REQUIRE_EQUAL(manager.resolve_config("test_map_option", ctx).value_or(""), encode({{"count", "2"}, {"flag", "false"}}));
+
+            const auto value = manager.resolve_map_config(*opt, ctx);
+            BOOST_REQUIRE_EQUAL(value.get_integer("count"), 2);
+            BOOST_REQUIRE_EQUAL(value.get_boolean("flag"), false);
+            // Set by the cluster, but the keyspace's map replaces it.
+            BOOST_REQUIRE_EQUAL(value.get_text("label"), "none");
+        });
+
+        e.execute_cql("ALTER TABLE ks_cfg.tbl WITH test_map_option = {}").get();
+
+        with_config_manager(e, [&] (sharded<db::cluster_config_manager>& mgr) {
+            db::cluster_config_manager::lookup_context ctx;
+            ctx.keyspace_name = "ks_cfg";
+            ctx.table_name = "tbl";
+            const auto value = mgr.local().resolve_map_config(*opt, ctx);
+            BOOST_REQUIRE(value.stored().empty());
+            BOOST_REQUIRE_EQUAL(value.get_integer("count"), 10);
+        });
+
+        e.execute_cql("ALTER TABLE ks_cfg.tbl WITH test_map_option = NULL").get();
+        e.execute_cql("ALTER KEYSPACE ks_cfg WITH test_map_option = NULL").get();
+
+        with_config_manager(e, [&] (sharded<db::cluster_config_manager>& mgr) {
+            db::cluster_config_manager::lookup_context ctx;
+            ctx.keyspace_name = "ks_cfg";
+            ctx.table_name = "tbl";
+            const auto value = mgr.local().resolve_map_config(*opt, ctx);
+            BOOST_REQUIRE_EQUAL(value.get_integer("count"), 1);
+            BOOST_REQUIRE_EQUAL(value.get_text("label"), "cluster");
+        });
+    });
+}
+
+// A map-valued option takes only a map literal, and a scalar option never takes one. The
+// keys and values of a map are validated before anything is written.
+SEASTAR_TEST_CASE(test_cluster_config_map_option_rejects_invalid_values) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        auto clear_test_options = inject_map_test_option(e);
+
+        e.execute_cql("CREATE KEYSPACE ks_cfg WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 1}").get();
+        e.execute_cql("CREATE TABLE ks_cfg.tbl (pk int PRIMARY KEY, v int)").get();
+
+        BOOST_REQUIRE_THROW(e.execute_cql("ALTER CLUSTER WITH test_map_option = 'count'").get(), exceptions::syntax_exception);
+        BOOST_REQUIRE_THROW(e.execute_cql("ALTER TABLE ks_cfg.tbl WITH test_map_option = 'count'").get(), exceptions::syntax_exception);
+        BOOST_REQUIRE_THROW(e.execute_cql("ALTER CLUSTER WITH auto_repair_enabled = {'count': '1'}").get(), exceptions::syntax_exception);
+        BOOST_REQUIRE_THROW(e.execute_cql("ALTER TABLE ks_cfg.tbl WITH auto_repair_enabled = {'count': '1'}").get(), exceptions::syntax_exception);
+
+        BOOST_REQUIRE_EXCEPTION(
+            e.execute_cql("ALTER CLUSTER WITH test_map_option = {'unknown': '1'}").get(),
+            exceptions::invalid_request_exception, [] (const exceptions::invalid_request_exception& ex) {
+            return std::string_view(ex.what()).find("Invalid value for cluster config 'test_map_option': unknown key 'unknown'") != std::string_view::npos;
+        });
+        BOOST_REQUIRE_THROW(e.execute_cql("ALTER KEYSPACE ks_cfg WITH test_map_option = {'count': 'many'}").get(), exceptions::configuration_exception);
+        BOOST_REQUIRE_THROW(e.execute_cql("ALTER TABLE ks_cfg.tbl WITH test_map_option = {'flag': 'maybe'}").get(), exceptions::configuration_exception);
+    });
+}
+
+namespace {
+
+std::vector<sstring> describe_create_statements(cql_test_env& e, std::string_view query) {
+    auto msg = e.execute_cql(query).get();
+    auto rows = dynamic_pointer_cast<cql_transport::messages::result_message::rows>(msg);
+    BOOST_REQUIRE(rows);
+    std::vector<sstring> result;
+    for (const auto& row : rows->rs().result_set().rows()) {
+        if (row[3]) {
+            result.push_back(value_cast<sstring>(utf8_type->deserialize(*row[3])));
+        }
+    }
+    return result;
+}
+
+}
+
+// DESCRIBE renders a map-valued option as a CQL map literal, in both tiers, so that its
+// output replays.
+SEASTAR_TEST_CASE(test_cluster_config_describe_renders_map_option_as_map_literal) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        auto clear_test_options = inject_map_test_option(e);
+
+        e.execute_cql("CREATE KEYSPACE ks_cfg WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 1}").get();
+        e.execute_cql("CREATE TABLE ks_cfg.tbl (pk int PRIMARY KEY, v int)").get();
+        e.execute_cql("ALTER KEYSPACE ks_cfg WITH test_map_option = {'label': 'it''s', 'count': '2'}").get();
+        e.execute_cql("ALTER TABLE ks_cfg.tbl WITH test_map_option = {'flag': 'false'}").get();
+
+        const auto plain = describe_create_statements(e, "DESCRIBE TABLE ks_cfg.tbl");
+        BOOST_REQUIRE_EQUAL(plain.size(), 1);
+        BOOST_REQUIRE_MESSAGE(plain[0].find(
+                "\n    AND test_map_option = {'flag': 'false'}  -- from table (table={'flag': 'false'}, keyspace={'count': '2', 'label': 'it''s'}, cluster=NULL)\n;")
+                != sstring::npos, plain[0]);
+
+        const auto internals = describe_create_statements(e, "DESCRIBE TABLE ks_cfg.tbl WITH INTERNALS");
+        BOOST_REQUIRE_EQUAL(internals.size(), 1);
+        BOOST_REQUIRE_MESSAGE(internals[0].find("AND test_map_option = {'flag': 'false'};") != sstring::npos, internals[0]);
+
+        // Replaying the keyspace's description stores the same map.
+        const auto ks_internals = describe_create_statements(e, "DESCRIBE KEYSPACE ks_cfg WITH INTERNALS");
+        BOOST_REQUIRE(!ks_internals.empty());
+        BOOST_REQUIRE_MESSAGE(ks_internals[0].find("AND test_map_option = {'count': '2', 'label': 'it''s'};") != sstring::npos, ks_internals[0]);
     });
 }
 

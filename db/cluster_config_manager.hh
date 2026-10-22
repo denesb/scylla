@@ -44,6 +44,7 @@ class config;
 
 namespace cluster_config_registry {
 struct option;
+class map_value;
 }
 
 class cluster_config_manager : public peering_sharded_service<cluster_config_manager> {
@@ -88,6 +89,7 @@ public:
     int64_t resolve_integer_config(const cluster_config_registry::option& opt, const lookup_context& ctx) const;
     double resolve_floating_point_config(const cluster_config_registry::option& opt, const lookup_context& ctx) const;
     sstring resolve_text_config(const cluster_config_registry::option& opt, const lookup_context& ctx) const;
+    cluster_config_registry::map_value resolve_map_config(const cluster_config_registry::option& opt, const lookup_context& ctx) const;
 
     // A consumer registers a callback to be told the effective value of an option for each
     // target the option resolves for: once initially, and again whenever a refresh pass finds

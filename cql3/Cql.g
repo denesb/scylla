@@ -1098,12 +1098,13 @@ alterClusterStatement returns [std::unique_ptr<cql3::statements::alter_cluster_c
 
 /**
  * A cluster-config option value: the K_NULL token means "remove the stored override"
- * (nullopt), everything else is a value to store. The string literal 'null' is a plain
- * value, not the keyword, which is why this reads propertyValue's is_null_keyword flag
- * instead of comparing the text.
+ * (nullopt), everything else is a value to store, either a plain value or a map literal for
+ * a map-valued option. The string literal 'null' is a plain value, not the keyword, which is
+ * why this reads propertyValue's is_null_keyword flag instead of comparing the text.
  */
-configPropertyValue returns [std::optional<sstring> val]
+configPropertyValue returns [std::optional<cql3::statements::property_definitions::value_type> val]
     : v=propertyValue { if (!v.is_null_keyword) { $val = std::move(v.value); } }
+    | m=mapLiteral { try { $val = convert_extended_property_map(m); } catch (exceptions::syntax_exception e) { add_recognition_error(e.what()); } }
     ;
 
 /**

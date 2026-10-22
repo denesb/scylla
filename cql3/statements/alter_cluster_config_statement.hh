@@ -12,6 +12,7 @@
 
 #include <seastar/core/sstring.hh>
 
+#include "cql3/statements/property_definitions.hh"
 #include "cql3/statements/schema_altering_statement.hh"
 #include "utils/UUID.hh"
 
@@ -23,6 +24,9 @@ namespace statements {
 
 class alter_cluster_config_statement final : public schema_altering_statement {
 public:
+    // A plain value, or a map literal for a map-valued option.
+    using config_value = property_definitions::value_type;
+
     enum class scope {
         cluster,
         datacenter,
@@ -36,16 +40,16 @@ private:
     std::optional<sstring> _rack_name;
     std::optional<utils::UUID> _node_uuid;
     sstring _config_name;
-    std::optional<sstring> _value;
+    std::optional<config_value> _value;
 
 public:
-    alter_cluster_config_statement(scope statement_scope, std::optional<sstring> dc_name, std::optional<sstring> rack_name, std::optional<utils::UUID> node_uuid, sstring config_name, std::optional<sstring> value);
+    alter_cluster_config_statement(scope statement_scope, std::optional<sstring> dc_name, std::optional<sstring> rack_name, std::optional<utils::UUID> node_uuid, sstring config_name, std::optional<config_value> value);
 
-    static std::unique_ptr<alter_cluster_config_statement> for_cluster(sstring config_name, std::optional<sstring> value);
-    static std::unique_ptr<alter_cluster_config_statement> for_datacenter(sstring dc_name, sstring config_name, std::optional<sstring> value);
-    static std::unique_ptr<alter_cluster_config_statement> for_rack(sstring dc_name, sstring rack_name, sstring config_name, std::optional<sstring> value);
+    static std::unique_ptr<alter_cluster_config_statement> for_cluster(sstring config_name, std::optional<config_value> value);
+    static std::unique_ptr<alter_cluster_config_statement> for_datacenter(sstring dc_name, sstring config_name, std::optional<config_value> value);
+    static std::unique_ptr<alter_cluster_config_statement> for_rack(sstring dc_name, sstring rack_name, sstring config_name, std::optional<config_value> value);
     // `node_uuid` is the text of the grammar's UUID token, so it always parses.
-    static std::unique_ptr<alter_cluster_config_statement> for_node(const sstring& node_uuid, sstring config_name, std::optional<sstring> value);
+    static std::unique_ptr<alter_cluster_config_statement> for_node(const sstring& node_uuid, sstring config_name, std::optional<config_value> value);
 
     future<> check_access(query_processor& qp, const service::client_state& state) const override;
     void validate(query_processor& qp, const service::client_state& state) const override;

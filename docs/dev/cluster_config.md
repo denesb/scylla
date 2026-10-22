@@ -246,6 +246,8 @@ Config values are stored and transported as text, regardless of an option's decl
 
 For an option whose value cannot be expressed as a registry type, the option may instead declare a per-option parser and validator.
 
+A `map` option groups several related settings under one name. Instead of a single default, it declares the keys it accepts, each with a scalar type (`text`, `integer`, `floating_point` or `boolean`) and a default of its own; maps do not nest. It is set with the CQL map syntax at every scope (`ALTER CLUSTER WITH some_map_option = {'key': 'value'}`), and a plain value is rejected for it, as a map is for a scalar option. Validation checks that every key is declared, that every value parses as its key's type, and that every value obeys the text rules above, since `DESCRIBE` echoes each value as a quoted literal. The value is stored as text like any other: a JSON object mapping each key to its value as a string, with the keys sorted and the values canonicalized, so equal maps store equal text. `DESCRIBE` renders it back as a CQL map literal. As described in [Management CQL Surface](#management-cql-surface), a map stored at a scope replaces the whole map of broader scopes: consumers read it through `cluster_config_registry::to_map()` (or the manager's `resolve_map_config()`), where a key the effective map does not set reads as the key's registered default.
+
 ### Storage Model
 
 Cluster config uses one logical storage model across all scopes, even though the physical rows live in more than one schema table.

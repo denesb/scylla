@@ -78,6 +78,21 @@ inline bool is_config_property(
     return supported_config_option(s, name, feat) != nullptr;
 }
 
+// The text form of the value assigned to registry option `opt`, the form validate_value()
+// and canonicalize_value() take. A map-valued option must be assigned a map literal and any
+// other option a plain value; the CQL map literal is encoded into the map's stored form.
+inline sstring config_value_text(const db::cluster_config_registry::option& opt, const sstring& name,
+        const property_definitions::value_type& value) {
+    if (opt.type() != db::cluster_config_registry::value_type::map) {
+        return property_definitions::value_as_string(name, value);
+    }
+    const auto* map = std::get_if<property_definitions::extended_map_type>(&value);
+    if (!map) {
+        throw exceptions::syntax_exception(seastar::format("Invalid value for property '{}'. It should be a map", name));
+    }
+    return db::cluster_config_registry::encode_map(property_definitions::to_simple_map(*map));
+}
+
 // Validate every registry-backed property for scope `s`; throws
 // configuration_exception on an out-of-range value. `= NULL` removes the override and so
 // is accepted regardless of the option's value type; the string literal 'null' is an
@@ -94,7 +109,7 @@ inline void validate_config_values(
         if (props.is_null_keyword(name)) {
             continue;
         }
-        const auto raw_value = property_definitions::value_as_string(name, value);
+        const auto raw_value = config_value_text(*opt, name, value);
         if (auto error = db::cluster_config_registry::validate_value(*opt, raw_value)) {
             throw exceptions::configuration_exception(
                     seastar::format("Invalid value for property '{}': {}", name, *error));
@@ -119,7 +134,7 @@ inline std::vector<std::pair<sstring, std::optional<sstring>>> config_updates(
             updates.emplace_back(name, std::nullopt);
             continue;
         }
-        const auto raw_value = property_definitions::value_as_string(name, value);
+        const auto raw_value = config_value_text(*opt, name, value);
         updates.emplace_back(name, db::cluster_config_registry::canonicalize_value(*opt, raw_value));
     }
     return updates;

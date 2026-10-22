@@ -11,6 +11,8 @@
 #include <optional>
 #include <set>
 
+#include <fmt/ranges.h>
+
 #include "cdc/cdc_options.hh"
 #include "cdc/log.hh"
 #include "cql3/column_specification.hh"
@@ -223,11 +225,7 @@ struct config_scope_value {
 // doubled), otherwise replaying the DESCRIBE output fails to parse. The option
 // is guaranteed to be registered here since the value came from the registry
 // scope iteration; default to quoting if it somehow is not.
-sstring format_config_option_value(std::string_view name, const sstring& value) {
-    const auto* opt = db::cluster_config_registry::find(name);
-    if (opt && opt->type() != db::cluster_config_registry::value_type::text) {
-        return value;
-    }
+sstring quote_config_text(std::string_view value) {
     std::string escaped;
     for (char c : value) {
         if (c == '\'') {
@@ -237,6 +235,29 @@ sstring format_config_option_value(std::string_view name, const sstring& value) 
         }
     }
     return format("'{}'", escaped);
+}
+
+// A map-valued option is stored in its own encoding (see cluster_config_registry::encode_map())
+// and rendered as a CQL map literal, with every key and value a quoted string, as the CQL
+// property syntax takes it.
+sstring format_config_option_value(std::string_view name, const sstring& value) {
+    const auto* opt = db::cluster_config_registry::find(name);
+    if (opt && opt->type() == db::cluster_config_registry::value_type::map) {
+        // A stored value that does not decode was not written through CQL; render it as text
+        // rather than fail the whole DESCRIBE.
+        if (const auto map = db::cluster_config_registry::decode_map(value)) {
+            std::vector<sstring> entries;
+            for (const auto& [key, key_value] : *map) {
+                entries.push_back(format("{}: {}", quote_config_text(key), quote_config_text(key_value)));
+            }
+            return fmt::format("{{{}}}", fmt::join(entries, ", "));
+        }
+        return quote_config_text(value);
+    }
+    if (opt && opt->type() != db::cluster_config_registry::value_type::text) {
+        return value;
+    }
+    return quote_config_text(value);
 }
 
 // The provenance of one option: the formatted effective value together with the inline

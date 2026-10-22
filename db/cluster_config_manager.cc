@@ -587,4 +587,8 @@ sstring cluster_config_manager::resolve_text_config(const cluster_config_registr
     return cluster_config_registry::to_text(opt, resolve_config(opt.name, ctx));
 }
 
+cluster_config_registry::map_value cluster_config_manager::resolve_map_config(const cluster_config_registry::option& opt, const lookup_context& ctx) const {
+    return cluster_config_registry::to_map(opt, resolve_config(opt.name, ctx));
+}
+
 }
