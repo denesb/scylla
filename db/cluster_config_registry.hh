@@ -84,6 +84,25 @@ namespace option_name {
 
 inline constexpr std::string_view auto_repair_enabled = "auto_repair_enabled";
 inline constexpr std::string_view auto_repair_threshold_in_seconds = "auto_repair_threshold_in_seconds";
+inline constexpr std::string_view problem_reads_enabled = "problem_reads_enabled";
+inline constexpr std::string_view problem_reads_thresholds = "problem_reads_thresholds";
+inline constexpr std::string_view problem_reads_capacity = "problem_reads_capacity";
+inline constexpr std::string_view problem_reads_sampling = "problem_reads_sampling";
+
+}
+
+// The keys of problem_reads_thresholds, other than the ones named after a symptom
+// (replica::to_string(problem_read_symptom)), one per symptom.
+namespace problem_reads_thresholds_keys {
+
+inline constexpr std::string_view memory_amplification_min_mb = "memory_amplification_min_mb";
+
+}
+
+namespace problem_reads_sampling_keys {
+
+inline constexpr std::string_view sample_period_ms = "sample_period_ms";
+inline constexpr std::string_view ttl_seconds = "ttl_seconds";
 
 }
 

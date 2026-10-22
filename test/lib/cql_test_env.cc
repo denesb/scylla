@@ -51,6 +51,7 @@
 #include "db/config.hh"
 #include "db/batchlog_manager.hh"
 #include "db/cluster_config_manager.hh"
+#include "replica/problem_reads_config.hh"
 #include "schema/schema_builder.hh"
 #include "schema/compression_initializer.hh"
 #include "schema/speculative_retry_initializer.hh"
@@ -174,6 +175,7 @@ private:
     sharded<service::migration_manager> _mm;
     sharded<db::batchlog_manager> _batchlog_manager;
     sharded<db::cluster_config_manager> _cluster_config_manager;
+    sharded<replica::problem_reads_config> _problem_reads_config;
     sharded<gms::gossiper> _gossiper;
     sharded<service::raft_group_registry> _group0_registry;
     sharded<db::system_keyspace> _sys_ks;
@@ -820,6 +822,11 @@ private:
             _cluster_config_manager.start(std::ref(_cluster_config_manager), std::ref(_db), std::ref(_qp)).get();
             auto stop_cluster_config_manager = defer_verbose_shutdown("cluster config manager", [this] {
                 _cluster_config_manager.stop().get();
+            });
+
+            _problem_reads_config.start(std::ref(_db), std::ref(_cluster_config_manager)).get();
+            auto stop_problem_reads_config = defer_verbose_shutdown("problem reads config", [this] {
+                _problem_reads_config.stop().get();
             });
 
             _elc_notif.start().get();

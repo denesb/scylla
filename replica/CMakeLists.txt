@@ -24,6 +24,7 @@ target_sources(replica
     mutation_dump.cc
     schema_describe_helper.cc
     problem_reads.cc
+    problem_reads_config.cc
     querier.cc)
 target_include_directories(replica
   PUBLIC

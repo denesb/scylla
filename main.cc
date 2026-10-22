@@ -60,6 +60,7 @@
 #include "service/qos/service_level_controller.hh"
 #include "streaming/stream_session.hh"
 #include "db/cluster_config_manager.hh"
+#include "replica/problem_reads_config.hh"
 #include "db/system_keyspace.hh"
 #include "db/system_distributed_keyspace.hh"
 #include "db/batchlog_manager.hh"
@@ -2154,6 +2155,12 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
             cluster_config_manager.start(std::ref(cluster_config_manager), std::ref(db), std::ref(qp)).get();
             auto stop_cluster_config_manager = defer_verbose_shutdown("cluster config manager", [] {
                 cluster_config_manager.stop().get();
+            });
+
+            static sharded<replica::problem_reads_config> problem_reads_config;
+            problem_reads_config.start(std::ref(db), std::ref(cluster_config_manager)).get();
+            auto stop_problem_reads_config = defer_verbose_shutdown("problem reads config", [] {
+                problem_reads_config.stop().get();
             });
 
             // making compaction manager api available, after system keyspace has already been established.

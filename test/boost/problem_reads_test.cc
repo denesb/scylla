@@ -290,4 +290,70 @@ SEASTAR_TEST_CASE(test_problem_reads_respects_disabled_symptoms) {
     });
 }
 
+// The problem_reads option sets a table's thresholds, problem_reads_sampling the node's sample
+// list; both are applied live.
+SEASTAR_TEST_CASE(test_problem_reads_cluster_config) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        e.execute_cql("CREATE TABLE ks.tbl (pk int, ck int, v int, PRIMARY KEY (pk, ck))").get();
+
+        auto thresholds = [&] {
+            return e.db().local().find_column_family("ks", "tbl").get_problem_read_thresholds();
+        };
+        BOOST_REQUIRE_EQUAL(thresholds().tombstones, 1000);
+        // The per-symptom switch, regardless of problem_reads_enabled.
+        auto switched_on = [&] (replica::problem_read_symptom symptom) {
+            return thresholds().symptoms[size_t(symptom)];
+        };
+
+        e.execute_cql("ALTER KEYSPACE ks WITH problem_reads_thresholds = {'tombstones': '20', 'slow': '50'} AND problem_reads_enabled = false").get();
+        e.execute_cql("ALTER TABLE ks.tbl WITH problem_reads_thresholds = {'tombstones': '5', 'slow': '0', 'unpaged': 'false'}").get();
+        e.cluster_config_manager().local().refresh().get();
+        BOOST_REQUIRE_EQUAL(thresholds().tombstones, 5);
+        BOOST_REQUIRE(switched_on(replica::problem_read_symptom::tombstones));
+        // A threshold of 0 switches its symptom off; a symptom without a threshold has a switch.
+        BOOST_REQUIRE(!switched_on(replica::problem_read_symptom::slow));
+        BOOST_REQUIRE(!switched_on(replica::problem_read_symptom::unpaged));
+        // The table's map replaces the keyspace's as a whole: keys it does not set take their defaults.
+        BOOST_REQUIRE_EQUAL(thresholds().read_amplification_sstables, 10);
+        // Options are resolved independently: the table inherits the keyspace's problem_reads_enabled.
+        BOOST_REQUIRE(!thresholds().enabled);
+
+        e.execute_cql("ALTER TABLE ks.tbl WITH problem_reads_thresholds = NULL").get();
+        e.cluster_config_manager().local().refresh().get();
+        BOOST_REQUIRE_EQUAL(thresholds().tombstones, 20);
+        BOOST_REQUIRE(thresholds().slow_floor == std::chrono::milliseconds(50));
+        BOOST_REQUIRE(switched_on(replica::problem_read_symptom::slow));
+        BOOST_REQUIRE(switched_on(replica::problem_read_symptom::unpaged));
+
+        BOOST_REQUIRE_THROW(e.execute_cql("ALTER TABLE ks.tbl WITH problem_reads_thresholds = {'no_such_symptom': '1'}").get(), exceptions::configuration_exception);
+
+        e.execute_cql("ALTER KEYSPACE ks WITH problem_reads_thresholds = NULL AND problem_reads_enabled = NULL").get();
+        e.cluster_config_manager().local().refresh().get();
+        BOOST_REQUIRE_EQUAL(thresholds().tombstones, 1000);
+        BOOST_REQUIRE(thresholds().slow_floor == std::chrono::milliseconds(10));
+        BOOST_REQUIRE(thresholds().enabled);
+
+        e.execute_cql("ALTER CLUSTER WITH problem_reads_sampling = {'sample_period_ms': '500', 'ttl_seconds': '0'}").get();
+        e.cluster_config_manager().local().refresh().get();
+        e.db().invoke_on_all([] (replica::database& db) {
+            BOOST_REQUIRE(db.get_problem_reads().get_config().sample_period == std::chrono::milliseconds(500));
+            BOOST_REQUIRE(db.get_problem_reads().get_config().ttl == std::chrono::seconds(0));
+        }).get();
+        e.execute_cql("ALTER CLUSTER WITH problem_reads_sampling = NULL").get();
+
+        e.execute_cql("ALTER CLUSTER WITH problem_reads_capacity = 0").get();
+        e.cluster_config_manager().local().refresh().get();
+        e.db().invoke_on_all([] (replica::database& db) {
+            BOOST_REQUIRE_EQUAL(db.get_problem_reads().get_config().capacity, 0);
+            BOOST_REQUIRE(!db.get_problem_reads().can_sample_any());
+        }).get();
+
+        e.execute_cql("ALTER CLUSTER WITH problem_reads_capacity = NULL").get();
+        e.cluster_config_manager().local().refresh().get();
+        e.db().invoke_on_all([] (replica::database& db) {
+            BOOST_REQUIRE_EQUAL(db.get_problem_reads().get_config().capacity, 32);
+        }).get();
+    });
+}
+
 BOOST_AUTO_TEST_SUITE_END()

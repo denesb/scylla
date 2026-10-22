@@ -51,6 +51,8 @@ static_assert(std::variant_size_v<scalar_value> == size_t(value_type::map));
 constexpr scope_set table_oriented_scopes = scope_set::of<scope::cluster, scope::keyspace, scope::table>();
 // Unused until the first node-oriented option ships.
 [[maybe_unused]] constexpr scope_set node_oriented_scopes = scope_set::of<scope::cluster, scope::datacenter, scope::rack, scope::node>();
+// For an option that configures every node alike, so is set only for the whole cluster.
+constexpr scope_set cluster_scope = scope_set::of<scope::cluster>();
 
 // The scopes that place an option in one domain or the other, i.e. each set without CLUSTER.
 constexpr scope_set table_only_scopes = scope_set::of<scope::keyspace, scope::table>();
@@ -61,6 +63,48 @@ constexpr scope_set node_only_scopes = scope_set::of<scope::datacenter, scope::r
 constexpr bool is_single_domain(scope_set scopes) {
     return !(scopes.intersects(table_only_scopes) && scopes.intersects(node_only_scopes));
 }
+
+constexpr map_key symptom_switch(std::string_view symptom) {
+    return map_key{.name = symptom, .description = "Whether to check reads for this symptom", .default_value = true};
+}
+
+// Keyed by symptom name. A symptom that has a threshold is switched off by a threshold of 0.
+constexpr std::array problem_reads_thresholds_map_keys = {
+    symptom_switch("unpaged_large"),
+    symptom_switch("unpaged"),
+    map_key{.name = "slow",
+            .description = "A read is slow if it took longer than this many milliseconds, or than the table's P99 latency for single-partition reads, whichever is higher",
+            .default_value = int64_t(10)},
+    symptom_switch("timed_out"),
+    map_key{.name = "admission_wait",
+            .description = "A read waited too long for admission if it waited longer than this many milliseconds, or than the table's P50 latency, whichever is higher",
+            .default_value = int64_t(5)},
+    map_key{.name = "tombstones",
+            .description = "A read page read too many tombstones if it read at least this many dead rows and range tombstones, or dead cells",
+            .default_value = int64_t(1000)},
+    symptom_switch("tombstone_limit_page"),
+    map_key{.name = "read_amplification",
+            .description = "A single-partition read is amplified if it read at least this many sstables",
+            .default_value = int64_t(10)},
+    map_key{.name = "memory_peak",
+            .description = "A read used too much memory if it held at least this percentage of the reader concurrency semaphore's memory at once",
+            .default_value = int64_t(10)},
+    map_key{.name = "memory_amplification",
+            .description = "A read's memory use is amplified if it used at least this many times more memory in total than the size of its result",
+            .default_value = int64_t(100)},
+    map_key{.name = problem_reads_thresholds_keys::memory_amplification_min_mb,
+            .description = "A read's memory use is only amplified if it used at least this many megabytes in total",
+            .default_value = int64_t(10)},
+};
+
+constexpr std::array problem_reads_sampling_map_keys = {
+    map_key{.name = problem_reads_sampling_keys::sample_period_ms,
+            .description = "At most one problematic read is sampled per symptom per this period, on each shard",
+            .default_value = int64_t(1000)},
+    map_key{.name = problem_reads_sampling_keys::ttl_seconds,
+            .description = "Problematic read samples older than this are dropped. 0 disables expiry",
+            .default_value = int64_t(3600)},
+};
 
 // The tablet repair scheduler reads auto_repair_enabled and auto_repair_threshold_in_seconds on demand.
 // When no scope stores an override it falls back to the deprecated yaml options
@@ -79,6 +123,31 @@ constexpr std::array registry_options = {
         .scopes = table_oriented_scopes,
         .default_value = auto_repair_threshold_default_seconds,
     },
+    // The problem read options are applied by replica::problem_reads_config.
+    option{
+        .name = option_name::problem_reads_enabled,
+        .description = "Whether to check the reads of the table for problems, counted and sampled into system.problem_reads",
+        .scopes = table_oriented_scopes,
+        .default_value = true,
+    },
+    option{
+        .name = option_name::problem_reads_thresholds,
+        .description = "The symptoms of system.problem_reads to check the reads of the table for: the threshold of each symptom that has one, 0 disabling it, and a switch for each that does not",
+        .scopes = table_oriented_scopes,
+        .default_value = std::span<const map_key>(problem_reads_thresholds_map_keys),
+    },
+    option{
+        .name = option_name::problem_reads_capacity,
+        .description = "The number of problematic read samples kept per shard, in system.problem_reads. 0 turns problem read checks off, counting included",
+        .scopes = cluster_scope,
+        .default_value = int64_t(32),
+    },
+    option{
+        .name = option_name::problem_reads_sampling,
+        .description = "How often problematic reads are sampled into system.problem_reads, and for how long the samples are kept",
+        .scopes = cluster_scope,
+        .default_value = std::span<const map_key>(problem_reads_sampling_map_keys),
+    },
 };
 
 constexpr bool all_registry_options_are_single_domain() {
@@ -89,6 +158,25 @@ constexpr bool all_registry_options_are_single_domain() {
     }
     return true;
 }
+
+constexpr bool all_map_keys_are_unique() {
+    for (const auto& opt : registry_options) {
+        if (opt.type() != value_type::map) {
+            continue;
+        }
+        const auto keys = std::get<std::span<const map_key>>(opt.default_value);
+        for (size_t i = 0; i < keys.size(); ++i) {
+            for (size_t j = i + 1; j < keys.size(); ++j) {
+                if (keys[i].name == keys[j].name) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+static_assert(all_map_keys_are_unique(), "The keys of a map-valued cluster config option must be unique");
 
 static_assert(all_registry_options_are_single_domain(),
         "A cluster config option must not mix table-oriented (KEYSPACE/TABLE) and "
