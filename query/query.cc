@@ -462,3 +462,19 @@ std::optional<query::clustering_range> position_range_to_clustering_range(const 
 
     return query::clustering_range{to_bound(r.start(), true), to_bound(r.end(), false)};
 }
+
+bool query::may_need_paging(const schema& s, const read_command& cmd, std::span<const dht::partition_range> ranges) {
+    if (cmd.get_row_limit() <= 1 || ranges.empty()) {
+        return false;
+    } else if (cmd.partition_limit <= 1
+            || (ranges.size() == 1 && is_single_partition(ranges.front()))) {
+        auto effective_partition_row_limit = cmd.slice.options.contains<partition_slice::option::distinct>() ? 1 : cmd.slice.partition_row_limit();
+
+        auto& cr_ranges = cmd.slice.default_row_ranges();
+        if (effective_partition_row_limit <= 1 || cr_ranges.empty()
+                || (cr_ranges.size() == 1 && is_single_row(s, cr_ranges.front()))) {
+            return false;
+        }
+    }
+    return true;
+}

@@ -454,25 +454,7 @@ lw_shared_ptr<const paging_state> query_pager::state(std::optional<query_plan> p
 bool service::pager::query_pagers::may_need_paging(const schema& s, uint32_t page_size,
         const query::read_command& cmd,
         const dht::partition_range_vector& ranges) {
-
-    // Disabling paging also disables query result size limiter. We can do this safely
-    // only if we know for sure that it wouldn't limit anything i.e. the result will
-    // not contain more than one row.
-    auto need_paging = [&] {
-        if (cmd.get_row_limit() <= 1 || ranges.empty()) {
-            return false;
-        } else if (cmd.partition_limit <= 1
-                || (ranges.size() == 1 && query::is_single_partition(ranges.front()))) {
-            auto effective_partition_row_limit = cmd.slice.options.contains<query::partition_slice::option::distinct>() ? 1 : cmd.slice.partition_row_limit();
-
-            auto& cr_ranges = cmd.slice.default_row_ranges();
-            if (effective_partition_row_limit <= 1 || cr_ranges.empty()
-                    || (cr_ranges.size() == 1 && query::is_single_row(s, cr_ranges.front()))) {
-                return false;
-            }
-        }
-        return true;
-    }();
+    const auto need_paging = query::may_need_paging(s, cmd, ranges);
 
     qlogger.debug("Query of {}, page_size={}, limit={} {}", cmd.cf_id, page_size,
                     cmd.get_row_limit(),

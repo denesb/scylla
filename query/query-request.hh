@@ -11,6 +11,7 @@
 
 #include <memory>
 #include <optional>
+#include <span>
 #include <fmt/ostream.h>
 
 #include "db/functions/function_name.hh"
@@ -503,6 +504,11 @@ public:
 // the legacy reversed format to native reversed format. Shall be called with reversed
 // queries only.
 lw_shared_ptr<query::read_command> reversed(lw_shared_ptr<query::read_command>&& cmd);
+
+// Whether the read may produce more than one row, and so may need paging. Disabling paging
+// also disables the query result size limiter, which is only safe if the result is known
+// to contain at most one row.
+bool may_need_paging(const schema& s, const read_command& cmd, std::span<const dht::partition_range> ranges);
 
 struct mapreduce_request {
     enum class reduction_type {
