@@ -9,6 +9,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -51,11 +52,30 @@ enum class value_type {
     integer,
     floating_point,
     boolean,
+    map,
+};
+
+// A scalar config value in its native type. One alternative per scalar value_type, in the
+// same order as config_value.
+using scalar_value = std::variant<std::string_view, int64_t, double, bool>;
+
+// One key accepted by a map-valued option. Keys are scalar: maps do not nest.
+struct map_key {
+    std::string_view name;
+    std::string_view description;
+    // The value of the key when the effective map does not set it. Its alternative also
+    // defines the key's type.
+    scalar_value default_value;
+
+    constexpr value_type type() const {
+        return static_cast<value_type>(default_value.index());
+    }
 };
 
 // A config value in its native type. One alternative per value_type, in the same order;
-// option::type() is the index of the active alternative.
-using config_value = std::variant<std::string_view, int64_t, double, bool>;
+// option::type() is the index of the active alternative. A map-valued option's "value"
+// here is the set of keys it accepts, each carrying its own default.
+using config_value = std::variant<std::string_view, int64_t, double, bool, std::span<const map_key>>;
 
 // The names of the registered options, for the subsystems that consume them. A consumer
 // looks its option up by one of these rather than by a bare literal, so that the registry
@@ -128,6 +148,43 @@ bool to_boolean(const option& opt, const std::optional<seastar::sstring>& value)
 int64_t to_integer(const option& opt, const std::optional<seastar::sstring>& value);
 double to_floating_point(const option& opt, const std::optional<seastar::sstring>& value);
 seastar::sstring to_text(const option& opt, const std::optional<seastar::sstring>& value);
+
+// The effective value of a map-valued option. A map stored at a scope replaces the whole map
+// of broader scopes, so the keys it does not set are not inherited: they read as the key's
+// registered default.
+class map_value {
+    std::string_view _option_name;
+    // All keys the option declares, with their types and defaults.
+    std::span<const map_key> _keys;
+    // The keys the effective map sets, a subset of _keys; the others read as their default.
+    std::map<seastar::sstring, seastar::sstring, std::less<>> _stored;
+
+public:
+    map_value(const option& opt, std::map<seastar::sstring, seastar::sstring, std::less<>> stored);
+
+    // Like the option-level to_* converters, but for one key of the map. Reading a key that
+    // the option does not declare, or through the wrong type, is an internal error. A stored
+    // value that does not parse is logged and treated as absent.
+    bool get_boolean(std::string_view key) const;
+    int64_t get_integer(std::string_view key) const;
+    double get_floating_point(std::string_view key) const;
+    seastar::sstring get_text(std::string_view key) const;
+
+    // The keys explicitly set by the effective map, in their canonical stored form.
+    const std::map<seastar::sstring, seastar::sstring, std::less<>>& stored() const {
+        return _stored;
+    }
+};
+
+map_value to_map(const option& opt, const std::optional<seastar::sstring>& value);
+
+// A map-valued option is stored as text, like every other option: a JSON object mapping each
+// key to its value as a string, with the keys sorted. These convert between that text and a
+// map of key to value. encode_map() does no validation: the resulting text goes through
+// validate_value() and canonicalize_value() like a scalar value does. decode_map() returns
+// nullopt when the text is not such an object.
+seastar::sstring encode_map(const std::map<seastar::sstring, seastar::sstring>& map);
+std::optional<std::map<seastar::sstring, seastar::sstring>> decode_map(std::string_view text);
 
 // Returns the canonical text to persist for a value that has already passed
 // validate_value(). CQL literals are case-preserving but case-insensitive (the BOOLEAN

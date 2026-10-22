@@ -24,6 +24,7 @@
 #include <seastar/core/thread.hh>
 
 #include "gms/feature_service.hh"
+#include "utils/rjson.hh"
 #include "types/types.hh"
 #include "utils/chunked_string.hh"
 #include "utils/log.hh"
@@ -40,7 +41,10 @@ static_assert(std::is_same_v<std::variant_alternative_t<size_t(value_type::text)
 static_assert(std::is_same_v<std::variant_alternative_t<size_t(value_type::integer), config_value>, int64_t>);
 static_assert(std::is_same_v<std::variant_alternative_t<size_t(value_type::floating_point), config_value>, double>);
 static_assert(std::is_same_v<std::variant_alternative_t<size_t(value_type::boolean), config_value>, bool>);
-static_assert(std::variant_size_v<config_value> == 4);
+static_assert(std::is_same_v<std::variant_alternative_t<size_t(value_type::map), config_value>, std::span<const map_key>>);
+static_assert(std::variant_size_v<config_value> == 5);
+// map_key::type() indexes the scalar alternatives, which are config_value's leading ones.
+static_assert(std::variant_size_v<scalar_value> == size_t(value_type::map));
 
 // The two resolution domains. CLUSTER is the shared last step of both chains, so it belongs
 // to both sets; an option that wants only part of a chain spells its scopes out.
@@ -265,8 +269,10 @@ bool is_supported(const option& opt, const gms::feature_service& features) {
     return feature && *feature;
 }
 
-std::optional<seastar::sstring> validate_value(const option& opt, std::string_view value) {
-    switch (opt.type()) {
+namespace {
+
+std::optional<seastar::sstring> validate_scalar(value_type type, std::string_view value) {
+    switch (type) {
     case value_type::text:
         return validate_text(value);
     case value_type::integer:
@@ -275,9 +281,51 @@ std::optional<seastar::sstring> validate_value(const option& opt, std::string_vi
         return validate_floating_point(value);
     case value_type::boolean:
         return validate_boolean(value);
+    case value_type::map:
+        utils::on_internal_error("validate_scalar() called for a map-valued type");
     }
 
     __builtin_unreachable();
+}
+
+const map_key* find_map_key(std::span<const map_key> keys, std::string_view name) {
+    auto it = std::ranges::find(keys, name, &map_key::name);
+    return it == keys.end() ? nullptr : &*it;
+}
+
+// Every value of a map is echoed by DESCRIBE as a quoted CQL literal, so each one is held to
+// the text rules on top of its key's own type. The whole map is held to the text length cap.
+std::optional<seastar::sstring> validate_map(const option& opt, std::string_view value) {
+    if (value.size() > max_text_value_length) {
+        return fmt::format("must not exceed {} bytes", max_text_value_length);
+    }
+    const auto map = decode_map(value);
+    if (!map) {
+        return seastar::sstring("expected a map of text keys to text values");
+    }
+    const auto keys = std::get<std::span<const map_key>>(opt.default_value);
+    for (const auto& [name, key_value] : *map) {
+        const auto* key = find_map_key(keys, name);
+        if (!key) {
+            return fmt::format("unknown key '{}'", name);
+        }
+        if (auto error = validate_text(key_value)) {
+            return fmt::format("key '{}': {}", name, *error);
+        }
+        if (auto error = validate_scalar(key->type(), key_value)) {
+            return fmt::format("key '{}': {}", name, *error);
+        }
+    }
+    return std::nullopt;
+}
+
+}
+
+std::optional<seastar::sstring> validate_value(const option& opt, std::string_view value) {
+    if (opt.type() == value_type::map) {
+        return validate_map(opt, value);
+    }
+    return validate_scalar(opt.type(), value);
 }
 
 bool to_boolean(const option& opt, const std::optional<seastar::sstring>& value) {
@@ -303,8 +351,121 @@ seastar::sstring to_text(const option& opt, const std::optional<seastar::sstring
     return value ? *value : seastar::sstring(std::get<std::string_view>(opt.default_value));
 }
 
-seastar::sstring canonicalize_value(const option& opt, std::string_view value) {
-    switch (opt.type()) {
+map_value::map_value(const option& opt, std::map<seastar::sstring, seastar::sstring, std::less<>> stored)
+    : _option_name(opt.name)
+    , _keys(std::get<std::span<const map_key>>(opt.default_value))
+    , _stored(std::move(stored)) {
+}
+
+namespace {
+
+// The key `key_name` of a map_value, checked to be declared by the option and read through
+// the accessor of its type.
+const map_key& checked_map_key(std::string_view option_name, std::span<const map_key> keys,
+        std::string_view key_name, value_type expected_type, std::string_view type_name) {
+    const auto* key = find_map_key(keys, key_name);
+    if (!key) {
+        utils::on_internal_error(fmt::format("cluster config '{}' has no key '{}'", option_name, key_name));
+    }
+    if (key->type() != expected_type) {
+        utils::on_internal_error(fmt::format(
+                "key '{}' of cluster config '{}' read through the {} accessor but registered with a different type",
+                key_name, option_name, type_name));
+    }
+    return *key;
+}
+
+// The map counterpart of to_native(): reads one key of a map_value in its native type.
+template <typename T>
+T map_key_to_native(std::string_view option_name, std::span<const map_key> keys,
+        const std::map<seastar::sstring, seastar::sstring, std::less<>>& stored,
+        std::string_view key_name, value_type expected_type, std::string_view type_name,
+        T (*parse)(std::string_view)) {
+    const auto& key = checked_map_key(option_name, keys, key_name, expected_type, type_name);
+    const auto it = stored.find(key_name);
+    if (it == stored.end()) {
+        return std::get<T>(key.default_value);
+    }
+    try {
+        return parse(it->second);
+    } catch (const marshal_exception& e) {
+        cluster_config_registry_logger.warn(
+                "Ignoring unparsable stored value '{}' for key '{}' of {} config '{}', using default: {}",
+                it->second, key_name, type_name, option_name, e.what());
+        return std::get<T>(key.default_value);
+    }
+}
+
+}
+
+bool map_value::get_boolean(std::string_view key) const {
+    return map_key_to_native<bool>(_option_name, _keys, _stored, key, value_type::boolean, "boolean", parse_boolean);
+}
+
+int64_t map_value::get_integer(std::string_view key) const {
+    return map_key_to_native<int64_t>(_option_name, _keys, _stored, key, value_type::integer, "integer", parse_integer);
+}
+
+double map_value::get_floating_point(std::string_view key) const {
+    return map_key_to_native<double>(_option_name, _keys, _stored, key, value_type::floating_point, "floating-point", parse_floating_point);
+}
+
+seastar::sstring map_value::get_text(std::string_view key) const {
+    // Not routed through map_key_to_native(), for the same reasons as to_text().
+    const auto& k = checked_map_key(_option_name, _keys, key, value_type::text, "text");
+    const auto it = _stored.find(key);
+    return it == _stored.end() ? seastar::sstring(std::get<std::string_view>(k.default_value)) : it->second;
+}
+
+map_value to_map(const option& opt, const std::optional<seastar::sstring>& value) {
+    if (opt.type() != value_type::map) {
+        utils::on_internal_error(fmt::format(
+                "cluster config '{}' read through the map accessor but registered with a different type",
+                opt.name));
+    }
+    std::map<seastar::sstring, seastar::sstring, std::less<>> stored;
+    if (value) {
+        if (auto map = decode_map(*value)) {
+            const auto keys = std::get<std::span<const map_key>>(opt.default_value);
+            for (auto& [name, key_value] : *map) {
+                // A key this node does not know was written by a newer node; it has no
+                // meaning here.
+                if (find_map_key(keys, name)) {
+                    stored.emplace(name, std::move(key_value));
+                }
+            }
+        } else {
+            cluster_config_registry_logger.warn(
+                    "Ignoring unparsable stored value '{}' for map config '{}', using defaults", *value, opt.name);
+        }
+    }
+    return map_value(opt, std::move(stored));
+}
+
+seastar::sstring encode_map(const std::map<seastar::sstring, seastar::sstring>& map) {
+    return seastar::sstring(rjson::print(rjson::from_string_map(map)));
+}
+
+std::optional<std::map<seastar::sstring, seastar::sstring>> decode_map(std::string_view text) {
+    auto root = rjson::try_parse(text);
+    if (!root || !root->IsObject()) {
+        return std::nullopt;
+    }
+    std::map<seastar::sstring, seastar::sstring> map;
+    for (auto it = root->MemberBegin(); it != root->MemberEnd(); ++it) {
+        if (!it->value.IsString()) {
+            return std::nullopt;
+        }
+        map.emplace(seastar::sstring(rjson::to_string_view(it->name)), seastar::sstring(rjson::to_string_view(it->value)));
+    }
+    return map;
+}
+
+namespace {
+
+// `name` names the option, or the option and key, for the internal error.
+seastar::sstring canonicalize_scalar(value_type type, std::string_view name, std::string_view value) {
+    switch (type) {
     case value_type::text:
     case value_type::integer:
     case value_type::floating_point:
@@ -316,11 +477,39 @@ seastar::sstring canonicalize_value(const option& opt, std::string_view value) {
         } catch (const marshal_exception& e) {
             utils::on_internal_error(fmt::format(
                     "canonicalize_value() called for boolean config '{}' with a value that did not pass validation: '{}': {}",
-                    opt.name, value, e.what()));
+                    name, value, e.what()));
         }
+    case value_type::map:
+        utils::on_internal_error("canonicalize_scalar() called for a map-valued type");
     }
 
     __builtin_unreachable();
+}
+
+}
+
+seastar::sstring canonicalize_value(const option& opt, std::string_view value) {
+    if (opt.type() != value_type::map) {
+        return canonicalize_scalar(opt.type(), opt.name, value);
+    }
+    // Only reached after validate_value() accepted the input, so the decode cannot fail and
+    // every key is known.
+    auto map = decode_map(value);
+    if (!map) {
+        utils::on_internal_error(fmt::format(
+                "canonicalize_value() called for map config '{}' with a value that did not pass validation: '{}'",
+                opt.name, value));
+    }
+    const auto keys = std::get<std::span<const map_key>>(opt.default_value);
+    for (auto& [name, key_value] : *map) {
+        const auto* key = find_map_key(keys, name);
+        if (!key) {
+            utils::on_internal_error(fmt::format(
+                    "canonicalize_value() called for map config '{}' with unknown key '{}'", opt.name, name));
+        }
+        key_value = canonicalize_scalar(key->type(), fmt::format("{}.{}", opt.name, name), key_value);
+    }
+    return encode_map(*map);
 }
 
 namespace {

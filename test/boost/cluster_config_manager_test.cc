@@ -8,8 +8,11 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <array>
+#include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <tuple>
 #include <variant>
 #include <vector>
@@ -203,6 +206,105 @@ auto inject_text_test_option(cql_test_env& e) {
     });
 }
 
+// No shipped option is map-valued yet either, so the map-value tests inject one.
+constexpr std::array test_map_option_keys = {
+    db::cluster_config_registry::map_key{.name = "flag", .default_value = true},
+    db::cluster_config_registry::map_key{.name = "count", .default_value = int64_t(10)},
+    db::cluster_config_registry::map_key{.name = "ratio", .default_value = 0.5},
+    db::cluster_config_registry::map_key{.name = "label", .default_value = std::string_view("none")},
+};
+
+auto inject_map_test_option(cql_test_env& e) {
+    db::cluster_config_registry::add_test_only_option_on_all_shards(e.get_feature_service(), db::cluster_config_registry::option{
+        .name = "test_map_option",
+        .scopes = db::cluster_config_registry::scope_set::of<
+                db::cluster_config_registry::scope::cluster,
+                db::cluster_config_registry::scope::keyspace,
+                db::cluster_config_registry::scope::table>(),
+        .default_value = std::span<const db::cluster_config_registry::map_key>(test_map_option_keys),
+    }).get();
+    return seastar::defer([] noexcept {
+        db::cluster_config_registry::clear_test_only_options_on_all_shards().get();
+    });
+}
+
+sstring encode(std::map<sstring, sstring> map) {
+    return db::cluster_config_registry::encode_map(map);
+}
+
+}
+
+// A map value is validated key by key: every key must be declared by the option, and every
+// value must parse as its key's type and obey the text rules, since DESCRIBE echoes each
+// value as a quoted literal.
+SEASTAR_TEST_CASE(test_cluster_config_registry_validates_map_value) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        auto clear_test_options = inject_map_test_option(e);
+
+        const auto* opt = db::cluster_config_registry::find("test_map_option");
+        BOOST_REQUIRE(opt != nullptr);
+        BOOST_REQUIRE(opt->type() == db::cluster_config_registry::value_type::map);
+
+        using db::cluster_config_registry::validate_value;
+        BOOST_REQUIRE(!validate_value(*opt, encode({})));
+        BOOST_REQUIRE(!validate_value(*opt, encode({{"flag", "false"}, {"count", "3"}, {"ratio", "1.5"}, {"label", "x"}})));
+        BOOST_REQUIRE(validate_value(*opt, encode({{"unknown", "1"}})));
+        BOOST_REQUIRE(validate_value(*opt, encode({{"count", "many"}})));
+        BOOST_REQUIRE(validate_value(*opt, encode({{"flag", "maybe"}})));
+        BOOST_REQUIRE(validate_value(*opt, encode({{"label", "two\nlines"}})));
+        BOOST_REQUIRE(validate_value(*opt, encode({{"label", "ends */ here"}})));
+        BOOST_REQUIRE(validate_value(*opt, encode({{"label", std::string(4096, 'a')}})));
+        // Not an object of strings.
+        BOOST_REQUIRE(validate_value(*opt, "true"));
+        BOOST_REQUIRE(validate_value(*opt, "{\"count\": 3}"));
+        BOOST_REQUIRE(validate_value(*opt, "{not json"));
+    });
+}
+
+// The stored form of a map is canonical: each value is canonicalized for its key's type, and
+// the keys are sorted, so equal maps always store equal text.
+SEASTAR_TEST_CASE(test_cluster_config_registry_canonicalizes_map_value) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        auto clear_test_options = inject_map_test_option(e);
+
+        const auto* opt = db::cluster_config_registry::find("test_map_option");
+        BOOST_REQUIRE(opt != nullptr);
+
+        const auto canonical = db::cluster_config_registry::canonicalize_value(*opt, "{\"label\": \"x\", \"flag\": \"TRUE\"}");
+        BOOST_REQUIRE_EQUAL(canonical, encode({{"flag", "true"}, {"label", "x"}}));
+        BOOST_REQUIRE_EQUAL(db::cluster_config_registry::canonicalize_value(*opt, canonical), canonical);
+    });
+}
+
+// A key the effective map does not set reads as the key's registered default; it is not
+// looked up anywhere else.
+SEASTAR_TEST_CASE(test_cluster_config_registry_map_value_falls_back_to_key_defaults) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        auto clear_test_options = inject_map_test_option(e);
+
+        const auto* opt = db::cluster_config_registry::find("test_map_option");
+        BOOST_REQUIRE(opt != nullptr);
+
+        const auto defaults = db::cluster_config_registry::to_map(*opt, std::nullopt);
+        BOOST_REQUIRE(defaults.stored().empty());
+        BOOST_REQUIRE_EQUAL(defaults.get_boolean("flag"), true);
+        BOOST_REQUIRE_EQUAL(defaults.get_integer("count"), 10);
+        BOOST_REQUIRE_EQUAL(defaults.get_floating_point("ratio"), 0.5);
+        BOOST_REQUIRE_EQUAL(defaults.get_text("label"), "none");
+
+        const auto partial = db::cluster_config_registry::to_map(*opt, encode({{"count", "3"}, {"label", "x"}}));
+        BOOST_REQUIRE_EQUAL(partial.stored().size(), 2);
+        BOOST_REQUIRE_EQUAL(partial.get_boolean("flag"), true);
+        BOOST_REQUIRE_EQUAL(partial.get_integer("count"), 3);
+        BOOST_REQUIRE_EQUAL(partial.get_floating_point("ratio"), 0.5);
+        BOOST_REQUIRE_EQUAL(partial.get_text("label"), "x");
+
+        // A corrupt row degrades to the defaults; a key this node does not know (written by a
+        // newer node) is ignored; a value that does not parse reads as the key's default.
+        BOOST_REQUIRE(db::cluster_config_registry::to_map(*opt, sstring("{not json")).stored().empty());
+        BOOST_REQUIRE(db::cluster_config_registry::to_map(*opt, encode({{"from_the_future", "1"}})).stored().empty());
+        BOOST_REQUIRE_EQUAL(db::cluster_config_registry::to_map(*opt, encode({{"count", "many"}})).get_integer("count"), 10);
+    });
 }
 
 // DESCRIBE echoes every effective value back both as a property right-hand side and inside
