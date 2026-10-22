@@ -23,6 +23,7 @@ target_sources(replica
     multishard_query.cc
     mutation_dump.cc
     schema_describe_helper.cc
+    problem_reads.cc
     querier.cc)
 target_include_directories(replica
   PUBLIC
