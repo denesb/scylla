@@ -35,6 +35,8 @@
 #include "dht/i_partitioner.hh"
 #include "replica/database.hh"
 #include <seastar/core/sleep.hh>
+#include <seastar/core/thread.hh>
+#include <seastar/core/with_scheduling_group.hh>
 #include <seastar/core/sharded.hh>
 #include <seastar/core/loop.hh>
 #include <ranges>
@@ -665,7 +667,11 @@ int scylla_simple_query_main(int argc, char** argv) {
             audit::audit::audit_instance().invoke_on_all([] (audit::audit& a) {
                 a.on_role_created("tester");
             }).get();
-            auto results = do_cql_test(env, cfg);
+            // Run the operations as the CQL server runs user requests: in the statement scheduling
+            // group. In the main group the replica would treat them as internal requests.
+            auto results = with_scheduling_group(get_scheduling_groups().get().statement_scheduling_group, [&] {
+                return seastar::async([&] { return do_cql_test(env, cfg); });
+            }).get();
             std::vector<perf_result> throughput_results(results.begin(), results.end());
             aggregated_perf_results agg(throughput_results);
             std::cout << agg << std::endl;
