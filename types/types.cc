@@ -4167,8 +4167,9 @@ sstring data_value::to_parsable_string() const {
         || type_kind == abstract_type::kind::date
         || type_kind == abstract_type::kind::timestamp
     ) {
-        // Put quotes on types that require it
-        return fmt::format("'{}'", *this);
+        // Put quotes on types that require it, doubling the quotes inside, as CQL string
+        // literals escape them.
+        return cql3::util::single_quote(fmt::format("{}", *this));
     }
 
     // For simple types the default operator<< should work ok

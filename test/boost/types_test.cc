@@ -73,6 +73,15 @@ BOOST_AUTO_TEST_CASE(test_null_data_value_to_parsable_string) {
     BOOST_REQUIRE_EQUAL(null_map.to_parsable_string(), "null");
 }
 
+// The result of to_parsable_string() must parse back as a CQL literal, so quotes inside a
+// quoted value are doubled.
+BOOST_AUTO_TEST_CASE(test_data_value_to_parsable_string_escapes_quotes) {
+    BOOST_REQUIRE_EQUAL(data_value(sstring("abc")).to_parsable_string(), "'abc'");
+    BOOST_REQUIRE_EQUAL(data_value(sstring("it's")).to_parsable_string(), "'it''s'");
+    BOOST_REQUIRE_EQUAL(data_value(int32_t(42)).to_parsable_string(), "42");
+    BOOST_REQUIRE_EQUAL(make_list_value(list_type_impl::get_instance(utf8_type, false), {data_value(sstring("a'b"))}).to_parsable_string(), "['a''b']");
+}
+
 BOOST_AUTO_TEST_CASE(test_bytes_type_string_conversions) {
     BOOST_REQUIRE(bytes_type->equal(bytes_type->from_string("616263646566"), bytes_type->decompose(data_value(bytes{"abcdef"}))));
 }
