@@ -1003,6 +1003,132 @@ CREATE TABLE system.peers (
 
 ---
 
+## system.problem_reads
+
+Virtual table with samples of reads that exhibited a known problem ("symptom") on this node's replicas: unpaged reads, slow reads, reads hitting many tombstones and so on. It answers "which tables and service levels have which read problems?", with a concrete example read for each.
+
+Its clustering rows hold samples, not statistics; per-table counters of the symptoms are in its static columns (see below). Each shard keeps a small, fixed number of samples, keyed by (table, symptom, service level): a new occurrence replaces the previous sample of its key, and the least recently updated sample is evicted when the list is full. At most one read is sampled per symptom per sample period, on each shard, so most occurrences of a symptom are not recorded. Samples expire after a TTL. Only user reads of user tables are sampled.
+
+The symptoms:
+- `unpaged_large`: unpaged read whose result exceeded the unpaged-query soft memory limit, or that failed on the hard limit (`failure = 'unpaged_hard_limit'`).
+- `unpaged`: any other unpaged read, except single-row reads, which the coordinator deliberately sends unpaged.
+- `slow`: single-partition read that took longer than the table's P99 latency or a floor, whichever is higher; range scans and mutation reads are compared to the floor only.
+- `timed_out`: read that timed out after admission. Reads that time out while queued are not sampled.
+- `admission_wait`: read that waited in the admission queue for longer than the table's P50 latency or a floor, whichever is higher. The queue columns describe the semaphore when the read was queued, which is what caused the wait; the sampled read is typically the victim, not the cause.
+- `tombstones`: read page that read at least the threshold number of dead rows and range tombstones, or of dead cells.
+- `tombstone_limit_page`: read page that was cut short by the tombstone limit.
+- `read_amplification`: single-partition read that read many sstables.
+- `memory_peak`: read that held a large fraction of the reader concurrency semaphore's memory at once.
+- `memory_amplification`: read that used much more memory in total than the size of its result.
+
+Reads are checked per replica page, so a single CQL query can produce samples on several replicas and pages. Range scans are covered on tablet tables only.
+
+Setting the capacity to 0 turns off the whole feature, counting included. Sampling is configured through cluster config. Per table, keyspace or cluster:
+- `problem_reads_enabled`: whether to check a table's reads;
+- `problem_reads_thresholds`: a map with a key per symptom. For `slow` and `admission_wait` the key is the floor in milliseconds, for `tombstones` the number of dead rows and range tombstones or dead cells, for `read_amplification` the number of sstables, for `memory_peak` the percentage of the semaphore's memory, for `memory_amplification` the ratio of memory used to result size (with `memory_amplification_min_mb` as the minimum memory used); a threshold of 0 disables the symptom. The other symptoms (`unpaged_large`, `unpaged`, `timed_out`, `tombstone_limit_page`) are switched by a boolean.
+
+Per cluster:
+- `problem_reads_capacity`: the number of samples kept per shard;
+- `problem_reads_sampling`: a map of `sample_period_ms` (at most one sample per symptom per period) and `ttl_seconds` (0 disables expiry).
+
+A map set at a scope replaces the whole map of broader scopes: the keys it does not set take their defaults. For example:
+
+```cql
+ALTER TABLE ks.t WITH problem_reads_thresholds = {'tombstones': '100', 'slow': '0'};
+ALTER CLUSTER WITH problem_reads_capacity = 64 AND problem_reads_sampling = {'sample_period_ms': '500', 'ttl_seconds': '7200'};
+```
+
+Schema:
+```cql
+CREATE TYPE system.range_bound (
+    value frozen<list<text>>,
+    token bigint,
+    inclusive boolean
+);
+
+CREATE TABLE system.problem_reads (
+    keyspace_name text,
+    table_name text,
+    shard int,
+    symptom text,
+    service_level text,
+    reads bigint static,
+    symptom_counts frozen<map<text, bigint>> static,
+    counted_since timestamp static,
+    sampled_at timestamp,
+    read_kind text,
+    paged boolean,
+    query_uuid uuid,
+    is_first_page boolean,
+    partition_ranges frozen<list<frozen<tuple<frozen<range_bound>, frozen<range_bound>>>>>,
+    partition_range_count bigint,
+    clustering_ranges frozen<list<frozen<tuple<frozen<range_bound>, frozen<range_bound>>>>>,
+    clustering_range_count bigint,
+    columns frozen<list<text>>,
+    slice_options frozen<set<text>>,
+    row_limit bigint,
+    partition_limit bigint,
+    per_partition_limit bigint,
+    failure text,
+    tombstone_limit_reached boolean,
+    latency_us bigint,
+    queue_wait_us bigint,
+    timeout_us bigint,
+    table_p50_latency_us bigint,
+    table_p99_latency_us bigint,
+    queue_reason text,
+    queue_length_at_enqueue bigint,
+    active_reads_at_enqueue bigint,
+    memory_used_at_enqueue bigint,
+    result_partitions bigint,
+    result_rows bigint,
+    result_bytes bigint,
+    live_partitions bigint,
+    dead_partitions bigint,
+    live_rows bigint,
+    dead_rows bigint,
+    range_tombstones bigint,
+    live_cells bigint,
+    dead_cells bigint,
+    sstables_read bigint,
+    memory_peak_bytes bigint,
+    memory_total_bytes bigint,
+    threshold bigint,
+    threshold_unit text,
+    PRIMARY KEY ((keyspace_name, table_name), shard, symptom, service_level)
+);
+```
+
+**Static columns**, per table, summed over the shards. These are statistics, unlike the samples: they count every occurrence.
+- `reads`: the number of read pages of the table checked against the symptoms
+- `symptom_counts`: the number of those pages that exhibited each symptom
+- `counted_since`: since when; the node's start, or when the table was loaded on the node
+
+The counters only grow: diff two snapshots for rates. A table with counters but no current samples appears as a row with only the static columns set.
+
+**Columns** of the samples (a detail the read did not produce is null):
+- `shard`, `symptom`, `service_level`: the shard the read ran on, the symptom, and the service level the read ran under
+- `sampled_at`: when the sample was taken
+- `read_kind`: `data`, `digest` or `mutation`
+- `paged`, `query_uuid`, `is_first_page`: paging of the read
+- `partition_ranges`, `clustering_ranges`: the ranges read, at most 16 of each; `partition_range_count` and `clustering_range_count` are the total counts. A bound's `value` holds the key components, each as a CQL literal (e.g. `'abc'` for a text component, `42` for an int one), so they can be pasted into a query. A partition range bound has the partition key components as `value` (null for a bound with a token only) and its `token`; a clustering range bound has the components of the clustering prefix as `value` and a null `token`. A null bound is unbounded
+- `columns`, `slice_options`, `row_limit`, `partition_limit`, `per_partition_limit`: the rest of the read command
+- `failure`: `timeout` or `unpaged_hard_limit` if the read failed
+- `tombstone_limit_reached`: whether the page was cut short by the tombstone limit
+- `latency_us`, `queue_wait_us`, `timeout_us`: the time the read took, waited for admission, and had before timing out
+- `table_p50_latency_us`, `table_p99_latency_us`: the table's read latency percentiles on the shard when the sample was taken
+- `queue_reason`, `queue_length_at_enqueue`, `active_reads_at_enqueue`, `memory_used_at_enqueue`: why the read was queued for admission, and the semaphore's state when it was queued
+- `result_partitions`, `result_rows`, `result_bytes`: the size of the page's result
+- `live_partitions` ... `dead_cells`: the live and dead data the page read
+- `sstables_read`, `memory_peak_bytes`, `memory_total_bytes`: resources the page used
+- `threshold`, `threshold_unit`: the threshold the read was compared to, as applied, and its unit (`us`, `tombstones`, `sstables`, `bytes` or `ratio`)
+
+The table comment, shown by `DESCRIBE TABLE system.problem_reads`, summarizes the above, so the table can be understood without these docs.
+
+Implemented by `problem_reads_table` in `db/virtual_tables.cc`, samples are collected by `replica::problem_reads`.
+
+---
+
 ## system.protocol_servers
 
 Virtual table listing all client-facing data-plane protocol servers and their listen addresses. Equivalent of `nodetool statusbinary` plus the "Native Transport active" fields from `nodetool info`.
