@@ -175,6 +175,11 @@ private:
     uint64_t _sstables_read = 0;
     size_t _requested_memory = 0;
     uint64_t _oom_kills = 0;
+    reader_permit::read_stats _read_stats;
+    db::timeout_clock::time_point _page_started_at;
+    uint64_t _peak_memory = 0;
+    db::timeout_clock::time_point _enqueued_at;
+    std::optional<reader_permit::wait_stats> _wait_stats;
     reader_permit::state _state = reader_permit::state::active;
     bool _base_resources_consumed = false;
     bool _marked_as_need_cpu = false;
@@ -376,8 +381,22 @@ public:
         on_permit_inactive(reader_permit::state::waiting_for_execution);
     }
 
+    void on_queued_for_admission(reader_permit::wait_reason reason, uint64_t queue_length, int64_t active_count, int64_t memory_used) noexcept {
+        _enqueued_at = db::timeout_clock::now();
+        _wait_stats = reader_permit::wait_stats{
+            .wait = {},
+            .reason = reason,
+            .queue_length = queue_length,
+            .active_count = active_count,
+            .memory_used = memory_used,
+        };
+    }
+
     void on_admission() {
         SCYLLA_ASSERT(_state != reader_permit::state::active_await);
+        if (_state == reader_permit::state::waiting_for_admission && _wait_stats) {
+            _wait_stats->wait = db::timeout_clock::now() - _enqueued_at;
+        }
         on_permit_active();
 
         if (_base_resources_consumed) {
@@ -432,6 +451,8 @@ public:
     void consume(reader_resources res) {
         _semaphore.consume(*this, res);
         _resources += res;
+        _read_stats.memory_consumed += res.memory;
+        _peak_memory = std::max(_peak_memory, uint64_t(_resources.memory));
     }
 
     void signal(reader_resources res) {
@@ -568,6 +589,7 @@ public:
             ++_semaphore._stats.disk_reads;
         }
         ++_sstables_read;
+        ++_read_stats.sstables_read;
         ++_semaphore._stats.sstables_read;
     }
 
@@ -581,6 +603,41 @@ public:
 
     bool on_oom_kill() noexcept {
         return !bool(_oom_kills++);
+    }
+
+    const reader_permit::read_stats& get_read_stats() const noexcept {
+        return _read_stats;
+    }
+
+    uint64_t peak_memory() const noexcept {
+        return _peak_memory;
+    }
+
+    void reset_peak_memory() noexcept {
+        _peak_memory = std::max(_resources.memory, ssize_t(0));
+    }
+
+    void start_page() noexcept {
+        _page_started_at = db::timeout_clock::now();
+        _read_stats = {};
+        reset_peak_memory();
+    }
+
+    db::timeout_clock::time_point page_started_at() const noexcept {
+        return _page_started_at;
+    }
+
+    // Only complete once the permit is admitted.
+    // Zero if the permit was not queued for admission, or is still waiting.
+    db::timeout_clock::duration queue_wait() const noexcept {
+        return _wait_stats && _state != reader_permit::state::waiting_for_admission ? _wait_stats->wait : db::timeout_clock::duration{};
+    }
+
+    std::optional<reader_permit::wait_stats> get_wait_stats() const noexcept {
+        if (_state == reader_permit::state::waiting_for_admission) {
+            return std::nullopt;
+        }
+        return _wait_stats;
     }
 };
 
@@ -716,6 +773,40 @@ void reader_permit::on_start_sstable_read() noexcept {
 
 void reader_permit::on_finish_sstable_read() noexcept {
     _impl->on_finish_sstable_read();
+}
+
+reader_permit::read_stats reader_permit::get_read_stats() const noexcept {
+    return _impl->get_read_stats();
+}
+
+uint64_t reader_permit::peak_memory() const noexcept {
+    return _impl->peak_memory();
+}
+
+void reader_permit::reset_peak_memory() noexcept {
+    _impl->reset_peak_memory();
+}
+
+void reader_permit::start_page() noexcept {
+    _impl->start_page();
+}
+
+db::timeout_clock::time_point reader_permit::page_started_at() const noexcept {
+    return _impl->page_started_at();
+}
+
+reader_permit::page_summary reader_permit::get_page_summary() const noexcept {
+    return page_summary{
+        .started_at = _impl->page_started_at(),
+        .queue_wait = _impl->queue_wait(),
+        .stats = _impl->get_read_stats(),
+        .peak_memory = _impl->peak_memory(),
+        .semaphore_memory = uint64_t(std::max<ssize_t>(_impl->semaphore().initial_resources().memory, 0)),
+    };
+}
+
+std::optional<reader_permit::wait_stats> reader_permit::get_wait_stats() const noexcept {
+    return _impl->get_wait_stats();
 }
 
 auto fmt::formatter<reader_permit::state>::format(reader_permit::state s, fmt::format_context& ctx) const
@@ -1591,6 +1682,8 @@ future<> reader_concurrency_semaphore::do_wait_admission(reader_permit::impl& pe
     ++(_stats.*stats_table[static_cast<int>(why)]);
     tracing::trace(permit.trace_state(), "[reader concurrency semaphore {}] {}", _name, result_as_string[static_cast<int>(why)]);
     if (admit != can_admit::yes || !_wait_list.empty()) {
+        permit.on_queued_for_admission(why, _stats.waiters,
+                _initial_resources.count - _resources.count, _initial_resources.memory - _resources.memory);
         auto fut = enqueue_waiter(permit, wait_on::admission);
         if (admit == can_admit::yes && !_wait_list.empty()) {
             // Enters the case where the semaphore can admit waiters yet it has waiters.

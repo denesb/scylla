@@ -3138,4 +3138,70 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_signal_detects_negati
     BOOST_REQUIRE_EQUAL(semaphore.consumed_resources(), reader_resources{});
 }
 
+// The permit's read statistics accumulate until the next page starts; the peak can be
+// restarted from the memory held now.
+SEASTAR_THREAD_TEST_CASE(test_reader_permit_read_stats) {
+    simple_schema s;
+    reader_concurrency_semaphore semaphore(reader_concurrency_semaphore::for_tests{}, get_name(), 10, 1024 * 1024);
+    auto stop_sem = deferred_stop(semaphore);
+
+    auto permit = semaphore.make_tracking_only_permit(s.schema(), get_name(), db::no_timeout, {});
+    BOOST_REQUIRE_EQUAL(permit.get_read_stats().sstables_read, 0);
+    BOOST_REQUIRE_EQUAL(permit.get_read_stats().memory_consumed, 0);
+    BOOST_REQUIRE_EQUAL(permit.peak_memory(), 0);
+
+    permit.on_start_sstable_read();
+    permit.on_start_sstable_read();
+    permit.on_finish_sstable_read();
+    permit.on_finish_sstable_read();
+    permit.on_start_sstable_read();
+    BOOST_REQUIRE_EQUAL(permit.get_read_stats().sstables_read, 3);
+    permit.on_finish_sstable_read();
+
+    {
+        auto units1 = permit.consume_memory(1000);
+        auto units2 = permit.consume_memory(500);
+    }
+    auto units = permit.consume_memory(200);
+    BOOST_REQUIRE_EQUAL(permit.get_read_stats().memory_consumed, 1700);
+    BOOST_REQUIRE_EQUAL(permit.peak_memory(), 1500);
+
+    permit.reset_peak_memory();
+    BOOST_REQUIRE_EQUAL(permit.peak_memory(), 200);
+    auto more_units = permit.consume_memory(100);
+    BOOST_REQUIRE_EQUAL(permit.peak_memory(), 300);
+
+    permit.start_page();
+    BOOST_REQUIRE_EQUAL(permit.get_read_stats().sstables_read, 0);
+    BOOST_REQUIRE_EQUAL(permit.get_read_stats().memory_consumed, 0);
+    BOOST_REQUIRE_EQUAL(permit.peak_memory(), 300);
+    auto page_units = permit.consume_memory(50);
+    BOOST_REQUIRE_EQUAL(permit.get_read_stats().memory_consumed, 50);
+    BOOST_REQUIRE_EQUAL(permit.peak_memory(), 350);
+}
+
+// A permit that waited in the admission queue reports why it was queued and the state of the
+// semaphore when it was queued; one admitted right away reports nothing.
+SEASTAR_THREAD_TEST_CASE(test_reader_permit_wait_stats) {
+    simple_schema s;
+    reader_concurrency_semaphore semaphore(reader_concurrency_semaphore::for_tests{}, get_name(), 1, 1024 * 1024);
+    auto stop_sem = deferred_stop(semaphore);
+
+    reader_permit_opt permit1 = semaphore.obtain_permit(s.schema(), get_name(), 1024, db::no_timeout, {}).get();
+    BOOST_REQUIRE(!permit1->get_wait_stats());
+
+    auto permit2_fut = semaphore.obtain_permit(s.schema(), get_name(), 1024, db::no_timeout, {});
+    BOOST_REQUIRE(!permit2_fut.available());
+
+    permit1 = {};
+    auto permit2 = permit2_fut.get();
+    const auto queued = permit2.get_wait_stats();
+    BOOST_REQUIRE(queued);
+    BOOST_REQUIRE(queued->reason == reader_permit::wait_reason::count_resources);
+    BOOST_REQUIRE_EQUAL(queued->queue_length, 0);
+    BOOST_REQUIRE_EQUAL(queued->active_count, 1);
+    BOOST_REQUIRE_EQUAL(queued->memory_used, 1024);
+    BOOST_REQUIRE(queued->wait >= db::timeout_clock::duration::zero());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

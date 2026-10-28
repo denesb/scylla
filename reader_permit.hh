@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include <optional>
+
 #include <seastar/util/optimized_optional.hh>
 #include "seastarx.hh"
 
@@ -181,6 +183,78 @@ public:
 
     void on_start_sstable_read() noexcept;
     void on_finish_sstable_read() noexcept;
+
+    // Statistics of the work done on behalf of the permit, for diagnosing problematic reads,
+    // since the start of the current page (start_page()), or since the permit was created.
+    struct read_stats {
+        // The number of sstable readers created.
+        uint64_t sstables_read = 0;
+        // The sum of all memory consumed, including memory that was released since.
+        uint64_t memory_consumed = 0;
+    };
+    read_stats get_read_stats() const noexcept;
+
+    // The most memory the permit held at once since the last reset_peak_memory() or
+    // start_page(), or since it was created.
+    uint64_t peak_memory() const noexcept;
+    // Restart peak tracking from the memory the permit holds now.
+    void reset_peak_memory() noexcept;
+
+    // What a page read with the permit produced and went through, reported by the replica
+    // when it is asked to (for detecting problematic reads).
+    struct page_report {
+        struct read_counts {
+            uint64_t live_partitions = 0;
+            uint64_t dead_partitions = 0;
+            uint64_t live_rows = 0;
+            uint64_t dead_rows = 0;
+            uint64_t range_tombstones = 0;
+            uint64_t live_cells = 0;
+            uint64_t dead_cells = 0;
+        };
+        read_counts counts;
+        bool tombstone_limit_reached = false;
+        bool unpaged_soft_limit_exceeded = false;
+        uint64_t result_partitions = 0;
+        uint64_t result_rows = 0;
+        uint64_t result_bytes = 0;
+    };
+
+    // Start a new page: reset the read statistics and restart peak tracking. A paged read
+    // keeps its permit across pages, so this state lives in the permit.
+    void start_page() noexcept;
+    // When the current page started; the epoch if no page was started.
+    db::timeout_clock::time_point page_started_at() const noexcept;
+
+    // Everything about the current page the replica checks a read against, in one call.
+    struct page_summary {
+        db::timeout_clock::time_point started_at;
+        // Zero if the permit was not queued for admission.
+        db::timeout_clock::duration queue_wait{};
+        read_stats stats;
+        uint64_t peak_memory = 0;
+        uint64_t semaphore_memory = 0;
+    };
+    page_summary get_page_summary() const noexcept;
+
+    // The outcome of the semaphore's admission check: whether the resources needed to admit a
+    // read are available, and if not, what is missing. A read is queued for admission when
+    // the check fails, or when it passes but earlier waiters are queued (all_ok).
+    enum class wait_reason { all_ok = 0, ready_list, need_cpu_permits, memory_resources, count_resources };
+    // The last wait of the permit in the admission queue, with the state of the semaphore at
+    // the time the permit was queued, which is what caused the wait.
+    struct wait_stats {
+        db::timeout_clock::duration wait;
+        wait_reason reason;
+        // Permits waiting on the semaphore (for admission, memory or execution).
+        uint64_t queue_length;
+        // Count resources in use.
+        int64_t active_count;
+        // Memory resources in use.
+        int64_t memory_used;
+    };
+    // Disengaged if the permit was admitted without waiting in the queue.
+    std::optional<wait_stats> get_wait_stats() const noexcept;
 
     uintptr_t id() { return reinterpret_cast<uintptr_t>(_impl.get()); }
 };
