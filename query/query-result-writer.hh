@@ -143,6 +143,11 @@ public:
         return stop_iteration::yes;
     }
 
+    // Whether the page was cut short because it reached the tombstone limit.
+    bool tombstone_limit_reached() const {
+        return _tombstones >= _tombstone_limit && _slice.options.contains<partition_slice::option::allow_short_read>();
+    }
+
     const partition_slice& slice() const { return _slice; }
 
     uint64_t row_count() const {

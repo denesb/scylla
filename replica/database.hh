@@ -56,6 +56,7 @@
 #include "dirty_memory_manager.hh"
 #include "reader_concurrency_semaphore_group.hh"
 #include "db/timeout_clock.hh"
+#include "replica/problem_reads.hh"
 #include "replica/querier.hh"
 #include "cache_temperature.hh"
 #include <unordered_set>
@@ -517,6 +518,12 @@ private:
     lw_shared_ptr<const storage_options> _storage_opts;
     memtable_table_shared_data _memtable_shared_data;
     mutable table_stats _stats;
+    problem_read_thresholds _problem_read_thresholds;
+    problem_read_counters _problem_read_counters;
+    // Reads of internal tables are not checked for problems.
+    bool _problem_reads_user_table = false;
+    // Whether to check the reads of this table at all: a user table with checks enabled.
+    bool _check_problem_reads = false;
     mutable db::view::stats _view_stats;
     mutable row_locker::stats _row_locker_stats;
 
@@ -1158,7 +1165,8 @@ public:
         tracing::trace_state_ptr trace_state,
         query::result_memory_limiter& memory_limiter,
         db::timeout_clock::time_point timeout,
-        std::optional<querier>* saved_querier = { });
+        std::optional<querier>* saved_querier = { },
+        problem_reads* problem_reads_ptr = nullptr);
 
     // Performs a query on given data source returning data in reconcilable form.
     //
@@ -1185,7 +1193,14 @@ public:
             query::result_memory_accounter accounter,
             db::timeout_clock::time_point timeout,
             bool tombstone_gc_enabled = true,
-            std::optional<querier>* saved_querier = { });
+            std::optional<querier>* saved_querier = { },
+            problem_reads* problem_reads_ptr = nullptr);
+
+    // Checks a page that query() or mutation_query() read successfully against the problem
+    // read symptoms. Out of line, to keep the read's coroutine small.
+    [[gnu::noinline]] void check_possible_problem_read(problem_reads& pr, reader_permit& permit, const reader_permit::page_report& report,
+            bool new_permit, const query::read_command& cmd, std::span<const dht::partition_range> ranges,
+            problem_read_sample::read_kind kind, db::timeout_clock::time_point timeout) noexcept;
 
     void start();
     future<> stop() noexcept;
@@ -1282,6 +1297,26 @@ public:
     logstor::compaction_manager& get_logstor_compaction_manager() noexcept;
 
     future<> flush_separator(std::optional<logstor::segment_sequence> seq_num = std::nullopt);
+
+    const problem_read_thresholds& get_problem_read_thresholds() const noexcept {
+        return _problem_read_thresholds;
+    }
+    problem_read_counters& get_problem_read_counters() noexcept {
+        return _problem_read_counters;
+    }
+    const problem_read_counters& get_problem_read_counters() const noexcept {
+        return _problem_read_counters;
+    }
+    bool problem_reads_user_table() const noexcept {
+        return _problem_reads_user_table;
+    }
+    bool check_problem_reads() const noexcept {
+        return _check_problem_reads;
+    }
+    void set_problem_read_thresholds(problem_read_thresholds thresholds) noexcept {
+        _problem_read_thresholds = thresholds;
+        _check_problem_reads = _problem_reads_user_table && _problem_read_thresholds.enabled;
+    }
 
     table_stats& get_stats() const {
         return _stats;
@@ -1853,6 +1888,7 @@ private:
     bool _enable_autocompaction_toggle = false;
     bool _vnodes_cleanup_allowed = false;
     querier_cache _querier_cache;
+    problem_reads _problem_reads;
 
     std::unique_ptr<db::large_data_handler> _large_data_handler;
     std::unique_ptr<db::large_data_handler> _nop_large_data_handler;
@@ -2318,6 +2354,13 @@ public:
         return _querier_cache;
     }
 
+    problem_reads& get_problem_reads() {
+        return _problem_reads;
+    }
+    const problem_reads& get_problem_reads() const {
+        return _problem_reads;
+    }
+
     db::view::update_backlog get_view_update_backlog() const {
         return {max_memory_pending_view_updates() - _view_update_memory_sem.current(), max_memory_pending_view_updates()};
     }
@@ -2339,6 +2382,14 @@ public:
     future<reader_permit> obtain_reader_permit(schema_ptr schema, const char* const op_name, db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr);
 
     bool is_internal_query() const;
+
+    // The problem reads to check a read against, or null if the read is not to be checked. The
+    // table checks a page that succeeds, see table::check_possible_problem_read(); the database checks
+    // one that fails.
+    problem_reads* problem_reads_for(const table& cf, const reader_concurrency_semaphore& semaphore) noexcept;
+    [[gnu::noinline]] void maybe_sample_failed_problem_read(table& cf, reader_permit* permit, bool new_permit, const query::read_command& cmd,
+            std::span<const dht::partition_range> ranges, problem_read_sample::read_kind kind,
+            db::timeout_clock::time_point timeout, const std::exception_ptr& ex) noexcept;
     bool is_user_semaphore(const reader_concurrency_semaphore& semaphore) const;
 
     db::timeout_semaphore& get_view_update_concurrency_sem();

@@ -8,11 +8,13 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
 #include <list>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -20,11 +22,19 @@
 #include <seastar/core/sstring.hh>
 #include <seastar/core/timer.hh>
 
+#include "dht/i_partitioner_fwd.hh"
+#include "dht/ring_position.hh"
 #include "db_clock.hh"
+#include "db/timeout_clock.hh"
 #include "query/query_id.hh"
 #include "reader_permit.hh"
 #include "schema/schema_fwd.hh"
 #include "seastarx.hh"
+
+namespace query {
+class read_command;
+enum class result_request;
+}
 
 namespace replica {
 
@@ -139,9 +149,51 @@ struct problem_read_sample {
 };
 
 std::string_view to_string(problem_read_sample::read_kind);
+// The kind of a data query (not a mutation query) that requested `request`.
+problem_read_sample::read_kind to_read_kind(query::result_request request) noexcept;
 std::string_view to_string(problem_read_sample::failure_kind);
 std::string_view to_string(problem_read_sample::threshold_unit);
 std::string_view to_string(reader_permit::wait_reason);
+
+// The per-table thresholds of the symptoms. A threshold of 0 disables its symptom.
+struct problem_read_thresholds {
+    bool enabled = true;
+    // Indexed by problem_read_symptom.
+    std::array<bool, problem_read_symptom_count> symptoms = [] {
+        std::array<bool, problem_read_symptom_count> all;
+        all.fill(true);
+        return all;
+    }();
+    std::chrono::microseconds slow_floor = std::chrono::milliseconds(10);
+    std::chrono::microseconds admission_wait_floor = std::chrono::milliseconds(5);
+    uint64_t tombstones = 1000;
+    uint64_t read_amplification_sstables = 10;
+    // Percentage of the reader concurrency semaphore's memory.
+    uint64_t memory_peak_percent = 10;
+    uint64_t memory_amplification_min_bytes = 10 * 1024 * 1024;
+    uint64_t memory_amplification_ratio = 100;
+
+    bool symptom_enabled(problem_read_symptom symptom) const noexcept {
+        return enabled && symptoms[size_t(symptom)];
+    }
+};
+
+// How many read pages of a table the replica checked against the symptoms, and how many of
+// them exhibited each symptom, on this shard since `since`. Unlike the samples, these count
+// every occurrence.
+struct problem_read_counters {
+    uint64_t reads = 0;
+    // Indexed by problem_read_symptom.
+    std::array<uint64_t, problem_read_symptom_count> symptoms{};
+    db_clock::time_point since = db_clock::now();
+};
+
+// Fills in the description of the read (ranges, slice, limits, paging) from its command.
+void describe_read(problem_read_sample& sample, const schema& s, const query::read_command& cmd, std::span<const dht::partition_range> ranges);
+
+// The name of the service level the current read runs under, from the current scheduling
+// group.
+sstring current_service_level();
 
 // A small, fixed-capacity, per-shard list of sample reads that exhibited a known problem.
 //
@@ -205,6 +257,48 @@ public:
     size_t size() const noexcept {
         return _entries.size();
     }
+
+    // Whether any symptom can be sampled now.
+    bool can_sample_any(clock_type::time_point now = clock_type::now()) const noexcept {
+        return _config.capacity && std::ranges::any_of(_next_sample_at, [now] (clock_type::time_point t) { return now >= t; });
+    }
+
+    // Whether reads are checked against the symptoms at all. A capacity of 0 turns off the
+    // whole feature, counting included.
+    bool enabled() const noexcept {
+        return _config.capacity;
+    }
 };
+
+// Everything known about a replica read page, at its end, for checking it against the
+// symptoms.
+struct problem_read_context {
+    const schema& s;
+    const query::read_command& cmd;
+    std::span<const dht::partition_range> ranges;
+    problem_read_sample::read_kind kind;
+    const problem_read_thresholds& thresholds;
+    problem_read_counters& counters;
+    // Of the table, in microseconds, 0 if not known.
+    double p50_latency_us = 0;
+    double p99_latency_us = 0;
+    // The permit of the read, if it was admitted. It holds the page's report and statistics.
+    reader_permit* permit = nullptr;
+    // False if the page reused the permit of a previous page, which has no admission of its
+    // own.
+    bool admitted_this_page = false;
+    // When the page started executing, after admission; disengaged if the read failed before
+    // it was admitted.
+    std::optional<problem_reads::clock_type::time_point> execution_started;
+    problem_reads::clock_type::time_point finished;
+    db::timeout_clock::time_point timeout;
+    // The permit's page report; null if the read failed.
+    const reader_permit::page_report* page = nullptr;
+    std::exception_ptr ex;
+};
+
+// Checks a read page against the symptoms, counts the ones it exhibits, and samples them,
+// rate limits permitting.
+void maybe_sample(problem_reads& pr, const problem_read_context& ctx);
 
 }

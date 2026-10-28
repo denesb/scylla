@@ -106,6 +106,12 @@ public:
     size_t used_memory() const { return _used_memory; }
 };
 
+// Thrown when an unpaged read exceeds the hard result memory limit.
+class unpaged_query_hard_limit_exceeded : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
 class result_memory_accounter {
     result_memory_limiter* _limiter = nullptr;
     size_t _blocked_bytes = 0;
@@ -182,6 +188,9 @@ public:
     }
 
     size_t used_memory() const { return _used_memory; }
+
+    // Whether an unpaged read went over the soft limit (and was warned about).
+    bool soft_limit_exceeded() const { return !_below_soft_limit; }
 
     // Consume n more bytes for the result. Returns stop_iteration::yes if
     // the result cannot grow any more (taking into account both individual

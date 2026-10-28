@@ -166,6 +166,11 @@ public:
         , _compaction_state(make_lw_shared<compact_for_query_state>(*schema, gc_clock::time_point{}, *_slice, 0, 0, gc_state)) {
     }
 
+    // Statistics of the last page.
+    const compaction_stats& page_stats() const {
+        return _compaction_state->stats();
+    }
+
     bool are_limits_reached() const {
         return  _compaction_state->are_limits_reached();
     }

@@ -2061,7 +2061,7 @@ stop_iteration query::result_memory_accounter::check_local_limit() const {
         return stop_iteration(_total_used_memory > _maximum_result_size.get_page_size());
     } else {
         if (_total_used_memory > _maximum_result_size.hard_limit) {
-            throw std::runtime_error(fmt::format(
+            throw query::unpaged_query_hard_limit_exceeded(fmt::format(
                     "Memory usage of unpaged query exceeds hard limit of {} (configured via max_memory_for_unlimited_query_hard_limit)",
                     _maximum_result_size.hard_limit));
         }

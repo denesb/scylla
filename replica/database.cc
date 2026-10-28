@@ -1932,6 +1932,43 @@ static db::rate_limiter::can_proceed account_singular_ranges_to_rate_limit(
     return ret;
 }
 
+// Every user read of a user table is checked, so that the per-table counters count every
+// occurrence. The read's semaphore tells a user read from an internal one, cheaper than
+// classifying the scheduling group again.
+problem_reads* database::problem_reads_for(const table& cf, const reader_concurrency_semaphore& semaphore) noexcept {
+    const bool check = cf.check_problem_reads() && _problem_reads.enabled() && is_user_semaphore(semaphore);
+    return check ? &_problem_reads : nullptr;
+}
+
+// A page that started executing has had start_page() called on its permit.
+void database::maybe_sample_failed_problem_read(table& cf, reader_permit* permit, bool new_permit, const query::read_command& cmd,
+        std::span<const dht::partition_range> ranges, problem_read_sample::read_kind kind,
+        db::timeout_clock::time_point timeout, const std::exception_ptr& ex) noexcept {
+    const auto& latency_summary = cf.get_stats().reads.summary().summary();
+    const bool executed = permit && permit->page_started_at() != db::timeout_clock::time_point{};
+    try {
+        maybe_sample(_problem_reads, problem_read_context{
+            .s = *cf.schema(),
+            .cmd = cmd,
+            .ranges = ranges,
+            .kind = kind,
+            .thresholds = cf.get_problem_read_thresholds(),
+            .counters = cf.get_problem_read_counters(),
+            .p50_latency_us = latency_summary.size() > 0 ? latency_summary[0] : 0,
+            .p99_latency_us = latency_summary.size() > 2 ? latency_summary[2] : 0,
+            .permit = executed ? permit : nullptr,
+            .admitted_this_page = executed && new_permit,
+            .execution_started = executed ? std::make_optional(permit->page_started_at()) : std::nullopt,
+            .finished = problem_reads::clock_type::now(),
+            .timeout = timeout,
+            .page = nullptr,
+            .ex = ex,
+        });
+    } catch (...) {
+        dblog.debug("Failed to sample problem read: {}", std::current_exception());
+    }
+}
+
 future<std::tuple<lw_shared_ptr<query::result>, cache_temperature>>
 database::query(schema_ptr query_schema, const query::read_command& cmd, query::result_options opts, const dht::partition_range_vector& ranges,
                 tracing::trace_state_ptr trace_state, db::timeout_clock::time_point timeout, db::per_partition_rate_limit::info rate_limit_info) {
@@ -1952,16 +1989,18 @@ database::query(schema_ptr query_schema, const query::read_command& cmd, query::
     if (cmd.query_uuid && !cmd.is_first_page) {
         querier_opt = _querier_cache.lookup_data_querier(cmd.query_uuid, *query_schema, ranges.front(), cmd.slice, semaphore, trace_state, timeout);
     }
+    auto* const problem_reads_ptr = problem_reads_for(cf, semaphore);
 
     auto read_func = [&, this] (reader_permit permit) {
         reader_permit::need_cpu_guard ncpu_guard{permit};
         permit.set_max_result_size(max_result_size);
         return cf.query(std::move(query_schema), std::move(permit), cmd, opts, ranges, trace_state, get_result_memory_limiter(),
-                timeout, &querier_opt).then([&result, ncpu_guard = std::move(ncpu_guard)] (lw_shared_ptr<query::result> res) {
+                timeout, &querier_opt, problem_reads_ptr).then([&result, ncpu_guard = std::move(ncpu_guard)] (lw_shared_ptr<query::result> res) {
             result = std::move(res);
         });
     };
 
+    reader_permit_opt permit_holder;
     try {
         auto op = cf.read_in_progress();
 
@@ -1970,7 +2009,6 @@ database::query(schema_ptr query_schema, const query::read_command& cmd, query::
             querier_opt->permit().set_trace_state(trace_state);
             f = co_await coroutine::as_future(semaphore.with_ready_permit(querier_opt->permit(), read_func));
         } else {
-            reader_permit_opt permit_holder;
             f = co_await coroutine::as_future(semaphore.with_permit(query_schema, "data-query", cf.estimate_read_memory_cost(), timeout,
                         trace_state, permit_holder, read_func));
         }
@@ -1988,6 +2026,11 @@ database::query(schema_ptr query_schema, const query::read_command& cmd, query::
 
     if (querier_opt) {
         co_await querier_opt->close();
+    }
+    if (ex && problem_reads_ptr) [[unlikely]] {
+        maybe_sample_failed_problem_read(cf, querier_opt ? &querier_opt->permit() : permit_holder ? &*permit_holder : nullptr, bool(permit_holder), cmd, ranges,
+                to_read_kind(opts.request),
+                timeout, ex);
     }
     if (ex) {
         ++semaphore.get_stats().total_failed_reads;
@@ -2016,17 +2059,20 @@ database::query_mutations(schema_ptr query_schema, const query::read_command& cm
     if (cmd.query_uuid && !cmd.is_first_page) {
         querier_opt = _querier_cache.lookup_mutation_querier(cmd.query_uuid, *query_schema, range, cmd.slice, semaphore, trace_state, timeout);
     }
+    auto* const problem_reads_ptr = problem_reads_for(cf, semaphore);
 
     auto read_func = [&] (reader_permit permit) {
         reader_permit::need_cpu_guard ncpu_guard{permit};
         permit.set_max_result_size(max_result_size);
         return cf.mutation_query(std::move(query_schema), std::move(permit), cmd, range,
-                std::move(trace_state), std::move(accounter), timeout, tombstone_gc_enabled, &querier_opt)
+                std::move(trace_state), std::move(accounter), timeout, tombstone_gc_enabled, &querier_opt,
+                problem_reads_ptr)
         .then([&result, ncpu_guard = std::move(ncpu_guard)] (reconcilable_result res) {
             result = std::move(res);
         });
     };
 
+    reader_permit_opt permit_holder;
     try {
         auto op = cf.read_in_progress();
 
@@ -2035,7 +2081,6 @@ database::query_mutations(schema_ptr query_schema, const query::read_command& cm
             querier_opt->permit().set_trace_state(trace_state);
             f = co_await coroutine::as_future(semaphore.with_ready_permit(querier_opt->permit(), read_func));
         } else {
-            reader_permit_opt permit_holder;
             f = co_await coroutine::as_future(semaphore.with_permit(query_schema, "mutation-query", cf.estimate_read_memory_cost(), timeout,
                         trace_state, permit_holder, read_func));
         }
@@ -2054,6 +2099,10 @@ database::query_mutations(schema_ptr query_schema, const query::read_command& cm
 
     if (querier_opt) {
         co_await querier_opt->close();
+    }
+    if (ex && problem_reads_ptr) [[unlikely]] {
+        maybe_sample_failed_problem_read(cf, querier_opt ? &querier_opt->permit() : permit_holder ? &*permit_holder : nullptr, bool(permit_holder), cmd, std::span(&range, 1), problem_read_sample::read_kind::mutation,
+                timeout, ex);
     }
     if (ex) {
         ++semaphore.get_stats().total_failed_reads;

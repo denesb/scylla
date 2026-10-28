@@ -3663,6 +3663,8 @@ table::table(schema_ptr schema, config config, lw_shared_ptr<const storage_optio
     , _flush_timer([this]{ on_flush_timer(); })
     , _off_strategy_trigger([this] { trigger_offstrategy_compaction(); })
 {
+    _problem_reads_user_table = !is_internal_keyspace(_schema->ks_name());
+    _check_problem_reads = _problem_reads_user_table && _problem_read_thresholds.enabled;
     if (!_config.enable_disk_writes) {
         tlogger.warn("Writes disabled, column family no durable.");
     }
@@ -5284,6 +5286,70 @@ write_memtable_to_sstable(memtable& mt, sstables::shared_sstable sst) {
     }
 }
 
+void table::check_possible_problem_read(problem_reads& pr, reader_permit& permit, const reader_permit::page_report& report,
+        bool new_permit, const query::read_command& cmd, std::span<const dht::partition_range> ranges,
+        problem_read_sample::read_kind kind, db::timeout_clock::time_point timeout) noexcept {
+    const auto finished = problem_reads::clock_type::now();
+
+    // Nearly every page exhibits no symptom: rule that out with the cheapest checks first,
+    // conservatively (comparing to the floors, the lowest each threshold can be), and only
+    // build the context for the full check when some symptom is possible.
+    const auto& th = _problem_read_thresholds;
+    const auto page = permit.get_page_summary();
+    const bool paged = cmd.slice.options.contains<query::partition_slice::option::allow_short_read>();
+    const auto dead_rows = report.counts.dead_rows + report.counts.range_tombstones;
+
+    // A partition of a table without clustering columns has a single row, fine to read unpaged.
+    const bool single_row = ranges.size() == 1 && query::is_single_partition(ranges.front()) && _schema->clustering_key_size() == 0;
+
+    const bool possible = (!paged && !single_row)
+            || report.tombstone_limit_reached
+            || (th.slow_floor.count() && finished - page.started_at >= th.slow_floor)
+            || (new_permit && th.admission_wait_floor.count() && page.queue_wait >= th.admission_wait_floor)
+            || (th.tombstones && (dead_rows >= th.tombstones || report.counts.dead_cells >= th.tombstones))
+            || (th.read_amplification_sstables && page.stats.sstables_read >= th.read_amplification_sstables)
+            || (th.memory_peak_percent && page.peak_memory * 100 >= page.semaphore_memory * th.memory_peak_percent)
+            || (th.memory_amplification_ratio && page.stats.memory_consumed >= th.memory_amplification_min_bytes);
+    if (!possible) [[likely]] {
+        ++_problem_read_counters.reads;
+        return;
+    }
+
+    const auto& latency_summary = _stats.reads.summary().summary();
+
+    try {
+        maybe_sample(pr, problem_read_context{
+            .s = *_schema,
+            .cmd = cmd,
+            .ranges = ranges,
+            .kind = kind,
+            .thresholds = _problem_read_thresholds,
+            .counters = _problem_read_counters,
+            .p50_latency_us = latency_summary.size() > 0 ? latency_summary[0] : 0,
+            .p99_latency_us = latency_summary.size() > 2 ? latency_summary[2] : 0,
+            .permit = &permit,
+            .admitted_this_page = new_permit,
+            .execution_started = page.started_at,
+            .finished = finished,
+            .timeout = timeout,
+            .page = &report,
+            .ex = {},
+        });
+    } catch (...) {
+        tlogger.debug("Failed to sample problem read: {}", std::current_exception());
+    }
+}
+
+static void add_page_counts(problem_read_sample::read_counts& counts, const compaction_stats& stats) {
+    counts.live_partitions += stats.live_partitions;
+    counts.dead_partitions += stats.dead_partitions();
+    counts.live_rows += stats.static_rows.live + stats.clustering_rows.live;
+    counts.dead_rows += stats.static_rows.dead + stats.clustering_rows.dead;
+    counts.range_tombstones += stats.range_tombstones;
+    counts.live_cells += stats.live_cells();
+    counts.dead_cells += stats.dead_cells();
+}
+
 future<lw_shared_ptr<query::result>>
 table::query(schema_ptr query_schema,
         reader_permit permit,
@@ -5293,9 +5359,16 @@ table::query(schema_ptr query_schema,
         tracing::trace_state_ptr trace_state,
         query::result_memory_limiter& memory_limiter,
         db::timeout_clock::time_point timeout,
-        std::optional<querier>* saved_querier) {
+        std::optional<querier>* saved_querier,
+        problem_reads* problem_reads_ptr) {
     if (cmd.get_row_limit() == 0 || cmd.slice.partition_row_limit() == 0 || cmd.partition_limit == 0) {
         co_return make_lw_shared<query::result>();
+    }
+
+    reader_permit::page_report report;
+    const bool new_permit = !saved_querier || !*saved_querier;
+    if (problem_reads_ptr) {
+        permit.start_page();
     }
 
     const auto table_async_gate_holder = _async_gate.hold();
@@ -5337,6 +5410,9 @@ table::query(schema_ptr query_schema,
         auto& q = *querier_opt;
 
         future<> fut = co_await coroutine::as_future(q.consume_page(query_result_builder(*query_schema, qs.builder), qs.remaining_rows(), qs.remaining_partitions(), qs.cmd.timestamp, trace_state));
+        if (problem_reads_ptr) {
+            add_page_counts(report.counts, q.page_stats());
+        }
 
         if (fut.failed() || !qs.done()) {
             co_await q.close();
@@ -5361,6 +5437,16 @@ table::query(schema_ptr query_schema,
         *saved_querier = std::move(querier_opt);
     }
 
+    if (problem_reads_ptr) {
+        report.tombstone_limit_reached = qs.builder.tombstone_limit_reached();
+        report.unpaged_soft_limit_exceeded = qs.builder.memory_accounter().soft_limit_exceeded();
+        report.result_partitions = qs.builder.partition_count();
+        report.result_rows = qs.builder.row_count();
+        report.result_bytes = qs.builder.memory_accounter().used_memory();
+        check_possible_problem_read(*problem_reads_ptr, permit, report, new_permit, cmd, partition_ranges,
+                to_read_kind(opts.request), timeout);
+    }
+
     co_return make_lw_shared<query::result>(qs.builder.build(std::move(last_pos)));
 }
 
@@ -5373,9 +5459,16 @@ table::mutation_query(schema_ptr query_schema,
         query::result_memory_accounter accounter,
         db::timeout_clock::time_point timeout,
         bool tombstone_gc_enabled,
-        std::optional<querier>* saved_querier) {
+        std::optional<querier>* saved_querier,
+        problem_reads* problem_reads_ptr) {
     if (cmd.get_row_limit() == 0 || cmd.slice.partition_row_limit() == 0 || cmd.partition_limit == 0) {
         co_return reconcilable_result();
+    }
+
+    reader_permit::page_report report;
+    const bool new_permit = !saved_querier || !*saved_querier;
+    if (problem_reads_ptr) {
+        permit.start_page();
     }
 
     const auto table_async_gate_holder = _async_gate.hold();
@@ -5396,6 +5489,16 @@ table::mutation_query(schema_ptr query_schema,
   try {
     auto rrb = reconcilable_result_builder(*query_schema, cmd.slice, std::move(accounter));
     auto r = co_await q.consume_page(std::move(rrb), cmd.get_row_limit(), cmd.partition_limit, cmd.timestamp, trace_state);
+    if (problem_reads_ptr) {
+        add_page_counts(report.counts, q.page_stats());
+        report.unpaged_soft_limit_exceeded = !cmd.slice.options.contains<query::partition_slice::option::allow_short_read>()
+                && r.memory_usage() > permit.max_result_size().soft_limit;
+        report.result_partitions = r.partitions().size();
+        report.result_rows = r.row_count();
+        report.result_bytes = r.memory_usage();
+        check_possible_problem_read(*problem_reads_ptr, permit, report, new_permit, cmd, std::span(&range, 1), problem_read_sample::read_kind::mutation,
+                timeout);
+    }
 
     if (!saved_querier || (!q.are_limits_reached() && !r.is_short_read())) {
         co_await q.close();
