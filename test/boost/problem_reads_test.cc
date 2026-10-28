@@ -9,11 +9,24 @@
 #include <boost/test/unit_test.hpp>
 
 #include <chrono>
+#include <map>
+#include <utility>
+#include <vector>
+
+#include <fmt/ranges.h>
 
 #undef SEASTAR_TESTING_MAIN
+#include <seastar/testing/test_case.hh>
 #include <seastar/testing/thread_test_case.hh>
 
+#include "db/cluster_config_manager.hh"
+#include "exceptions/exceptions.hh"
+#include "replica/database.hh"
 #include "replica/problem_reads.hh"
+#include "test/lib/cql_test_env.hh"
+#include "transport/messages/result_message.hh"
+#include "types/map.hh"
+#include "types/types.hh"
 
 BOOST_AUTO_TEST_SUITE(problem_reads_test)
 
@@ -127,6 +140,154 @@ SEASTAR_THREAD_TEST_CASE(test_problem_reads_zero_capacity_disables_sampling) {
     problem_reads pr;
     pr.set_config({.capacity = 0, .sample_period = 1s, .ttl = 1h});
     BOOST_REQUIRE(!pr.should_sample(problem_read_symptom::slow, t0));
+}
+
+namespace {
+
+// The rows of system.problem_reads for ks.tbl, as (symptom, column -> value) pairs, with the
+// values of the requested columns rendered as text.
+std::vector<std::pair<sstring, std::map<sstring, sstring>>> problem_read_rows(cql_test_env& e, std::string_view ks, std::string_view tbl,
+        const std::vector<sstring>& columns) {
+    auto msg = e.execute_cql(fmt::format("SELECT symptom, {} FROM system.problem_reads WHERE keyspace_name = '{}' AND table_name = '{}'",
+            fmt::join(columns, ", "), ks, tbl)).get();
+    auto rows = dynamic_pointer_cast<cql_transport::messages::result_message::rows>(msg);
+    BOOST_REQUIRE(rows);
+    const auto& metadata = rows->rs().get_metadata().get_names();
+    std::vector<std::pair<sstring, std::map<sstring, sstring>>> result;
+    for (const auto& row : rows->rs().result_set().rows()) {
+        // A partition with no samples has only its static row, the counters.
+        if (!row[0]) {
+            continue;
+        }
+        auto symptom = value_cast<sstring>(utf8_type->deserialize(*row[0]));
+        std::map<sstring, sstring> values;
+        for (size_t i = 1; i < row.size(); ++i) {
+            values.emplace(columns[i - 1], row[i] ? metadata[i]->type->to_string(to_bytes(*row[i])) : sstring("null"));
+        }
+        result.emplace_back(std::move(symptom), std::move(values));
+    }
+    return result;
+}
+
+const std::map<sstring, sstring>* find_symptom(const std::vector<std::pair<sstring, std::map<sstring, sstring>>>& rows, std::string_view symptom) {
+    auto it = std::ranges::find(rows, symptom, &std::pair<sstring, std::map<sstring, sstring>>::first);
+    return it == rows.end() ? nullptr : &it->second;
+}
+
+// Runs a read the way a user read runs: in the statement scheduling group. Reads in other
+// groups are internal and are not sampled.
+void user_read(cql_test_env& e, std::string_view query) {
+    with_scheduling_group(get_scheduling_groups().get().statement_scheduling_group, [&] {
+        return e.execute_cql(query).discard_result();
+    }).get();
+}
+
+void set_thresholds(cql_test_env& e, std::string_view ks, std::string_view tbl, replica::problem_read_thresholds thresholds) {
+    e.db().invoke_on_all([&] (replica::database& db) {
+        db.find_column_family(ks, tbl).set_problem_read_thresholds(thresholds);
+    }).get();
+}
+
+}
+
+// An unpaged read that may return more than one row is sampled, and shows up in the virtual
+// table with the details of the read. A single-row unpaged read is fine and is not sampled.
+SEASTAR_TEST_CASE(test_problem_reads_samples_unpaged_read) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        e.execute_cql("CREATE TABLE ks.tbl (pk int, ck int, v int, PRIMARY KEY (pk, ck))").get();
+        e.execute_cql("INSERT INTO ks.tbl (pk, ck, v) VALUES (0, 0, 0)").get();
+        e.execute_cql("INSERT INTO ks.tbl (pk, ck, v) VALUES (0, 1, 1)").get();
+
+        // cql_test_env reads are unpaged.
+        user_read(e, "SELECT * FROM ks.tbl WHERE pk = 0 AND ck = 0");
+        BOOST_REQUIRE(!find_symptom(problem_read_rows(e, "ks", "tbl", {"paged"}), "unpaged"));
+
+        // A partition of a table without clustering columns has a single row.
+        e.execute_cql("CREATE TABLE ks.single_row (pk int PRIMARY KEY, v int)").get();
+        e.execute_cql("INSERT INTO ks.single_row (pk, v) VALUES (0, 0)").get();
+        user_read(e, "SELECT * FROM ks.single_row WHERE pk = 0");
+        BOOST_REQUIRE(!find_symptom(problem_read_rows(e, "ks", "single_row", {"paged"}), "unpaged"));
+
+        user_read(e, "SELECT * FROM ks.tbl WHERE pk = 0");
+        const auto rows = problem_read_rows(e, "ks", "tbl", {"paged", "read_kind", "partition_range_count", "result_rows", "columns", "live_rows"});
+        const auto* row = find_symptom(rows, "unpaged");
+        BOOST_REQUIRE(row);
+        BOOST_REQUIRE_EQUAL(row->at("paged"), "false");
+        BOOST_REQUIRE_EQUAL(row->at("read_kind"), "data");
+        BOOST_REQUIRE_EQUAL(row->at("partition_range_count"), "1");
+        BOOST_REQUIRE_EQUAL(row->at("result_rows"), "2");
+        BOOST_REQUIRE_EQUAL(row->at("live_rows"), "2");
+        BOOST_REQUIRE_EQUAL(row->at("columns"), "v");
+    });
+}
+
+// A read that goes through many tombstones is sampled with the counts of what it read and
+// the threshold it was compared to.
+SEASTAR_TEST_CASE(test_problem_reads_samples_tombstone_heavy_read) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        e.execute_cql("CREATE TABLE ks.tbl (pk int, ck int, v int, PRIMARY KEY (pk, ck))").get();
+        set_thresholds(e, "ks", "tbl", replica::problem_read_thresholds{.tombstones = 5});
+        for (int ck = 0; ck < 10; ++ck) {
+            e.execute_cql(fmt::format("DELETE FROM ks.tbl WHERE pk = 0 AND ck = {}", ck)).get();
+        }
+        e.execute_cql("INSERT INTO ks.tbl (pk, ck, v) VALUES (0, 100, 0)").get();
+
+        user_read(e, "SELECT * FROM ks.tbl WHERE pk = 0");
+        const auto rows = problem_read_rows(e, "ks", "tbl", {"dead_rows", "live_rows", "threshold", "threshold_unit"});
+        const auto* row = find_symptom(rows, "tombstones");
+        BOOST_REQUIRE(row);
+        BOOST_REQUIRE_EQUAL(row->at("dead_rows"), "10");
+        BOOST_REQUIRE_EQUAL(row->at("live_rows"), "1");
+        BOOST_REQUIRE_EQUAL(row->at("threshold"), "5");
+        BOOST_REQUIRE_EQUAL(row->at("threshold_unit"), "tombstones");
+    });
+}
+
+// Disabling a table's sampling, or a symptom, stops samples from being recorded for it.
+// The per-table counters count every read and every occurrence of a symptom, also the ones
+// the rate limit does not sample.
+SEASTAR_TEST_CASE(test_problem_reads_counts_every_occurrence) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        e.execute_cql("CREATE TABLE ks.tbl (pk int, ck int, v int, PRIMARY KEY (pk, ck))").get();
+        e.execute_cql("INSERT INTO ks.tbl (pk, ck, v) VALUES (0, 0, 0)").get();
+        e.execute_cql("INSERT INTO ks.tbl (pk, ck, v) VALUES (0, 1, 1)").get();
+
+        user_read(e, "SELECT * FROM ks.tbl WHERE pk = 0 AND ck = 0");
+        for (int i = 0; i < 3; ++i) {
+            user_read(e, "SELECT * FROM ks.tbl WHERE pk = 0");
+        }
+
+        auto msg = e.execute_cql("SELECT reads, symptom_counts, counted_since FROM system.problem_reads WHERE keyspace_name = 'ks' AND table_name = 'tbl'").get();
+        auto rows = dynamic_pointer_cast<cql_transport::messages::result_message::rows>(msg);
+        BOOST_REQUIRE(rows);
+        BOOST_REQUIRE(!rows->rs().result_set().rows().empty());
+        const auto& row = rows->rs().result_set().rows().front();
+        BOOST_REQUIRE_EQUAL(value_cast<int64_t>(long_type->deserialize(*row[0])), 4);
+        const auto map_type = map_type_impl::get_instance(utf8_type, long_type, false);
+        const auto counts = value_cast<map_type_impl::native_type>(map_type->deserialize(*row[1]));
+        BOOST_REQUIRE_EQUAL(counts.size(), 1);
+        BOOST_REQUIRE_EQUAL(value_cast<sstring>(counts[0].first), "unpaged");
+        BOOST_REQUIRE_EQUAL(value_cast<int64_t>(counts[0].second), 3);
+        BOOST_REQUIRE(row[2]);
+
+        // Only one of the three was sampled.
+        const auto samples = problem_read_rows(e, "ks", "tbl", {"paged"});
+        BOOST_REQUIRE_EQUAL(std::ranges::count(samples, sstring("unpaged"), &std::pair<sstring, std::map<sstring, sstring>>::first), 1);
+    });
+}
+
+SEASTAR_TEST_CASE(test_problem_reads_respects_disabled_symptoms) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        e.execute_cql("CREATE TABLE ks.tbl (pk int, ck int, v int, PRIMARY KEY (pk, ck))").get();
+        e.execute_cql("INSERT INTO ks.tbl (pk, ck, v) VALUES (0, 0, 0)").get();
+        e.execute_cql("INSERT INTO ks.tbl (pk, ck, v) VALUES (0, 1, 1)").get();
+
+        replica::problem_read_thresholds thresholds;
+        thresholds.symptoms[size_t(replica::problem_read_symptom::unpaged)] = false;
+        set_thresholds(e, "ks", "tbl", thresholds);
+        user_read(e, "SELECT * FROM ks.tbl WHERE pk = 0");
+        BOOST_REQUIRE(!find_symptom(problem_read_rows(e, "ks", "tbl", {"paged"}), "unpaged"));
+    });
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -44,6 +44,9 @@
 #include "locator/load_sketch.hh"
 #include "types/list.hh"
 #include "types/map.hh"
+#include "types/set.hh"
+#include "types/tuple.hh"
+#include "types/user.hh"
 #include "types/types.hh"
 #include "utils/build_id.hh"
 #include "utils/error_injection.hh"
@@ -2218,6 +2221,325 @@ public:
     }
 };
 
+// The type of a range bound in system.problem_reads, registered in the system keyspace.
+// `value` holds the components of the key, each rendered as a CQL literal. For a partition
+// range bound, `token` is set and `value` is null for a bound with a token but no key; for a
+// clustering range bound, `value` holds the components of the clustering prefix and `token`
+// is null.
+static thread_local auto range_bound_type = user_type_impl::get_instance(
+        system_keyspace::NAME, "range_bound", {"value", "token", "inclusive"},
+        {list_type_impl::get_instance(utf8_type, false), long_type, boolean_type}, false);
+// A range is a pair of bounds; a null bound is unbounded.
+static thread_local auto problem_read_range_type = tuple_type_impl::get_instance({range_bound_type, range_bound_type});
+static thread_local auto problem_read_ranges_type = list_type_impl::get_instance(problem_read_range_type, false);
+
+// The table comment, shown by DESCRIBE TABLE: the place to explain the table to whoever reads
+// it, CQL having no per-column comments.
+static constexpr std::string_view problem_reads_comment =
+"Samples of replica reads that exhibited a known problem (symptom), on this node, and per-table counters of the symptoms.\n"
+"The static columns are statistics, summed over the shards: reads is the number of read pages checked, symptom_counts the number of them that exhibited each symptom, "
+"both since counted_since (the node start, or when the table was loaded on the node). They only grow: diff two snapshots for rates.\n"
+"The clustering rows are samples, not statistics: one sample is kept per (table, symptom, service level) on each shard, the latest replacing the previous one; "
+"at most one read is sampled per symptom per sample period, so most occurrences are not sampled. "
+"Samples expire after a TTL. Only user reads of user tables are sampled. Reads are checked per replica page, so one CQL query can produce samples on several replicas.\n"
+"Symptoms (threshold: what the threshold column holds for it):\n"
+"- unpaged_large: unpaged read whose result exceeded the unpaged soft memory limit, or failed on the hard limit (failure = unpaged_hard_limit). threshold: the soft limit.\n"
+"- unpaged: any other unpaged read that may return more than one row. threshold: none.\n"
+"- slow: single-partition read that executed longer than max(table P99, floor); range scans and mutation reads: longer than the floor. latency_us includes the admission wait. threshold: the limit applied.\n"
+"- timed_out: read that timed out after admission. threshold: none.\n"
+"- admission_wait: read that waited for admission longer than max(table P50, floor). The sampled read is typically the victim, not the cause; queue_* columns describe the semaphore when the read was queued. threshold: the limit applied.\n"
+"- tombstones: page that read at least threshold dead rows and range tombstones, or dead cells.\n"
+"- tombstone_limit_page: page that was cut short by the tombstone limit. threshold: the limit.\n"
+"- read_amplification: single-partition read that read at least threshold sstables.\n"
+"- memory_peak: read that held at least threshold bytes (a percentage of the reader concurrency semaphore's memory) at once.\n"
+"- memory_amplification: read that used at least threshold times more memory in total than the size of its result.\n"
+"A null column is a detail the read did not produce. Ranges are lists of (start, end) range_bound pairs, a null bound is unbounded; "
+"range_bound.value holds the key components as CQL literals (null for a partition bound with a token only, a prefix for a clustering bound), "
+"range_bound.token is the token of a partition bound. At most 16 ranges are kept, *_range_count is the total.\n"
+"Configured through cluster config: per table, keyspace or cluster problem_reads_enabled and problem_reads_thresholds "
+"(a key per symptom: its threshold, 0 disabling it, or a switch); per cluster problem_reads_capacity "
+"(0 turns off counting too) and problem_reads_sampling (sample_period_ms, ttl_seconds).";
+
+// Exposes the samples of replica::problem_reads, from all shards.
+class problem_reads_table : public memtable_filling_virtual_table {
+    sharded<replica::database>& _db;
+
+    struct shard_sample {
+        unsigned shard;
+        replica::problem_read_sample sample;
+    };
+
+public:
+    explicit problem_reads_table(sharded<replica::database>& db)
+        : memtable_filling_virtual_table(build_schema())
+        , _db(db) {
+        _shard_aware = true;
+    }
+
+    static schema_ptr build_schema() {
+        auto id = generate_legacy_id(system_keyspace::NAME, "problem_reads");
+        return schema_builder(this_smp_shard_count(), system_keyspace::NAME, "problem_reads", std::make_optional(id))
+            .with_column("keyspace_name", utf8_type, column_kind::partition_key)
+            .with_column("table_name", utf8_type, column_kind::partition_key)
+            .with_column("shard", int32_type, column_kind::clustering_key)
+            .with_column("symptom", utf8_type, column_kind::clustering_key)
+            .with_column("service_level", utf8_type, column_kind::clustering_key)
+            // Per-table counters, summed over the shards.
+            .with_column("reads", long_type, column_kind::static_column)
+            .with_column("symptom_counts", map_type_impl::get_instance(utf8_type, long_type, false), column_kind::static_column)
+            .with_column("counted_since", timestamp_type, column_kind::static_column)
+            .with_column("sampled_at", timestamp_type)
+            // The read.
+            .with_column("read_kind", utf8_type)
+            .with_column("paged", boolean_type)
+            .with_column("query_uuid", uuid_type)
+            .with_column("is_first_page", boolean_type)
+            .with_column("partition_ranges", problem_read_ranges_type)
+            .with_column("partition_range_count", long_type)
+            .with_column("clustering_ranges", problem_read_ranges_type)
+            .with_column("clustering_range_count", long_type)
+            .with_column("columns", list_type_impl::get_instance(utf8_type, false))
+            .with_column("slice_options", set_type_impl::get_instance(utf8_type, false))
+            .with_column("row_limit", long_type)
+            .with_column("partition_limit", long_type)
+            .with_column("per_partition_limit", long_type)
+            // Outcome.
+            .with_column("failure", utf8_type)
+            .with_column("tombstone_limit_reached", boolean_type)
+            // Timing.
+            .with_column("latency_us", long_type)
+            .with_column("queue_wait_us", long_type)
+            .with_column("timeout_us", long_type)
+            .with_column("table_p50_latency_us", long_type)
+            .with_column("table_p99_latency_us", long_type)
+            // Admission, if the read was queued.
+            .with_column("queue_reason", utf8_type)
+            .with_column("queue_length_at_enqueue", long_type)
+            .with_column("active_reads_at_enqueue", long_type)
+            .with_column("memory_used_at_enqueue", long_type)
+            // Result.
+            .with_column("result_partitions", long_type)
+            .with_column("result_rows", long_type)
+            .with_column("result_bytes", long_type)
+            // What the page read.
+            .with_column("live_partitions", long_type)
+            .with_column("dead_partitions", long_type)
+            .with_column("live_rows", long_type)
+            .with_column("dead_rows", long_type)
+            .with_column("range_tombstones", long_type)
+            .with_column("live_cells", long_type)
+            .with_column("dead_cells", long_type)
+            // Resources.
+            .with_column("sstables_read", long_type)
+            .with_column("memory_peak_bytes", long_type)
+            .with_column("memory_total_bytes", long_type)
+            // What triggered the sample.
+            .with_column("threshold", long_type)
+            .with_column("threshold_unit", utf8_type)
+            .set_comment(sstring(problem_reads_comment))
+            .with_hash_version()
+            .build();
+    }
+
+    static data_value make_bound(const std::optional<replica::problem_read_range_bound>& bound) {
+        if (!bound) {
+            return data_value::make_null(range_bound_type);
+        }
+        return make_user_value(range_bound_type, {
+            bound->value
+                    ? make_list_value(list_type_impl::get_instance(utf8_type, false),
+                            *bound->value | std::views::transform([] (const sstring& c) { return data_value(c); }) | std::ranges::to<std::vector>())
+                    : data_value::make_null(list_type_impl::get_instance(utf8_type, false)),
+            bound->token ? data_value(*bound->token) : data_value::make_null(long_type),
+            data_value(bound->inclusive),
+        });
+    }
+
+    static data_value make_ranges(const std::vector<replica::problem_read_range>& ranges) {
+        std::vector<data_value> values;
+        values.reserve(ranges.size());
+        for (const auto& range : ranges) {
+            values.push_back(make_tuple_value(problem_read_range_type, {make_bound(range.start), make_bound(range.end)}));
+        }
+        return make_list_value(problem_read_ranges_type, std::move(values));
+    }
+
+    static data_value to_data_value(uint64_t v) {
+        return data_value(int64_t(v));
+    }
+
+    static data_value to_data_value(std::chrono::microseconds v) {
+        return data_value(int64_t(v.count()));
+    }
+
+    static data_value to_data_value(int64_t v) {
+        return data_value(v);
+    }
+
+    template <typename T>
+    void set_optional_cell(row& cr, const bytes& column_name, const std::optional<T>& value) {
+        if (value) {
+            set_cell(cr, column_name, to_data_value(*value));
+        }
+    }
+
+    void set_sample_cells(row& cr, const replica::problem_read_sample& s) {
+        set_cell(cr, "sampled_at", s.sampled_at);
+        set_cell(cr, "read_kind", sstring(replica::to_string(s.kind)));
+        set_cell(cr, "paged", s.paged);
+        if (s.query_uuid) {
+            set_cell(cr, "query_uuid", s.query_uuid.uuid());
+        }
+        set_cell(cr, "is_first_page", s.is_first_page);
+        set_cell(cr, "partition_ranges", make_ranges(s.partition_ranges));
+        set_cell(cr, "partition_range_count", to_data_value(s.partition_range_count));
+        set_cell(cr, "clustering_ranges", make_ranges(s.clustering_ranges));
+        set_cell(cr, "clustering_range_count", to_data_value(s.clustering_range_count));
+        set_cell(cr, "columns", make_list_value(schema()->get_column_definition("columns")->type,
+                s.columns | std::views::transform([] (const sstring& c) { return data_value(c); }) | std::ranges::to<std::vector>()));
+        set_cell(cr, "slice_options", make_set_value(schema()->get_column_definition("slice_options")->type,
+                s.slice_options | std::views::transform([] (const sstring& o) { return data_value(o); }) | std::ranges::to<std::vector>()));
+        set_cell(cr, "row_limit", to_data_value(s.row_limit));
+        set_cell(cr, "partition_limit", to_data_value(s.partition_limit));
+        set_cell(cr, "per_partition_limit", to_data_value(s.per_partition_limit));
+
+        if (s.failure) {
+            set_cell(cr, "failure", sstring(replica::to_string(*s.failure)));
+        }
+        set_cell(cr, "tombstone_limit_reached", s.tombstone_limit_reached);
+
+        set_optional_cell(cr, "latency_us", s.latency);
+        set_optional_cell(cr, "queue_wait_us", s.queue_wait);
+        set_optional_cell(cr, "timeout_us", s.timeout);
+        set_optional_cell(cr, "table_p50_latency_us", s.table_p50_latency);
+        set_optional_cell(cr, "table_p99_latency_us", s.table_p99_latency);
+
+        if (s.admission) {
+            set_cell(cr, "queue_reason", sstring(replica::to_string(s.admission->reason)));
+            set_cell(cr, "queue_length_at_enqueue", to_data_value(s.admission->queue_length));
+            set_cell(cr, "active_reads_at_enqueue", to_data_value(s.admission->active_count));
+            set_cell(cr, "memory_used_at_enqueue", to_data_value(s.admission->memory_used));
+        }
+
+        set_optional_cell(cr, "result_partitions", s.result_partitions);
+        set_optional_cell(cr, "result_rows", s.result_rows);
+        set_optional_cell(cr, "result_bytes", s.result_bytes);
+        if (s.counts) {
+            set_cell(cr, "live_partitions", to_data_value(s.counts->live_partitions));
+            set_cell(cr, "dead_partitions", to_data_value(s.counts->dead_partitions));
+            set_cell(cr, "live_rows", to_data_value(s.counts->live_rows));
+            set_cell(cr, "dead_rows", to_data_value(s.counts->dead_rows));
+            set_cell(cr, "range_tombstones", to_data_value(s.counts->range_tombstones));
+            set_cell(cr, "live_cells", to_data_value(s.counts->live_cells));
+            set_cell(cr, "dead_cells", to_data_value(s.counts->dead_cells));
+        }
+        set_optional_cell(cr, "sstables_read", s.sstables_read);
+        set_optional_cell(cr, "memory_peak_bytes", s.memory_peak);
+        set_optional_cell(cr, "memory_total_bytes", s.memory_total);
+
+        set_optional_cell(cr, "threshold", s.threshold);
+        if (s.unit) {
+            set_cell(cr, "threshold_unit", sstring(replica::to_string(*s.unit)));
+        }
+    }
+
+    struct table_counters {
+        sstring keyspace_name;
+        sstring table_name;
+        replica::problem_read_counters counters;
+    };
+
+    dht::decorated_key make_partition_key(const sstring& keyspace_name, const sstring& table_name) const {
+        return dht::decorate_key(*_s, partition_key::from_exploded(*_s, {
+            data_value(keyspace_name).serialize_nonnull(),
+            data_value(table_name).serialize_nonnull(),
+        }));
+    }
+
+    // The counters of the tables that had reads checked, summed over the shards.
+    future<std::unordered_map<table_id, table_counters>> collect_counters() {
+        std::unordered_map<table_id, table_counters> result;
+        for (unsigned shard = 0; shard < smp::count; ++shard) {
+            auto shard_counters = co_await _db.invoke_on(shard, [] (replica::database& db) {
+                std::vector<std::pair<table_id, table_counters>> counters;
+                db.get_tables_metadata().for_each_table([&] (table_id id, lw_shared_ptr<replica::table> t) {
+                    const auto& c = t->get_problem_read_counters();
+                    if (c.reads) {
+                        counters.emplace_back(id, table_counters{t->schema()->ks_name(), t->schema()->cf_name(), c});
+                    }
+                });
+                return counters;
+            });
+            for (auto& [id, c] : shard_counters) {
+                auto [it, inserted] = result.try_emplace(id, std::move(c));
+                if (!inserted) {
+                    auto& sum = it->second.counters;
+                    sum.reads += c.counters.reads;
+                    for (size_t i = 0; i < replica::problem_read_symptom_count; ++i) {
+                        sum.symptoms[i] += c.counters.symptoms[i];
+                    }
+                    sum.since = std::min(sum.since, c.counters.since);
+                }
+            }
+            co_await coroutine::maybe_yield();
+        }
+        co_return result;
+    }
+
+    future<> execute(std::function<void(mutation)> mutation_sink) override {
+        for (const auto& [id, c] : co_await collect_counters()) {
+            auto dk = make_partition_key(c.keyspace_name, c.table_name);
+            if (!this_shard_owns(dk)) {
+                continue;
+            }
+            mutation m(schema(), std::move(dk));
+            row& sr = m.partition().static_row().maybe_create();
+            set_cell(sr, "reads", int64_t(c.counters.reads));
+            std::vector<std::pair<data_value, data_value>> symptom_counts;
+            for (size_t i = 0; i < replica::problem_read_symptom_count; ++i) {
+                if (c.counters.symptoms[i]) {
+                    symptom_counts.emplace_back(sstring(replica::to_string(replica::problem_read_symptom(i))), int64_t(c.counters.symptoms[i]));
+                }
+            }
+            set_cell(sr, "symptom_counts", make_map_value(schema()->get_column_definition("symptom_counts")->type, std::move(symptom_counts)));
+            set_cell(sr, "counted_since", c.counters.since);
+            mutation_sink(std::move(m));
+        }
+
+        std::vector<shard_sample> samples;
+        for (unsigned shard = 0; shard < smp::count; ++shard) {
+            auto shard_samples = co_await _db.invoke_on(shard, [] (replica::database& db) {
+                return db.get_problem_reads().samples();
+            });
+            for (auto& sample : shard_samples) {
+                samples.push_back({shard, std::move(sample)});
+            }
+        }
+        const auto& tables = _db.local().get_tables_metadata();
+        for (const auto& [shard, sample] : samples) {
+            // A sample of a dropped table, or of a table since recreated under the same name,
+            // is not shown; it expires on its own.
+            const auto t = tables.get_table_if_exists(sample.table);
+            if (!t || t->schema()->ks_name() != sample.keyspace_name || t->schema()->cf_name() != sample.table_name) {
+                continue;
+            }
+            auto dk = make_partition_key(sample.keyspace_name, sample.table_name);
+            if (!this_shard_owns(dk)) {
+                continue;
+            }
+            mutation m(schema(), std::move(dk));
+            auto ck = clustering_key::from_exploded(*_s, {
+                data_value(int32_t(shard)).serialize_nonnull(),
+                data_value(sstring(replica::to_string(sample.symptom))).serialize_nonnull(),
+                data_value(sample.service_level).serialize_nonnull(),
+            });
+            row& cr = m.partition().clustered_row(*schema(), ck).cells();
+            set_sample_cells(cr, sample);
+            mutation_sink(std::move(m));
+        }
+    }
+};
+
 }
 
 // Helper: register a virtual table on the local shard.
@@ -2328,6 +2650,8 @@ future<> initialize_virtual_tables(
         co_await add_table(std::make_unique<cdc_timestamps_table>(db, dist_ss.local()));
         co_await add_table(std::make_unique<cdc_streams_table>(db, dist_ss.local()));
         co_await add_table(std::make_unique<custom_indexes_table>(db, vsc));
+        db.find_keyspace(system_keyspace::NAME).add_user_type(range_bound_type);
+        co_await add_table(std::make_unique<problem_reads_table>(dist_db));
 
         db.find_column_family(system_keyspace::size_estimates()).set_virtual_reader(mutation_source(db::size_estimates::virtual_reader(db, sys_ks.local())));
         db.find_column_family(system_keyspace::views_builds_in_progress()).set_virtual_reader(mutation_source(db::view::build_progress_virtual_reader(db)));
