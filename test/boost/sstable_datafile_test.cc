@@ -3887,3 +3887,58 @@ SEASTAR_THREAD_TEST_CASE(test_small_sstable_has_reasonable_memory_usage) {
     BOOST_REQUIRE_LT(growth, upper_bound);
 #endif
 }
+
+// The default_time_to_live table property is not validated against max_ttl
+// (SCYLLADB-6065), so sstables with cells and row markers whose TTL exceeds
+// max_ttl can exist. The reader used to reject them with "Too big ttl"; it
+// must clamp the TTL to max_ttl instead, keeping the write time (expiry - ttl)
+// and moving the expiry earlier, so the sstable can be read and rewritten
+// (e.g. with scylla sstable upgrade).
+SEASTAR_TEST_CASE(test_too_big_ttl_is_clamped_on_read) {
+    return test_env::do_with_async([] (test_env& env) {
+        auto s = schema_builder(this_smp_shard_count(), "ks", "too_big_ttl")
+            .with_column("pk", int32_type, column_kind::partition_key)
+            .with_column("ck", int32_type, column_kind::clustering_key)
+            .with_column("v", int32_type)
+            .build();
+        const auto& v_def = *s->get_column_definition("v");
+
+        const gc_clock::duration too_big_ttl{864000000}; // 10000 days, ~27.4 years
+        BOOST_REQUIRE(too_big_ttl > max_ttl);
+        const auto write_time = gc_clock::now();
+        // Past INT32_MAX seconds since the epoch (2038), like the real-world case.
+        const auto expiry = write_time + too_big_ttl;
+        const auto clamped_expiry = write_time + max_ttl;
+        const auto ts = api::new_timestamp();
+
+        auto pk = partition_key::from_single_value(*s, int32_type->decompose(1));
+        auto ck = clustering_key::from_single_value(*s, int32_type->decompose(1));
+        mutation m(s, pk);
+        m.partition().clustered_row(*s, ck).apply(row_marker(ts, too_big_ttl, expiry));
+        m.set_clustered_cell(ck, v_def, atomic_cell::make_live(*int32_type, ts, int32_type->decompose(1), expiry, too_big_ttl));
+
+        // validate::no: the clamped TTL would not compare equal to the input.
+        auto sst = make_sstable_containing(env.make_sstable(s), {m}, validate::no).get();
+
+        auto rd = sstable_mutation_reader(sst, s, env.make_reader_permit());
+        auto close_rd = deferred_close(rd);
+        auto mo = read_mutation_from_mutation_reader(rd).get();
+        BOOST_REQUIRE(mo);
+        BOOST_REQUIRE_EQUAL(mo->partition().clustered_rows().calculate_size(), 1);
+        const auto& row = mo->partition().clustered_rows().begin()->row();
+
+        BOOST_REQUIRE(row.marker().is_expiring());
+        BOOST_REQUIRE_EQUAL(row.marker().ttl().count(), max_ttl.count());
+        BOOST_REQUIRE(row.marker().expiry() == clamped_expiry);
+        // The write time is what tombstone GC uses once the marker expires.
+        BOOST_REQUIRE(row.marker().deletion_time() == write_time);
+
+        auto cell = row.cells().cell_at(v_def.id).as_atomic_cell(v_def);
+        BOOST_REQUIRE(cell.is_live_and_has_ttl());
+        BOOST_REQUIRE_EQUAL(cell.ttl().count(), max_ttl.count());
+        BOOST_REQUIRE(cell.expiry() == clamped_expiry);
+        BOOST_REQUIRE(cell.expiry() - cell.ttl() == write_time);
+
+        BOOST_REQUIRE(!read_mutation_from_mutation_reader(rd).get());
+    });
+}

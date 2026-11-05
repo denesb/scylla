@@ -982,6 +982,13 @@ private:
                         _liveness.set_ttl(parse_ttl(_header, this->_u64));
                         co_yield this->read_unsigned_vint(*_processing_data);
                         _liveness.set_local_deletion_time(parse_expiry(_header, this->_u64));
+                        {
+                            auto ttl = _liveness.ttl();
+                            auto ldt = _liveness.local_deletion_time();
+                            clamp_too_big_ttl(ttl, ldt);
+                            _liveness.set_ttl(ttl);
+                            _liveness.set_local_deletion_time(ldt);
+                        }
                     }
                 }
                 if (_flags.has_deletion()) {
@@ -1093,6 +1100,7 @@ private:
             } else {
                 co_yield this->read_unsigned_vint(*_processing_data);
                 _column_ttl = parse_ttl(_header, this->_u64);
+                clamp_too_big_ttl(_column_ttl, _column_local_deletion_time);
             }
             if (!is_column_simple()) {
                 co_yield this->read_unsigned_vint_length_bytes_contiguous(*_processing_data, _cell_path);

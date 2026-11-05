@@ -140,6 +140,15 @@ bool abort_on_malformed_sstable_error() noexcept {
     throw_malformed_sstable_exception(format("{} in sstable {}", msg, filename));
 }
 
+void clamp_too_big_ttl(gc_clock::duration& ttl, gc_clock::time_point& expiry) {
+    if (ttl > max_ttl && !is_expired_liveness_ttl(ttl)) [[unlikely]] {
+        static thread_local logger::rate_limit rl(std::chrono::minutes(1));
+        sstlog.log(log_level::warn, rl, "Too big ttl: {}, clamping to max_ttl ({})", ttl.count(), max_ttl.count());
+        expiry -= ttl - max_ttl;
+        ttl = max_ttl;
+    }
+}
+
 bool components_are_missing(std::exception_ptr ex) {
     try {
         std::rethrow_exception(std::move(ex));

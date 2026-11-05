@@ -43,14 +43,22 @@ inline api::timestamp_type parse_timestamp(const serialization_header& header,
     return static_cast<api::timestamp_type>(header.get_min_timestamp() + delta);
 }
 
+// The write path did not validate the default_time_to_live table property
+// against max_ttl, so sstables with a TTL above the limit can exist
+// (SCYLLADB-6065). Clamp such a TTL to max_ttl instead of rejecting the
+// sstable, so it can be read and rewritten. The write time (expiry - ttl)
+// is kept, as tombstone GC relies on it once the cell expires, so the expiry
+// moves earlier. Logs a rate-limited warning; out of line so the header does
+// not depend on the sstable logger.
+void clamp_too_big_ttl(gc_clock::duration& ttl, gc_clock::time_point& expiry);
+
 inline gc_clock::duration parse_ttl(int64_t value) {
     if (!is_expired_liveness_ttl(value)) {
         if (value < 0) {
             throw_malformed_sstable_exception(format("Negative ttl: {}", value));
         }
-        if (value > max_ttl.count()) {
-            throw_malformed_sstable_exception(format("Too big ttl: {}", value));
-        }
+        // A value above max_ttl is clamped by the reader once the expiry is
+        // known too, see clamp_too_big_ttl().
     }
     return gc_clock::duration(value);
 }
